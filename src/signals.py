@@ -55,9 +55,19 @@ def check_systemctl_active(_filter: str = "") -> bool:
              "--since", "30 minutes ago", "--no-pager"],
             capture_output=True, text=True, timeout=10
         )
-        error_patterns = ["error", "exception", "traceback", "critical", "failed", "fatal"]
-        for pattern in error_patterns:
-            if pattern in log_result.stdout.lower():
+        # 只匹配应用级错误，排除 systemd 自身的 "Failed with result" 重启日志
+        # "Failed with result 'exit-code'" 是 systemctl 正常重启记录，不算异常
+        import re
+        app_error_pattern = re.compile(
+            r'(?:Traceback|exception|critical|fatal'
+            r'|ERROR|error\b(?!.*with result))',
+            re.IGNORECASE
+        )
+        for line in log_result.stdout.splitlines():
+            # 跳过 systemd 重启日志（"Failed with result" 是重启时的正常记录）
+            if "failed with result" in line.lower():
+                continue
+            if app_error_pattern.search(line):
                 return True
 
         return False
