@@ -50,7 +50,7 @@ def check_systemctl_active(_filter: str = "") -> bool:
         log_result = subprocess.run(
             ["journalctl", "--user", "-u", "sister-agent-dkk",
              "-u", "sister-agent-ssk", "-u", "cron-worker",
-             "--since", "30min", "--no-pager"],
+             "--since", "30 minutes ago", "--no-pager"],
             capture_output=True, text=True, timeout=10
         )
         error_patterns = ["error", "exception", "traceback", "critical", "failed", "fatal"]
@@ -84,7 +84,7 @@ def check_journalctl_errors(_filter: str = "") -> bool:
     try:
         result = subprocess.run(
             ["journalctl", "--user", "-u", "sister-agent-dkk", "-u", "sister-agent-ssk",
-             "--since", "1h", "--no-pager"],
+             "--since", "1 hour ago", "--no-pager"],
             capture_output=True, text=True, timeout=10
         )
         for f in _filter.split("|"):

@@ -225,7 +225,8 @@ def main():
     else:
         # 无工作 → 清除旧注入，避免 stale prompt
         clear_injected_prompt()
-        print("No work for any role. Exiting.")
+        print("# No work for any session role. Exiting.")
+        print("exit 0")
         sys.exit(0)
 
 
