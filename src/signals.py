@@ -3,6 +3,7 @@
 Signal Checkers — 所有 input_signals 的检查逻辑。
 """
 import subprocess
+import shlex
 from typing import Any
 
 
@@ -27,17 +28,36 @@ def check_bus_unread(_filter: str = "") -> bool:
 
 
 def check_systemctl_active(_filter: str = "") -> bool:
-    """检查 systemd 服务是否有异常。"""
+    """检查 systemd 服务是否有异常。
+
+    增强版：同时检查：
+    1. is-active 状态（必须全部 active）
+    2. journalctl 最近 30 分钟是否有 ERROR/exception/Traceback/CRITICAL
+    """
     try:
+        # 1. 检查服务状态
         result = subprocess.run(
             ["systemctl", "--user", "is-active", "sister-agent-dkk.service",
              "sister-agent-ssk.service", "cron-worker.service"],
             capture_output=True, text=True, timeout=5
         )
-        # 如果有服务不是 active
         for line in result.stdout.strip().split("\n"):
             if line.strip() != "active":
+                return True  # 有服务异常
+
+        # 2. 检查日志错误（仅最近 30 分钟，避免历史噪音）
+        # 3 次连续失败才标 down 的红线已在维护者 prompt 里，这里做单次扫描
+        log_result = subprocess.run(
+            ["journalctl", "--user", "-u", "sister-agent-dkk",
+             "-u", "sister-agent-ssk", "-u", "cron-worker",
+             "--since", "30min", "--no-pager"],
+            capture_output=True, text=True, timeout=10
+        )
+        error_patterns = ["error", "exception", "traceback", "critical", "failed", "fatal"]
+        for pattern in error_patterns:
+            if pattern in log_result.stdout.lower():
                 return True
+
         return False
     except:
         return False

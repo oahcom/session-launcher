@@ -85,11 +85,15 @@ def main():
     if selected.get("cron_schedule"):
         print(f"export SESSION_CRON='{selected['cron_schedule']}'")
 
-    # 输出完整 prompt 供 CLAUDE.md 读取
-    prompt_file = "/tmp/session_prompt.txt"
-    with open(prompt_file, "w") as f:
-        f.write(prompt)
-    print(f"export SESSION_PROMPT_FILE={prompt_file}")
+    # 通过 launcher.inject_prompt_into_claudemd 写入 CLAUDE.md
+    from launcher import inject_prompt_into_claudemd, write_lifecycle_sentinel
+    inj_status = inject_prompt_into_claudemd(selected)
+    print(f"# Prompt injection: {inj_status}")
+
+    # ondemand 角色写哨兵
+    if selected.get("lifecycle") == "ondemand":
+        write_lifecycle_sentinel(selected)
+        print(f"# Lifecycle: ondemand — sentinel created")
 
     # 给用户看的信息
     print(f"# Session Role: {selected['title']} ({selected['name']})")
