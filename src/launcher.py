@@ -417,9 +417,15 @@ def send_to_ccs(role_name: str, message: str) -> dict:
         if result.returncode != 0:
             return {"success": False, "error": f"CCS {role_name} tmux session 不存在"}
 
-        # 用 -l (literal) 确保消息原样输入，不被 tmux 解释为保留键名（Enter/Space/C-c）
-        send_cmd = ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", message]
-        subprocess.run(send_cmd, capture_output=True, timeout=5)
+        # 先发消息（-l literal 避免解释保留键名），再单独发 Enter（不带 -l）
+        subprocess.run(
+            ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", message],
+            capture_output=True, timeout=5
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
+            capture_output=True, timeout=5
+        )
         return {"success": True, "sent_chars": len(message)}
     except Exception as e:
         return {"success": False, "error": f"tmux send-keys 失败: {e}"}
