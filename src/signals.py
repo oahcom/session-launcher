@@ -4,6 +4,8 @@ Signal Checkers — 所有 input_signals 的检查逻辑。
 """
 import subprocess
 import shlex
+import os
+from pathlib import Path
 from typing import Any
 
 
@@ -116,15 +118,14 @@ def check_git_staged(_filter: str = "") -> bool:
 
 
 def check_session_size(_filter: str = "") -> bool:
-    """检查 session 文件是否过大。"""
+    """检查 session 文件是否过大（单个文件 > 50MB）。"""
     try:
-        result = subprocess.run(
-            ["ls", "-lt", "~/.claude/projects/*/*.jsonl"],
-            shell=True, capture_output=True, text=True, timeout=5
-        )
-        lines = result.stdout.strip().split("\n")
-        # 检查前几个文件的大小
-        return len(lines) > 5
+        projects_dir = Path.home() / ".claude" / "projects"
+        max_bytes = 50 * 1024 * 1024
+        for f in projects_dir.glob("*/*.jsonl"):
+            if f.is_file() and f.stat().st_size > max_bytes:
+                return True
+        return False
     except:
         return False
 
@@ -142,6 +143,50 @@ def check_running_sessions(_filter: str = "") -> bool:
         return False
 
 
+def check_mem_disk(_filter: str = "") -> bool:
+    """检查内存和磁盘使用情况。
+
+    检查 /proc/meminfo 可用内存 < 500MB 或磁盘 / 使用率 > 90%。
+    检测到异常返回 True（有工作需要处理）。
+    """
+    # 检查内存
+    try:
+        meminfo = Path("/proc/meminfo").read_text()
+        for line in meminfo.split("\n"):
+            if line.startswith("MemAvailable:"):
+                # 格式: "MemAvailable:    1234567 kB"
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_available_kb = int(parts[1])
+                    mem_available_mb = mem_available_kb / 1024
+                    if mem_available_mb < 500:
+                        return True
+                break
+    except:
+        pass
+
+    # 检查磁盘使用率
+    try:
+        result = subprocess.run(
+            ["df", "/", "--output=pcent"],
+            capture_output=True, text=True, timeout=5
+        )
+        # 输出格式:
+        # Use%
+        #  90%
+        lines = result.stdout.strip().split("\n")
+        if len(lines) >= 2:
+            usage_str = lines[1].strip().rstrip("%")
+            if usage_str.isdigit():
+                usage = int(usage_str)
+                if usage > 90:
+                    return True
+    except:
+        pass
+
+    return False
+
+
 SIGNAL_CHECKERS = {
     "bus_unread": check_bus_unread,
     "systemctl_active": check_systemctl_active,
@@ -150,6 +195,7 @@ SIGNAL_CHECKERS = {
     "git_staged": check_git_staged,
     "session_size": check_session_size,
     "running_sessions": check_running_sessions,
+    "mem_disk": check_mem_disk,
 }
 
 

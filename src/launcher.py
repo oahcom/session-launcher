@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# 确保本项目模块可以从任意 CWD 导入
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
 
 SESSION_ROLES_ROOT = Path("/home/administrator/hermes-session-roles")
 BUS_CLIENT = Path("~/.hermes/scripts/bus_client.py").expanduser()
@@ -52,6 +57,8 @@ def check_signal(signal: dict) -> bool:
         return check_signal_by_name("journalctl_errors", filter_str)
     elif "git diff" in source:
         return check_signal_by_name("git_staged", filter_str)
+    elif "meminfo" in source or "df /" in source:
+        return check_signal_by_name("mem_disk", filter_str)
     elif "ls -lt" in source:
         return check_signal_by_name("session_size", filter_str)
     elif "ps aux" in source:
@@ -117,6 +124,11 @@ def inject_prompt_into_claudemd(role: dict) -> str:
         new_content = content.rstrip() + "\n\n" + inject_block
 
     CLAUDE_MD.write_text(new_content, encoding="utf-8")
+
+    # 额外写入 /tmp/session_role_prompt.txt
+    prompt_file = Path("/tmp/session_role_prompt.txt")
+    prompt_file.write_text(prompt)
+
     return "injected"
 
 
@@ -141,6 +153,7 @@ def clear_injected_prompt() -> None:
 def write_lifecycle_sentinel(role: dict) -> None:
     """为 ondemand 角色写生命周期哨兵文件，session 退出时自动清理。"""
     lifecycle = role.get("lifecycle", "infinite")
+    max_minutes = role.get("max_minutes", 30)
     sentinel_dir = Path("/tmp/session-launcher")
     sentinel_dir.mkdir(parents=True, exist_ok=True)
 
@@ -150,6 +163,7 @@ def write_lifecycle_sentinel(role: dict) -> None:
         "title": role["title"],
         "lifecycle": lifecycle,
         "pid": os.getpid(),
+        "max_minutes": max_minutes if lifecycle == "ondemand" else None,
         "started_at": subprocess.run(
             ["date", "-Iseconds"], capture_output=True, text=True
         ).stdout.strip(),
@@ -157,8 +171,34 @@ def write_lifecycle_sentinel(role: dict) -> None:
     # ponytail: 若要跨 session 持久化，改用 ~/.hermes/state/ 目录
 
 
+def check_ondemand_timeout(max_minutes: int = 30) -> list[str]:
+    """检查 ondemand 角色是否超时，超时返回角色名列表。"""
+    sentinel_dir = Path("/tmp/session-launcher")
+    if not sentinel_dir.exists():
+        return []
+    from datetime import datetime, timezone, timedelta
+    timed_out = []
+    for f in sentinel_dir.glob("*.active"):
+        try:
+            data = json.loads(f.read_text())
+            if data.get("lifecycle") != "ondemand":
+                continue
+            started_at = data.get("started_at")
+            if not started_at:
+                continue
+            started = datetime.fromisoformat(started_at)
+            elapsed = datetime.now(timezone.utc) - started
+            max_m = data.get("max_minutes", max_minutes)
+            if elapsed > timedelta(minutes=max_m):
+                timed_out.append(data["role"])
+                f.unlink()
+        except (json.JSONDecodeError, OSError, ValueError):
+            f.unlink()
+    return timed_out
+
+
 def cleanup_stale_sentinels() -> list[str]:
-    """清理孤儿哨兵文件（进程已退出的遗留标记）。返回清理数量。"""
+    """清理孤儿哨兵文件（进程已退出或 ondemand 超时的遗留标记）。返回清理角色名列表。"""
     sentinel_dir = Path("/tmp/session-launcher")
     if not sentinel_dir.exists():
         return []
@@ -167,10 +207,24 @@ def cleanup_stale_sentinels() -> list[str]:
         try:
             data = json.loads(f.read_text())
             pid = data.get("pid")
+            # 进程已退出 → 孤儿
             if pid and not Path(f"/proc/{pid}").exists():
                 f.unlink()
                 cleaned.append(data["role"])
-        except (json.JSONDecodeError, OSError):
+                continue
+            # ondemand 超时 → 强制清理
+            lifecycle = data.get("lifecycle")
+            if lifecycle == "ondemand":
+                from datetime import datetime, timezone, timedelta
+                started_at = data.get("started_at")
+                if started_at:
+                    started = datetime.fromisoformat(started_at)
+                    elapsed = datetime.now(timezone.utc) - started
+                    max_m = data.get("max_minutes", 30)
+                    if elapsed > timedelta(minutes=max_m):
+                        f.unlink()
+                        cleaned.append(f"{data['role']}(timeout)")
+        except (json.JSONDecodeError, OSError, ValueError):
             f.unlink()
     return cleaned
 
@@ -222,6 +276,15 @@ def main():
         print(f"export SESSION_STARTUP='{startup_cmd}'")
         print(f"export SESSION_LIFECYCLE={lifecycle}")
         print(f"export SESSION_DRIVE={drive}")
+
+        # 写入 /tmp/session_role_env.sh
+        env_file = Path("/tmp/session_role_env.sh")
+        env_file.write_text(
+            f"export SESSION_ROLE={active_role['name']}\n"
+            f"export SESSION_STARTUP='{startup_cmd}'\n"
+            f"export SESSION_LIFECYCLE={lifecycle}\n"
+            f"export SESSION_DRIVE={drive}\n"
+        )
     else:
         # 无工作 → 清除旧注入，避免 stale prompt
         clear_injected_prompt()
