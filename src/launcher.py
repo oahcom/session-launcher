@@ -31,76 +31,33 @@ def load_roles() -> list[dict]:
     return roles
 
 
-def _safe_run(cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
-    """安全执行外部命令，统一超时/异常处理。"""
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        # ponytail: 暂返回空结果，后续可加重试逻辑
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=str(e))
-
-
 def check_signal(signal: dict) -> bool:
     """执行 input_signals 判断是否有任务。
 
-    shlex.split 替代脆弱的 str.split()，避免命令参数带空格时出错。
+    统一使用 signals.check_signal_by_name，避免重复逻辑。
     """
+    from signals import check_signal_by_name
+
     source = signal.get("source", "")
     filter_str = signal.get("filter", "")
 
-    try:
-        if "bus_client.py" in source:
-            parts = shlex.split(source)
-            result = _safe_run(["python3", str(BUS_CLIENT)] + parts, timeout=10)
-            output = result.stdout
-            if filter_str and filter_str not in output:
-                return False
-            return "unread" not in output.lower() or "0 unread" not in output.lower()
+    # Map source to signals.py checker name
+    if "bus_client.py" in source:
+        return check_signal_by_name("bus_unread", filter_str)
+    elif "systemctl" in source and "is-active" in source:
+        return check_signal_by_name("systemctl_active", filter_str)
+    elif "curl" in source:
+        return check_signal_by_name("http_health", filter_str)
+    elif "journalctl" in source:
+        return check_signal_by_name("journalctl_errors", filter_str)
+    elif "git diff" in source:
+        return check_signal_by_name("git_staged", filter_str)
+    elif "ls -lt" in source:
+        return check_signal_by_name("session_size", filter_str)
+    elif "ps aux" in source:
+        return check_signal_by_name("running_sessions", filter_str)
 
-        elif "systemctl" in source:
-            result = _safe_run(shlex.split(source), timeout=5)
-            if filter_str:
-                for f in filter_str.split("|"):
-                    if f in result.stdout:
-                        return True
-                return False
-            # returncode=0 表示 active（正常），非 0 才是有异常/有工作
-            return result.returncode != 0
-
-        elif "curl" in source:
-            for url in shlex.split(source):
-                if "http" in url:
-                    result = _safe_run(
-                        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                         "--connect-timeout", "3", url],
-                        timeout=3
-                    )
-                    if result.stdout != "200":
-                        return True
-            return False
-
-        elif "journalctl" in source:
-            result = _safe_run(shlex.split(source), timeout=10)
-            if filter_str:
-                for f in filter_str.split("|"):
-                    if f.lower() in result.stdout.lower():
-                        return True
-                return False
-            return result.returncode == 0
-
-        elif "git diff" in source:
-            result = _safe_run(shlex.split(source), timeout=5)
-            return bool(result.stdout.strip())
-
-        elif "ls -lt" in source or "ps aux" in source:
-            result = _safe_run(source.split() if "|" not in source else source,
-                               timeout=5)
-            return len(result.stdout.strip().split("\n")) > 2
-
-    except Exception:
-        return False
-
-    return True
+    return False
 
 
 def has_work(roles: list[dict]) -> Optional[dict]:
