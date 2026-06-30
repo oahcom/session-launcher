@@ -14,10 +14,10 @@ Session Launcher — 真正的 CCS 启动器、消息收发器、生命周期管
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -34,12 +34,8 @@ SESSION_MARKER_START = "<!-- SESSION_ROLE:START -->"
 SESSION_MARKER_END = "<!-- SESSION_ROLE:END -->"
 
 # ── CCS 管理常量 ──
-CCS_FIFO_DIR = Path("/tmp/ccs-fifos")          # 每个 CCS 一个 FIFO
 CCS_TMUX_PREFIX = "ccs-"                        # tmux session 名前缀
 CCS_SENTINEL_DIR = Path("/tmp/ccs-sentinels")    # 哨兵文件目录
-
-# ── 模块级缓存：已启动的 CCS 的 FIFO 文件句柄 ──
-_ccs_fifo_handles: dict[str, int] = {}
 
 
 def load_roles() -> list[dict]:
@@ -51,12 +47,32 @@ def load_roles() -> list[dict]:
     return roles
 
 
+_ROLE_CACHE: dict[str, Optional[dict]] = {}
+
+def load_roles() -> list[dict]:
+    """读取项目 A 的角色 JSON 文件。"""
+    roles = []
+    for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
+        with open(f) as fp:
+            roles.append(json.load(fp))
+    return roles
+
+
 def get_role(role_name: str) -> Optional[dict]:
-    """按名称获取角色定义。"""
+    """按名称获取角色定义（带缓存，避免重复 I/O）。"""
+    if role_name in _ROLE_CACHE:
+        return _ROLE_CACHE[role_name]
     for r in load_roles():
         if r.get("name") == role_name:
+            _ROLE_CACHE[role_name] = r
             return r
+    _ROLE_CACHE[role_name] = None
     return None
+
+
+def _invalidate_role_cache() -> None:
+    """清空角色缓存（用于角色文件修改后）。"""
+    _ROLE_CACHE.clear()
 
 
 def check_signal(signal: dict) -> bool:
@@ -154,11 +170,12 @@ def inject_prompt_into_claudemd(role: dict) -> str:
         return "created"
     content = CLAUDE_MD.read_text(encoding="utf-8")
     if SESSION_MARKER_START in content and SESSION_MARKER_END in content:
-        start = content.index(SESSION_MARKER_START)
-        end = content.index(SESSION_MARKER_END) + len(SESSION_MARKER_END)
+        # 用 rindex 定位最后一组标记对（避免手动添加多个 START 导致错误替换）
+        start = content.rindex(SESSION_MARKER_START)
+        end = content.rindex(SESSION_MARKER_END) + len(SESSION_MARKER_END)
         new_content = content[:start] + inject_block + content[end:]
     elif SESSION_MARKER_START in content:
-        start = content.index(SESSION_MARKER_START)
+        start = content.rindex(SESSION_MARKER_START)
         new_content = content[:start] + inject_block
     else:
         new_content = content.rstrip() + "\n\n" + inject_block
@@ -409,9 +426,8 @@ def send_to_ccs(role_name: str, message: str) -> dict:
 
 
 def stop_ccs(role_name: str) -> dict:
-    """终止 CCS：kill tmux session + 清理 FIFO + 哨兵。"""
+    """终止 CCS：kill tmux session + 清理哨兵。"""
     tmux_name = f"{CCS_TMUX_PREFIX}{role_name}"
-    fifo_path = CCS_FIFO_DIR / f"{role_name}.fifo"
     sentinel = CCS_SENTINEL_DIR / f"{role_name}.json"
 
     # 1. kill tmux session
@@ -423,14 +439,8 @@ def stop_ccs(role_name: str) -> dict:
     except Exception:
         pass
 
-    # 2. 清理 FIFO
-    fifo_path.unlink(missing_ok=True)
-
-    # 3. 清理哨兵
+    # 2. 清理哨兵
     sentinel.unlink(missing_ok=True)
-
-    # 4. 清理缓存句柄
-    _ccs_fifo_handles.pop(role_name, None)
 
     return {"success": True, "role": role_name}
 
@@ -475,7 +485,17 @@ def ccs_status() -> list[dict]:
         role = data.get("role", "?")
         alive = is_ccs_running(role)
         pid = data.get("pid")
-        started = data.get("started_at", 0)
+        started_at = data.get("started_at", 0)
+        # 兼容两种格式：Unix float 或 ISO-8601 string
+        if isinstance(started_at, (int, float)):
+            started = started_at
+        elif isinstance(started_at, str):
+            try:
+                started = datetime.fromisoformat(started_at).timestamp()
+            except (ValueError, TypeError):
+                started = time.time()
+        else:
+            started = time.time()
         uptime = int(time.time() - started) if started else 0
 
         # 如果 tmux 挂了但哨兵还在 → 孤儿清理
@@ -490,7 +510,6 @@ def ccs_status() -> list[dict]:
             "pid": pid,
             "uptime_sec": uptime,
             "lifecycle": data.get("lifecycle", "infinite"),
-            "fifo": data.get("fifo", ""),
         })
     return statuses
 
@@ -600,10 +619,9 @@ def main():
             cron_schedule = active_role.get("cron_schedule", "")
             inject_prompt_into_claudemd(active_role)
             print(f"# Active role: {active_role['name']}")
-            prompt = active_role.get("system_prompt", "").format(
-                persona_name=active_role["name"],
-                persona_title=active_role["title"]
-            )
+            prompt = (active_role.get("system_prompt", "")
+                  .replace("{persona_name}", active_role["name"])
+                  .replace("{persona_title}", active_role["title"]))
             if drive == "cron" and cron_schedule:
                 # prompt 可能含 """，用 repr 方式避免三引号打断语法
                 prompt_safe = prompt.replace('"', '\\"')
@@ -613,10 +631,10 @@ def main():
             else:
                 startup_cmd = f"# {prompt[:200]}..."
             print(f"# Startup command: {startup_cmd}")
-            print(f"export SESSION_ROLE={active_role['name']}")
-            print(f"export SESSION_STARTUP='{startup_cmd}'")
-            print(f"export SESSION_LIFECYCLE={lifecycle}")
-            print(f"export SESSION_DRIVE={drive}")
+            print(f"export SESSION_ROLE={shlex.quote(active_role['name'])}")
+            print(f"export SESSION_STARTUP={shlex.quote(startup_cmd)}")
+            print(f"export SESSION_LIFECYCLE={shlex.quote(lifecycle)}")
+            print(f"export SESSION_DRIVE={shlex.quote(drive)}")
             # shell 转义：用 shlex.quote 防止单引号/空格/特殊字符断裂
             env_file = Path("/tmp/session_role_env.sh")
             env_file.write_text(
