@@ -261,11 +261,14 @@ def cleanup_stale_sentinels() -> list[str]:
 # ═══════════════════════════════════════════════════════════
 
 def _build_role_prompt(role: dict) -> str:
-    """构建角色 system_prompt，追加 Bus 轮询循环指令。"""
-    base = role.get("system_prompt", "").format(
-        persona_name=role["name"],
-        persona_title=role["title"]
-    )
+    """构建角色 system_prompt，追加 Bus 轮询循环指令。
+
+    不用 str.format()，因为 prompt 里含 bash 代码（{0}, $5 等），
+    用简单替换避免花括号冲突。
+    """
+    base = (role.get("system_prompt", "")
+            .replace("{persona_name}", role["name"])
+            .replace("{persona_title}", role["title"]))
     # 追加 Bus 轮询循环（让 CCS 不退出，持续读 bus 消息）
     BUS_LOOP_SUFFIX = """
 ## 工作循环（自动执行，不要退出）
