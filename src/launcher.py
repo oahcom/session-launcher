@@ -60,25 +60,30 @@ def get_role(role_name: str) -> Optional[dict]:
 
 
 def check_signal(signal: dict) -> bool:
-    """执行 input_signals 判断是否有任务。"""
+    """执行 input_signals 判断是否有任务。
+
+    用后缀匹配替代子串 in 匹配，避免误匹配（如 curl 误匹配 _curl_health.py）。
+    """
     from signals import check_signal_by_name
     source = signal.get("source", "")
     filter_str = signal.get("filter", "")
+
+    # 按 source 开头的关键词匹配（避免子串误触发）
     if "bus_client.py" in source:
         return check_signal_by_name("bus_unread", filter_str)
-    elif "systemctl" in source and "is-active" in source:
+    if source.startswith("systemctl") and "is-active" in source:
         return check_signal_by_name("systemctl_active", filter_str)
-    elif "curl" in source:
+    if source.startswith("curl "):
         return check_signal_by_name("http_health", filter_str)
-    elif "journalctl" in source:
+    if source.startswith("journalctl"):
         return check_signal_by_name("journalctl_errors", filter_str)
-    elif "git diff" in source:
+    if source.startswith("git diff"):
         return check_signal_by_name("git_staged", filter_str)
-    elif "meminfo" in source or "df /" in source:
+    if "meminfo" in source or source.startswith("df "):
         return check_signal_by_name("mem_disk", filter_str)
-    elif "ls -lt" in source:
+    if source.startswith("ls"):
         return check_signal_by_name("session_size", filter_str)
-    elif "ps aux" in source:
+    if source.startswith("ps aux"):
         return check_signal_by_name("running_sessions", filter_str)
     return False
 
@@ -112,10 +117,10 @@ def has_work(roles: list[dict]) -> Optional[dict]:
                         p = priority(cat)
                         urgency[name] = urgency.get(name, 0) + (10 - min(p, 9))
             roles.sort(key=lambda r: -urgency.get(r.get("name", ""), 0))
-    except ImportError:
+    except (ImportError, Exception):
+        # pipeline 不可用或 bus 连接失败 → fall through 到基本信号检查
         pass
-    except Exception:
-        pass
+    # ── 基本信号检查（无论 pipeline 是否可用都执行）──
     for role in roles:
         signals = role.get("input_signals", [])
         if not signals:
@@ -188,15 +193,14 @@ def write_lifecycle_sentinel(role: dict) -> None:
     sentinel_dir = Path("/tmp/session-launcher")
     sentinel_dir.mkdir(parents=True, exist_ok=True)
     sentinel = sentinel_dir / f"{role['name']}.active"
+    # 统一用 time.time()（Unix float），与 start_ccs 哨兵格式一致
     sentinel.write_text(json.dumps({
         "role": role["name"],
         "title": role["title"],
         "lifecycle": lifecycle,
         "pid": os.getpid(),
         "max_minutes": max_minutes if lifecycle == "ondemand" else None,
-        "started_at": subprocess.run(
-            ["date", "-Iseconds"], capture_output=True, text=True
-        ).stdout.strip(),
+        "started_at": time.time(),
     }))
 
 
@@ -215,7 +219,11 @@ def check_ondemand_timeout(max_minutes: int = 30) -> list[str]:
             started_at = data.get("started_at")
             if not started_at:
                 continue
-            started = datetime.fromisoformat(started_at)
+            # 兼容两种格式：ISO-8601 string 或 Unix float
+            if isinstance(started_at, (int, float)):
+                started = datetime.fromtimestamp(started_at, tz=timezone.utc)
+            else:
+                started = datetime.fromisoformat(started_at)
             elapsed = datetime.now(timezone.utc) - started
             max_m = data.get("max_minutes", max_minutes)
             if elapsed > timedelta(minutes=max_m):
@@ -231,6 +239,7 @@ def cleanup_stale_sentinels() -> list[str]:
     sentinel_dir = Path("/tmp/session-launcher")
     if not sentinel_dir.exists():
         return []
+    from datetime import datetime, timezone, timedelta
     cleaned = []
     for f in sentinel_dir.glob("*.active"):
         try:
@@ -242,10 +251,12 @@ def cleanup_stale_sentinels() -> list[str]:
                 continue
             lifecycle = data.get("lifecycle")
             if lifecycle == "ondemand":
-                from datetime import datetime, timezone, timedelta
                 started_at = data.get("started_at")
                 if started_at:
-                    started = datetime.fromisoformat(started_at)
+                    if isinstance(started_at, (int, float)):
+                        started = datetime.fromtimestamp(started_at, tz=timezone.utc)
+                    else:
+                        started = datetime.fromisoformat(started_at)
                     elapsed = datetime.now(timezone.utc) - started
                     max_m = data.get("max_minutes", 30)
                     if elapsed > timedelta(minutes=max_m):
@@ -329,11 +340,14 @@ def start_ccs(role_name: str) -> dict:
     if result.returncode != 0:
         return {"success": False, "error": f"tmux 启动失败: {result.stderr.strip()}"}
 
-    # 4. 等 claude 初始化完成
-    time.sleep(6)
+    # 4. 轮询等待 claude 就绪（最长 10 秒，有交互输出则提前返回）
+    for _ in range(10):
+        time.sleep(1)
+        output = ccs_capture_output(role_name, tail=3)
+        if "❯" in output or "bypass" in output or "max" in output:
+            break
 
-    # 5. 注入初始 prompt（分两批：先发提示再发进入）
-    # claude 在交互模式中，第一次需要看到输入
+    # 5. 注入初始 prompt
     send_to_ccs(role_name, prompt)
 
     # 6. 写哨兵（记录 pid）
@@ -370,13 +384,11 @@ def _find_claude_pid(tmux_name: str) -> Optional[int]:
     return None
 
 
-def send_to_ccs(role_name: str, message: str, new_session: bool = False) -> dict:
+def send_to_ccs(role_name: str, message: str) -> dict:
     """向 CCS 发送消息（通过 tmux send-keys）。
 
     claude 在交互模式下不接受管道 stdin 连续写入（读到 EOF 就退出），
     因此使用 tmux send-keys 模拟键盘输入，claude 会一直保持在交互模式。
-
-    new_session 参数保留向后兼容，但实际不再使用。
     """
     tmux_name = f"{CCS_TMUX_PREFIX}{role_name}"
     try:
@@ -388,9 +400,8 @@ def send_to_ccs(role_name: str, message: str, new_session: bool = False) -> dict
         if result.returncode != 0:
             return {"success": False, "error": f"CCS {role_name} tmux session 不存在"}
 
-        # 用 send-keys 键入消息 + Enter
-        # claude 在交互模式下收到 Enter 后开始处理输入
-        send_cmd = ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", message, "Enter"]
+        # 用 -l (literal) 确保消息原样输入，不被 tmux 解释为保留键名（Enter/Space/C-c）
+        send_cmd = ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", message]
         subprocess.run(send_cmd, capture_output=True, timeout=5)
         return {"success": True, "sent_chars": len(message)}
     except Exception as e:
@@ -594,7 +605,9 @@ def main():
                 persona_title=active_role["title"]
             )
             if drive == "cron" and cron_schedule:
-                startup_cmd = f"CronCreate(cron=\"{cron_schedule}\", prompt=\"\"\"{prompt}\"\"\", recurring=true)"
+                # prompt 可能含 """，用 repr 方式避免三引号打断语法
+                prompt_safe = prompt.replace('"', '\\"')
+                startup_cmd = f"CronCreate(cron=\"{cron_schedule}\", prompt=\"{prompt_safe[:500]}\", recurring=true)"
             elif drive == "loop":
                 startup_cmd = f"/loop \"{prompt[:200]}...\""
             else:
@@ -604,12 +617,13 @@ def main():
             print(f"export SESSION_STARTUP='{startup_cmd}'")
             print(f"export SESSION_LIFECYCLE={lifecycle}")
             print(f"export SESSION_DRIVE={drive}")
+            # shell 转义：用 shlex.quote 防止单引号/空格/特殊字符断裂
             env_file = Path("/tmp/session_role_env.sh")
             env_file.write_text(
-                f"export SESSION_ROLE={active_role['name']}\n"
-                f"export SESSION_STARTUP='{startup_cmd}'\n"
-                f"export SESSION_LIFECYCLE={lifecycle}\n"
-                f"export SESSION_DRIVE={drive}\n"
+                f"export SESSION_ROLE={shlex.quote(active_role['name'])}\n"
+                f"export SESSION_STARTUP={shlex.quote(startup_cmd)}\n"
+                f"export SESSION_LIFECYCLE={shlex.quote(lifecycle)}\n"
+                f"export SESSION_DRIVE={shlex.quote(drive)}\n"
             )
         else:
             clear_injected_prompt()
