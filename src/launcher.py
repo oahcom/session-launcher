@@ -68,7 +68,49 @@ def check_signal(signal: dict) -> bool:
 
 
 def has_work(roles: list[dict]) -> Optional[dict]:
-    """检查是否有角色有工作。返回第一个有工作的角色。"""
+    """检查是否有角色有工作。返回有工作且优先级最高的角色。
+
+    增强版（集成 session-pipeline）：
+    当 bus 有积压时，按消息优先级排序角色（security > code_fix > architecture），
+    让消费者角色优先匹配，不再简单取第一个。
+    """
+    # ── 集成 pipeline 优先级路由 ──
+    try:
+        _PIPELINE_SRC = Path("/home/administrator/session-pipeline/src")
+        if str(_PIPELINE_SRC) not in sys.path:
+            sys.path.insert(0, str(_PIPELINE_SRC))
+
+        from router import get_router, priority
+        from bus_protocol import Blackboard
+
+        router = get_router()
+        bb = Blackboard()
+        facts = bb.unconsumed()
+
+        if facts:
+            # bus 有积压 → 按消息优先级计算每个角色的紧急度
+            urgency: dict[str, float] = {}
+            for r in roles:
+                name = r.get("name", "")
+                try:
+                    consume_cats = router.role_consume_categories(name)
+                except Exception:
+                    continue
+                if "*" in consume_cats:
+                    urgency[name] = urgency.get(name, 0) + 100
+                else:
+                    for cat in consume_cats:
+                        p = priority(cat)
+                        urgency[name] = urgency.get(name, 0) + (10 - min(p, 9))
+
+            # 按紧急度降序排列
+            roles.sort(key=lambda r: -urgency.get(r.get("name", ""), 0))
+    except ImportError:
+        pass  # pipeline 不可用，降级
+    except Exception:
+        pass  # 异常降级
+
+    # 标准检查流程
     for role in roles:
         signals = role.get("input_signals", [])
         if not signals:
