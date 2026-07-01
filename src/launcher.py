@@ -151,10 +151,9 @@ def has_work(roles: list[dict]) -> Optional[dict]:
 
 def inject_prompt_into_claudemd(role: dict) -> str:
     """将角色的 system_prompt 通过 marker 注入到 CLAUDE.md。"""
-    prompt = role.get("system_prompt", "").format(
-        persona_name=role["name"],
-        persona_title=role["title"]
-    )
+    prompt = (role.get("system_prompt", "")
+              .replace("{persona_name}", role["name"])
+              .replace("{persona_title}", role["title"]))
     lifecycle = role.get("lifecycle", "infinite")
     drive = role.get("drive", "cron")
     inject_block = (
@@ -351,18 +350,22 @@ def start_ccs(role_name: str) -> dict:
     )
     tmux_cmd = [
         "tmux", "new-session", "-d", "-s", tmux_name,
-        "bash", "-c", cmd
+        "-e", "FORCE_PERSONA=0",
+        "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
     ]
     result = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
         return {"success": False, "error": f"tmux 启动失败: {result.stderr.strip()}"}
 
-    # 4. 轮询等待 claude 就绪（最长 10 秒，有交互输出则提前返回）
+    # 4. 轮询等待 claude 就绪（最长 10 秒，看到 ❯ 提示符即可）
     for _ in range(10):
         time.sleep(1)
         output = ccs_capture_output(role_name, tail=3)
-        if "❯" in output or "bypass" in output or "max" in output:
+        if "❯" in output:
             break
+
+    # 多等 1 秒确保完全稳定
+    time.sleep(1)
 
     # 5. 注入初始 prompt
     send_to_ccs(role_name, prompt)
@@ -406,6 +409,8 @@ def send_to_ccs(role_name: str, message: str) -> dict:
 
     claude 在交互模式下不接受管道 stdin 连续写入（读到 EOF 就退出），
     因此使用 tmux send-keys 模拟键盘输入，claude 会一直保持在交互模式。
+
+    长消息（>500字符）：分批发送，每批 500 字符 + 短暂停顿，避免缓冲区溢出。
     """
     tmux_name = f"{CCS_TMUX_PREFIX}{role_name}"
     try:
@@ -417,14 +422,21 @@ def send_to_ccs(role_name: str, message: str) -> dict:
         if result.returncode != 0:
             return {"success": False, "error": f"CCS {role_name} tmux session 不存在"}
 
-        # 先发消息（-l literal 避免解释保留键名），再单独发 Enter（不带 -l）
-        subprocess.run(
-            ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", message],
-            capture_output=True, timeout=5
-        )
+        # 分批发送，每批 500 字符
+        chunk_size = 500
+        for i in range(0, len(message), chunk_size):
+            chunk = message[i:i+chunk_size]
+            # 发送 chunk（不加 Enter，让它累积）
+            subprocess.run(
+                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", chunk],
+                capture_output=True, timeout=3
+            )
+            time.sleep(0.1)  # 给 claude 处理时间
+
+        # 最后按一次 Enter 提交整个消息
         subprocess.run(
             ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
-            capture_output=True, timeout=5
+            capture_output=True, timeout=3
         )
         return {"success": True, "sent_chars": len(message)}
     except Exception as e:
