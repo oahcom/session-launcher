@@ -7,3 +7,5 @@ __pycache__/
 *.swo
 *~
 .idea/
+src/pool_cli.py
+src/worker_pool.py
