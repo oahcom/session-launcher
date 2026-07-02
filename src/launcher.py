@@ -51,14 +51,6 @@ def load_roles() -> list[dict]:
 
 _ROLE_CACHE: dict[str, Optional[dict]] = {}
 
-def load_roles() -> list[dict]:
-    """读取项目 A 的角色 JSON 文件。"""
-    roles = []
-    for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
-        with open(f) as fp:
-            roles.append(json.load(fp))
-    return roles
-
 
 def get_role(role_name: str) -> Optional[dict]:
     """按名称获取角色定义（带缓存，避免重复 I/O）。"""
@@ -431,23 +423,32 @@ def start_codex_session(role_name: str) -> dict:
     prompt = _build_role_prompt(role)
     prompt_safe = prompt.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
 
-    # Loop runner script: run codex exec, then sleep, repeat
+    # Determine run mode
     drive = role.get("drive", "loop")
-    idle_action = role.get("idle_action", "sleep 60s then /loop")
+    idle_action = role.get("idle_action", "/loop")
     loop_delay = 60  # default 60s between loops
-    if "sleep" in idle_action:
-        import re
-        m = re.search(r"sleep\s+(\d+)", idle_action)
-        if m:
-            loop_delay = int(m.group(1))
 
-    runner_script = (
-        "while true; do\n"
-        f'  codex exec --dangerously-bypass-approvals-and-sandbox -m 9router_hermes "{prompt_safe[:2000]}"\n'
-        f"  echo \"[codex-dev] round done, sleeping {loop_delay}s...\"\n"
-        f"  sleep {loop_delay}\n"
-        "done"
-    )
+    if drive == "goal":
+        # GOAL mode: start interactive codex, let model create_goal + /goal
+        runner_script = (
+            "codex --model 9router_hermes"
+            " --dangerously-skip-permissions"
+        )
+    else:
+        # LOOP mode: while-true codex exec loop (old behavior)
+        if "sleep" in idle_action:
+            import re
+            m = re.search(r"sleep\s+(\d+)", idle_action)
+            if m:
+                loop_delay = int(m.group(1))
+
+        runner_script = (
+            "while true; do\n"
+            f'  codex exec --dangerously-skip-permissions -m 9router_hermes "{prompt_safe[:2000]}"\n'
+            f"  echo \"[codex-dev] round done, sleeping {loop_delay}s...\"\n"
+            f"  sleep {loop_delay}\n"
+            "done"
+        )
 
     tmux_cmd = [
         "tmux", "new-session", "-d", "-s", tmux_name,
@@ -675,7 +676,7 @@ def exec_codex(role_name: str, message: str, timeout: int = 300) -> dict:
     try:
         result = subprocess.run(
             ["codex", "exec",
-             "--dangerously-bypass-approvals-and-sandbox",
+             "--dangerously-skip-permissions",
              "-m", "9router_hermes",
              prompt],
             capture_output=True, text=True, timeout=timeout
