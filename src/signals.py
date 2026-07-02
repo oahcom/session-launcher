@@ -25,7 +25,7 @@ def check_bus_unread(_filter: str = "") -> bool:
         if _filter and _filter.lower() not in output.lower():
             return False
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -71,7 +71,7 @@ def check_systemctl_active(_filter: str = "") -> bool:
                 return True
 
         return False
-    except:
+    except Exception:
         return False
 
 
@@ -86,7 +86,7 @@ def check_http_health(_filter: str = "") -> bool:
             )
             if result.stdout.strip() != "200":
                 return True
-        except:
+        except Exception:
             return True
     return False
 
@@ -103,7 +103,7 @@ def check_journalctl_errors(_filter: str = "") -> bool:
             if f.lower() in result.stdout.lower():
                 return True
         return False
-    except:
+    except Exception:
         return False
 
 
@@ -122,7 +122,7 @@ def check_git_staged(_filter: str = "") -> bool:
             )
             if result.stdout.strip():
                 return True
-        except:
+        except Exception:
             pass
     return False
 
@@ -136,7 +136,7 @@ def check_session_size(_filter: str = "") -> bool:
             if f.is_file() and f.stat().st_size > max_bytes:
                 return True
         return False
-    except:
+    except Exception:
         return False
 
 
@@ -149,7 +149,7 @@ def check_running_sessions(_filter: str = "") -> bool:
         )
         claude_sessions = [l for l in result.stdout.split("\n") if "claude" in l.lower()]
         return len(claude_sessions) > 0
-    except:
+    except Exception:
         return False
 
 
@@ -172,7 +172,7 @@ def check_mem_disk(_filter: str = "") -> bool:
                     if mem_available_mb < 500:
                         return True
                 break
-    except:
+    except Exception:
         pass
 
     # 检查磁盘使用率
@@ -191,7 +191,7 @@ def check_mem_disk(_filter: str = "") -> bool:
                 usage = int(usage_str)
                 if usage > 90:
                     return True
-    except:
+    except Exception:
         pass
 
     return False

@@ -35,7 +35,9 @@ SESSION_MARKER_END = "<!-- SESSION_ROLE:END -->"
 
 # ── CCS 管理常量 ──
 CCS_TMUX_PREFIX = "ccs-"                        # tmux session 名前缀
-CCS_SENTINEL_DIR = Path("/tmp/ccs-sentinels")    # 哨兵文件目录
+CODEX_TMUX_PREFIX = "cdx-"                       # Codex tmux session prefix
+CODEX_SENTINEL_DIR = Path("/tmp/cdx-sentinels")  # Codex sentinel dir
+CCS_SENTINEL_DIR = Path("/tmp/ccs-sentinels")    # CCS sentinel dir
 
 
 def load_roles() -> list[dict]:
@@ -389,6 +391,102 @@ def start_ccs(role_name: str) -> dict:
     }
 
 
+
+def _inject_prompt_to_tmux(tmux_name: str, prompt: str) -> None:
+    """向 tmux pane 粘贴 prompt 文本。"""
+    try:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(prompt)
+            f.flush()
+            tmp_path = f.name
+        subprocess.run(["tmux", "load-buffer", tmp_path], timeout=5)
+        subprocess.run(["tmux", "paste-buffer", "-t", tmux_name], timeout=5)
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+
+def start_codex_session(role_name: str) -> dict:
+    """启动一个持久 Codex session (exec mode)。
+
+    用 codex exec 在 tmux 中运行一个循环：执行任务 -> 等待 -> 再执行。
+    适合 loop/cron 驱动的角色，代替 interactive claude。
+    """
+    role = get_role(role_name)
+    if not role:
+        return {"success": False, "error": f"角色 {role_name} 不存在"}
+
+    tmux_name = f"{CODEX_TMUX_PREFIX}{role_name}"
+    CODEX_SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check if already running
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", tmux_name],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return {"success": False, "error": f"Codex session {role_name} 已在运行"}
+
+    # Build prompt
+    prompt = _build_role_prompt(role)
+    prompt_safe = prompt.replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+
+    # Loop runner script: run codex exec, then sleep, repeat
+    drive = role.get("drive", "loop")
+    idle_action = role.get("idle_action", "sleep 60s then /loop")
+    loop_delay = 60  # default 60s between loops
+    if "sleep" in idle_action:
+        import re
+        m = re.search(r"sleep\s+(\d+)", idle_action)
+        if m:
+            loop_delay = int(m.group(1))
+
+    runner_script = (
+        "while true; do\n"
+        f'  codex exec --dangerously-bypass-approvals-and-sandbox -m 9router_hermes "{prompt_safe[:2000]}"\n'
+        f"  echo \"[codex-dev] round done, sleeping {loop_delay}s...\"\n"
+        f"  sleep {loop_delay}\n"
+        "done"
+    )
+
+    tmux_cmd = [
+        "tmux", "new-session", "-d", "-s", tmux_name,
+        "-e", "FORCE_PERSONA=0",
+        "bash", "-c", runner_script
+    ]
+    result = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        return {"success": False, "error": f"tmux 启动失败: {result.stderr.strip()}"}
+
+    # Wait for process to stabilize before reading pid
+    time.sleep(3)
+
+    # Write sentinel
+    sentinel = CODEX_SENTINEL_DIR / f"{role_name}.json"
+    pid = _find_codex_pid(tmux_name)
+    sentinel.write_text(json.dumps({
+        "role": role_name,
+        "title": role.get("title", ""),
+        "tmux_session": tmux_name,
+        "pid": pid,
+        "started_at": time.time(),
+        "lifecycle": role.get("lifecycle", "infinite"),
+        "engine": "codex",
+    }))
+
+    return {
+        "success": True,
+        "role": role_name,
+        "tmux_session": tmux_name,
+        "pid": pid,
+        "engine": "codex",
+    }
+
+def _find_codex_pid(tmux_name: str) -> Optional[int]:
+    """Codex pid finder - same as claude."""
+    return _find_claude_pid(tmux_name)
+
+
 def _find_claude_pid(tmux_name: str) -> Optional[int]:
     """从 tmux pane 中找到 claude 进程 PID。"""
     try:
@@ -532,6 +630,18 @@ def ccs_status() -> list[dict]:
     return statuses
 
 
+
+def ccs_capture_output_raw(tmux_name: str, tail: int = 10) -> str:
+    """从 tmux pane 捕获原始输出（tmux_name 直接用 tmux session 名）。"""
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", tmux_name, "-p", f"-S-{tail}"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout
+    except Exception:
+        return ""
+
 def ccs_capture_output(role_name: str, tail: int = 10) -> str:
     """截取 CCS tmux pane 的当前输出。"""
     tmux_name = f"{CCS_TMUX_PREFIX}{role_name}"
@@ -550,6 +660,92 @@ def ccs_capture_output(role_name: str, tail: int = 10) -> str:
 #  CLI 入口
 # ═══════════════════════════════════════════════════════════
 
+
+def exec_codex(role_name: str, message: str, timeout: int = 300) -> dict:
+    """在运行中的 Codex session 上执行一次性任务。
+
+    用 codex exec 非交互模式运行，等待结果。
+    """
+    role = get_role(role_name)
+    title = role.get("title", role_name) if role else role_name
+
+    # Build the task prompt
+    prompt = f"[session-launcher] {title}({role_name}) 任务: {message}"
+
+    try:
+        result = subprocess.run(
+            ["codex", "exec",
+             "--dangerously-bypass-approvals-and-sandbox",
+             "-m", "9router_hermes",
+             prompt],
+            capture_output=True, text=True, timeout=timeout
+        )
+        return {
+            "success": result.returncode == 0,
+            "role": role_name,
+            "output": result.stdout[-2000:] if result.stdout else "",
+            "error": result.stderr[:500] if result.stderr else "",
+            "exit_code": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "role": role_name,
+            "error": f"执行超时 ({timeout}s)",
+            "exit_code": -1,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "role": role_name,
+            "error": str(e),
+            "exit_code": -1,
+        }
+
+
+def cdx_status() -> list[dict]:
+    """列出所有运行中的 Codex sessions (from tmux + sentinel)."""
+    stats = []
+    if not CODEX_SENTINEL_DIR.exists():
+        return stats
+
+    for sentinel_file in sorted(CODEX_SENTINEL_DIR.glob("*.json")):
+        try:
+            data = json.loads(sentinel_file.read_text())
+            role_name = data.get("role", "")
+            tmux_name = f"{CODEX_TMUX_PREFIX}{role_name}"
+
+            # Check if alive
+            result = subprocess.run(
+                ["tmux", "has-session", "-t", tmux_name],
+                capture_output=True, text=True
+            )
+            alive = result.returncode == 0
+
+            pid = _find_codex_pid(tmux_name) if alive else None
+            started_at = data.get("started_at", 0)
+            uptime_sec = time.time() - started_at if started_at > 0 else 0
+
+            # Read last line of output for status
+            last_output = ""
+            if alive:
+                last_output = ccs_capture_output_raw(tmux_name, tail=1).strip()
+
+            stats.append({
+                "role": role_name,
+                "title": data.get("title", ""),
+                "alive": alive,
+                "pid": pid,
+                "uptime_sec": uptime_sec,
+                "lifecycle": data.get("lifecycle", "unknown"),
+                "engine": "codex",
+                "last_output": last_output[-80:] if last_output else "",
+            })
+        except Exception:
+            continue
+
+    return stats
+
 def main():
     """launcher 主入口 — 可按角色启动 CCS 或作为配置生成器。
 
@@ -567,8 +763,10 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # start <role>
-    p_start = sub.add_parser("start", help="启动一个持久 CCS")
+    p_start = sub.add_parser("start", help="启动一个持久 session")
     p_start.add_argument("role", help="角色名（maintainer / scout / consumer ...）")
+    p_start.add_argument("--engine", choices=["claude", "codex"], default="claude",
+                       help="引擎类型: claude (CCS) 或 codex (默认 claude)")
 
     # send <role> <message>
     p_send = sub.add_parser("send", help="向 CCS 发送消息")
@@ -587,18 +785,29 @@ def main():
     p_out.add_argument("role", help="角色名")
     p_out.add_argument("--tail", type=int, default=10)
 
+    # codex-exec <role> <message> — 在运行中的 codex 上执行任务
+    p_cdx = sub.add_parser("exec-codex", help="在运行中的 Codex session 上执行任务")
+    p_cdx.add_argument("role", help="角色名")
+    p_cdx.add_argument("message", help="任务描述")
+    p_cdx.add_argument("--timeout", type=int, default=300, help="超时秒数 (默认 300)")
+
+    # codex-status — 查看运行中的 Codex sessions
+    sub.add_parser("cdx-status", help="列出所有运行中的 Codex sessions")
+
     # 旧模式（无参数）
     args = parser.parse_args()
 
     if args.command == "start":
-        result = start_ccs(args.role)
+        if args.engine == "codex":
+            result = start_codex_session(args.role)
+        else:
+            result = start_ccs(args.role)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result.get("success"):
-            # 也注入 CLAUDE.md
             role = get_role(args.role)
             if role:
                 inject_prompt_into_claudemd(role)
-                print(f"✅ Prompt 已注入 CLAUDE.md")
+                print(f"✅ Prompt 已注入 ({args.engine})")
 
     elif args.command == "send":
         result = send_to_ccs(args.role, args.message)
@@ -622,6 +831,22 @@ def main():
 
     elif args.command == "output":
         print(ccs_capture_output(args.role, tail=args.tail))
+
+    elif args.command == "exec-codex":
+        result = exec_codex(args.role, args.message, args.timeout)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "cdx-status":
+        stats = cdx_status()
+        if not stats:
+            print("没有运行中的 Codex sessions")
+        else:
+            print(f"运行中的 Codex sessions: {len(stats)}\n")
+            for s in stats:
+                uptime_m = int(s["uptime_sec"] / 60)
+                print(f"  [{s['role']:12}] {s['title']}  "
+                      f"{'✅' if s['alive'] else '❌'}  "
+                      f"运行 {uptime_m}\u5206  pid={s['pid']}")
 
     else:
         # 无命令 → 旧模式（配置生成，不启动）
