@@ -7,4 +7,5 @@ __pycache__/
 *.swo
 *~
 .idea/
+.claude/
 # src/pool_cli.py 和 src/worker_pool.py 不可忽略 — 它们是正常代码
