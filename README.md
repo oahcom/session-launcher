@@ -249,3 +249,13 @@ session-launcher/
 5. 轮次号是唯一有序标识（防乱序）
 6. CCS 重启后必须重建上下文（哨兵记录 partner/bus_track）
 7. 死锁超时 > 15 分钟 → 写入 bus architecture 升级给人
+
+---
+
+## 架构设计文档
+
+| 文档 | 内容 |
+|------|------|
+| `HERMES_SESSION_ARCHITECTURE.md` | 总体架构设计 V2：三层指令体系 + 双层监控 + 三驱动机制 |
+| `BUS_PUSH_ARCH.md` | Bus Push 实时推送设计 V1 |
+| `CCS_COLLAB_PROTOCOL.md` | CCS 协作协议（死锁预防 + 向后兼容设计） |
