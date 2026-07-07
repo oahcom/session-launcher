@@ -163,6 +163,50 @@ python3 ccs.py output <role> --tail 30
 
 ---
 
+## Bus Push 实时推送
+
+**零轮询、毫秒级延迟**的实时消息推送机制。
+
+### 数据流
+
+```
+bus_client.py write debate "<消息>"
+  └─ bus_protocol.Blackboard.write()
+       ├─ INSERT INTO facts (SQLite)  ← 主路径，持久化
+       └─ _notify_feed()              ← 辅路径，实时推送
+            └─ /tmp/sister_bus_feed.sock
+                 └─ socket_server.py → broadcast
+                      ├── ccs-verifier → 实时收到
+                      ├── ccs-monitor  → 实时收到
+                      └── feed_listener.py → 检测辩论结束
+```
+
+### 依赖服务
+
+| 服务 | 路径 | 职责 |
+|------|------|------|
+| socket_server.py | ~/.hermes/scripts/hermes_core/sister_bus/ | asyncio Unix Socket Server，含 feed agent |
+| bus_protocol.py | ~/.hermes/scripts/bus_protocol.py | Blackboard write() 末尾调用 _notify_feed() |
+| feed_listener.py | session-launcher/feed_listener.py | 实时监听 feed socket，检测关键词 |
+
+### 降级保障
+
+- **feed socket 不可用** → `_notify_feed()` 静默异常，**不丢 SQLite 写入**
+- **监听脚本断线** → 自动重连 + 指数退避
+- **CCS 兜底** → 仍可用 `read --cat debate --watch` 回退到轮询模式
+
+### 用法
+
+```bash
+# 实时监听 bus 新消息
+python3 feed_listener.py
+
+# 监听并检测辩论结束
+python3 feed_listener.py --on-debate-end --notify
+```
+
+---
+
 ## 系统别名（已注册到 ~/.bash_aliases）
 
 ```bash

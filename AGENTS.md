@@ -15,7 +15,7 @@ hermes-session-roles (定义层) → 读取角色 JSON
   - turn_tracker: 轮次追踪 + 死锁检测
   - sentinel: /tmp/ccs-sentinels/ 哨兵
         │
-        ├──→ Sister Bus (SQLite)
+        ├──→ Sister Bus (SQLite) + Feed Push (Unix Socket)
         └──→ session-pipeline (路由层)
 ```
 
@@ -36,6 +36,8 @@ tests/
 CCS_COLLAB_PROTOCOL.md → 协作协议文档（根因分析 + 规范）
 deploy_all.sh          → 全角色一键部署
 ccs_watchdog.sh        → 纯 bash 监控（零 LLM）
+BUS_PUSH_ARCH.md       → Bus Push 架构设计文档
+feed_listener.py       → 实时监听 bus 新消息（零轮询）
 ```
 
 ## Git 工作流
@@ -49,3 +51,4 @@ ccs_watchdog.sh        → 纯 bash 监控（零 LLM）
 2. 创建方必须守护被创建方
 3. 轮次追踪必须内置
 4. 死锁超时 > 15 分钟 → 写入 bus 升级给人
+5. **实时推送必须可用**：bus write() 末尾调用 _notify_feed()，feed socket 不可用时静默降级

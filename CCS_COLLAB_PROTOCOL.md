@@ -193,9 +193,41 @@ cat /tmp/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=j
 
 ---
 
-## 6. 监控告警
+## 6. 实时推送机制
 
-### 6.1 死锁检测 (bash)
+### 6.0 Bus Push 架构
+
+零轮询、毫秒级延迟的实时消息推送。
+
+**数据流：**
+```
+bus_client.py write debate "终局..."
+  └─ bus_protocol.Blackboard.write()
+       ├─ INSERT INTO facts (SQLite)  ← 主路径
+       └─ _notify_feed()              ← 辅路径，推送
+            └─ /tmp/sister_bus_feed.sock
+                 └─ socket_server.py → broadcast
+                      ├── ccs-verifier → 实时收到
+                      ├── ccs-monitor  → 实时收到
+                      └── feed_listener.py → 检测终局关键词
+```
+
+**降级保障：**
+- feed socket 不可用 → `_notify_feed()` 静默异常 → 不丢 SQLite 写入
+- 监听脚本断线 → 自动重连
+- CCS 兜底 → `read --cat debate --watch` 回退到轮询
+
+**feed_listener.py 用法：**
+```bash
+python3 feed_listener.py                     # 实时监听
+python3 feed_listener.py --on-debate-end     # 检测辩论结束
+```
+
+---
+
+## 7. 监控告警
+
+### 7.1 死锁检测 (bash)
 
 ```bash
 #!/usr/bin/env bash
