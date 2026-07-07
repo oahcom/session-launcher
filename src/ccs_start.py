@@ -237,20 +237,31 @@ def _start_turn_tracker(this_role: str, bus_cat: str, timeout_sec: int = 300,
 
 def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partner: str = "", auto_restart: bool = False,
-          bus_track: str = "", bus_timeout: int = 300) -> dict:
+          bus_track: str = "", bus_timeout: int = 300, workspace: str = "") -> dict:
     tmux_name = f"{CCS_TMUX_PREFIX}{role}"
 
     # 检查已存在
     if _is_alive(tmux_name):
         return {"success": False, "error": "已存在", "tmux_session": tmux_name}
 
-    # 1. 启动 tmux + claude
-    cmd = (
-        "claude --model 9router_hermes"
-        " --dangerously-skip-permissions"
-        " --effort max"
-        " --permission-mode bypassPermissions"
-    )
+    # 1. 启动 tmux + claude（系统级 CCS 使用独立工作空间）
+    workspace_dir = Path(f"~/ccs-workspaces/{workspace}").expanduser() if workspace else None
+    if workspace_dir and workspace_dir.exists():
+        cmd = (
+            f"claude --cd={workspace_dir}"
+            " --model 9router_hermes"
+            " --dangerously-skip-permissions"
+            " --effort max"
+            " --permission-mode bypassPermissions"
+        )
+        print(f"📁 系统级 CCS: 使用独立工作空间 {workspace_dir}")
+    else:
+        cmd = (
+            "claude --model 9router_hermes"
+            " --dangerously-skip-permissions"
+            " --effort max"
+            " --permission-mode bypassPermissions"
+        )
     r = subprocess.run([
         "tmux", "new-session", "-d", "-s", tmux_name,
         "-e", "FORCE_PERSONA=0",
