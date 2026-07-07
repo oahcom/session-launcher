@@ -14,6 +14,7 @@ import sys
 from core import (
     start, stop, status, send, output, health_check, register
 )
+from pathlib import Path
 
 
 def main():
@@ -51,6 +52,8 @@ def main():
                          help="追踪 bus 分类的轮次（防死锁）")
     p_start.add_argument("--bus-timeout", type=int, default=300,
                          help="轮次超时秒数（默认 300）")
+    p_start.add_argument("--workspace", default="",
+                         help="系统级 CCS 工作空间名（如 ccs-monitor），使用独立 CLAUDE.md")
 
     # stop
     p_stop = sub.add_parser("stop", help="终止 CCS")
@@ -91,6 +94,7 @@ def main():
             auto_restart=args.auto_restart,
             bus_track=args.bus_track,
             bus_timeout=args.bus_timeout,
+            workspace=args.workspace,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
