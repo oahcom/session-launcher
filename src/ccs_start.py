@@ -42,7 +42,28 @@ BUS_CLIENT = Path("~/.hermes/scripts/bus_client.py").expanduser()
 #  工具函数
 # ═══════════════════════════════════════════════════════════
 
-def _find_claude_pid(tmux_name: str) -> Optional[int]:
+def _find_claude_session_id(tmux_name: str) -> Optional[str]:
+    """从 CCS 独立工作目录中查找最新的 claude session ID。"""
+    try:
+        # 每个 CCS 有自己的 session 文件
+        base = Path("/tmp") / "ccs_sessions"
+        if not base.exists():
+            return None
+
+        # 找所有 *.jsonl，取最新的
+        latest_file = None
+        latest_time = 0
+        for f in base.rglob("*.jsonl"):
+            mtime = f.stat().st_mtime
+            if mtime > latest_time:
+                latest_time = mtime
+                latest_file = f
+
+        if not latest_file:
+            return None
+        return latest_file.stem
+    except Exception:
+        return None
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
@@ -289,13 +310,16 @@ def start(role: str, title: str = "", detach: bool = False,
         _tmux_send(tmux_name, init_prompt)
         time.sleep(2)
 
-    # 4. 写哨兵
+    # 4. 获取 claude session ID 并写哨兵
     pid = _find_claude_pid(tmux_name)
+    session_id = _find_claude_session_id(tmux_name)
     sentinel_extra = {}
     if partner:
         sentinel_extra["partner"] = partner
     if bus_track:
         sentinel_extra["bus_track"] = bus_track
+    if session_id:
+        sentinel_extra["session_id"] = session_id
     _write_sentinel(role, title or role, tmux_name, pid, sentinel_extra)
 
     # 5. 启动守护线程（仅 detach 模式，non-detach 会被 os.execvp 杀死）

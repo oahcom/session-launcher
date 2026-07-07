@@ -37,6 +37,7 @@ class CcsSentinel:
     partner: str = ""
     bus_track: str = ""
     bus_timeout: int = 300
+    session_id: str = ""
     health: CcsHealth = field(default_factory=CcsHealth)
 
     def to_dict(self) -> dict:
@@ -50,6 +51,7 @@ class CcsSentinel:
             "partner": self.partner,
             "bus_track": self.bus_track,
             "bus_timeout": self.bus_timeout,
+            "session_id": self.session_id,
             "health": {
                 "last_watchdog_check": self.health.last_watchdog_check,
                 "watchdog_ok": self.health.watchdog_ok,
@@ -85,12 +87,33 @@ class CcsSentinel:
 
 # ── 操作函数 ──────────────────────────────────────────────────
 
+_WRITE_LOCK = threading.Lock()
+
 def write_sentinel(s: CcsSentinel) -> Path:
-    """写哨兵文件。返回文件路径。"""
-    SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
-    path = SENTINEL_DIR / f"{s.role}.json"
-    path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
-    return path
+    """线程安全写入哨兵文件（加锁 + 原子替换）。"""
+    with _WRITE_LOCK:
+        SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
+        path = SENTINEL_DIR / f"{s.role}.json"
+        # 合并旧文件的 session_id（避免被并发线程覆盖）
+        if path.exists():
+            try:
+                old = json.loads(path.read_text())
+                if not s.session_id and old.get("session_id"):
+                    s.session_id = old["session_id"]
+            except (json.JSONDecodeError, OSError):
+                pass
+        content = json.dumps(s.to_dict(), ensure_ascii=False, indent=2)
+        json.loads(content)
+        import tempfile, os
+        fd, tmp = tempfile.mkstemp(dir=str(SENTINEL_DIR), suffix='.json', prefix=f"{s.role}_")
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+        if path.exists():
+            path.unlink()
+        os.replace(tmp, path)
+        return path
 
 
 def read_sentinel(role: str) -> Optional[CcsSentinel]:
@@ -125,11 +148,11 @@ def list_sentinels() -> list[CcsSentinel]:
     return result
 
 
-_HEALTH_LOCK = threading.Lock()
-
 def update_health(role: str, **kwargs) -> bool:
-    """更新哨兵的 health 字段。加锁防并发竞争。"""
-    with _HEALTH_LOCK:
+    """更新哨兵的 health 字段（线程安全，不覆盖其他字段）。"""
+    import threading as _threading
+    _LOCK = getattr(_threading, '_WRITE_LOCK', None) or (setattr(_threading, '_WRITE_LOCK', _threading.Lock()) or getattr(_threading, '_WRITE_LOCK'))
+    with _LOCK:
         s = read_sentinel(role)
         if not s:
             return False

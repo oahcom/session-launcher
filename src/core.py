@@ -47,6 +47,32 @@ def _find_claude_pid(tmux_name: str) -> Optional[int]:
     return None
 
 
+def _find_claude_session_id(role: str = "") -> Optional[str]:
+    """从 CCS 独立工作目录中查找最新的 claude session ID。"""
+    try:
+        if role:
+            base = Path(f"/tmp/ccs-sessions/{role}/.claude/projects")
+        else:
+            base = Path.home() / ".claude" / "projects"
+        if not base.exists():
+            return None
+        latest_file = None
+        latest_time = 0
+        for proj_dir in base.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            for f in proj_dir.glob("*.jsonl"):
+                mtime = f.stat().st_mtime
+                if mtime > latest_time:
+                    latest_time = mtime
+                    latest_file = f
+        if not latest_file:
+            return None
+        return latest_file.stem
+    except Exception:
+        return None
+
+
 def _is_alive(tmux_name: str) -> bool:
     try:
         r = subprocess.run(
@@ -105,24 +131,24 @@ def start(role: str, title: str = "", detach: bool = False,
     if _is_alive(tmux_name):
         return {"success": False, "error": "已存在", "tmux_session": tmux_name}
 
-    # 1. 启动 tmux + claude（系统级 CCS 使用独立工作空间）
-    workspace_dir = Path(f"~/ccs-workspaces/{workspace}").expanduser() if workspace else None
-    if workspace_dir and workspace_dir.exists():
-        cmd = (
-            f"claude --cd={workspace_dir}"
-            " --model 9router_hermes"
-            " --dangerously-skip-permissions"
-            " --effort max"
-            " --permission-mode bypassPermissions"
-        )
-        print(f"📁 系统级 CCS: 使用独立工作空间 {workspace_dir}")
+    # 1. 启动 tmux + claude
+    # 每个 CCS 分配固定的 session ID，存储在哨兵中用于恢复
+    import uuid
+    old_sentinel = read_sentinel(role)
+    if old_sentinel and old_sentinel.session_id:
+        session_id = old_sentinel.session_id
+        print(f"📋 恢复 session: {session_id}")
     else:
-        cmd = (
-            "claude --model 9router_hermes"
-            " --dangerously-skip-permissions"
-            " --effort max"
-            " --permission-mode bypassPermissions"
-        )
+        session_id = str(uuid.uuid4())
+        print(f"📋 新 session: {session_id}")
+
+    cmd = (
+        "claude --model 9router_hermes"
+        f" --resume {session_id}"
+        " --dangerously-skip-permissions"
+        " --effort max"
+        " --permission-mode bypassPermissions"
+    )
     r = subprocess.run([
         "tmux", "new-session", "-d", "-s", tmux_name,
         "-e", "FORCE_PERSONA=0",
@@ -150,8 +176,12 @@ def start(role: str, title: str = "", detach: bool = False,
         _tmux_send(tmux_name, init_prompt)
         time.sleep(2)
 
-    # 4. 写哨兵
+    # 4. 写哨兵（使用固定的 UUID 作为 session ID，用于重启时恢复对话上下文）
     pid = _find_claude_pid(tmux_name)
+    # 为每个 CCS 生成固定的 UUID，存储在哨兵中用于恢复
+    import uuid
+    session_id = str(uuid.uuid4())
+    print(f"📋 session ID: {session_id}")
     s = CcsSentinel(
         role=role,
         title=title or role,
@@ -162,6 +192,7 @@ def start(role: str, title: str = "", detach: bool = False,
         partner=partners[0] if partners else "",
         bus_track=bus_track,
         bus_timeout=bus_timeout,
+        session_id=session_id or "",
     )
     write_sentinel(s)
 
