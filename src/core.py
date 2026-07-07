@@ -228,6 +228,7 @@ def status() -> list[dict]:
             "lifecycle": s.lifecycle,
             "partner": s.partner or None,
             "bus_track": s.bus_track or None,
+            "workspace": f"~/ccs-workspaces/{s.role}" if Path(f"~/ccs-workspaces/{s.role}").expanduser().exists() else None,
             "health": {
                 "watchdog_ok": s.health.watchdog_ok,
                 "bus_msg_age": round(s.health.last_bus_msg_age, 0),
