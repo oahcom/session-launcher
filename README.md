@@ -31,6 +31,14 @@ Session 生态的**执行层**——创建 CCS 进程、管理生命周期、提
 │  │  └─────────────────────────────────────────────────────┘    │      │
 │  │                                                               │      │
 │  │  ┌─────────────────────────────────────────────────────┐    │      │
+│  │  │ ccs_socket.py（新增）                                │    │      │
+│  │  │ - CSSocketServer    独立 Unix Socket Server         │    │      │
+│  │  │ - PUBLISH/SUBSCRIBE <1ms 直连（不走 bus SQLite）    │    │      │
+│  │  │ - CCSStreamer       tmux 流式输出                   │    │      │
+│  │  │ - CCS_SOCKET_TOKEN  认证保护                        │    │      │
+│  │  └─────────────────────────────────────────────────────┘    │      │
+│  │                                                               │      │
+│  │  ┌─────────────────────────────────────────────────────┐    │      │
 │  │  │ 协作基础设施（代码内置，不是 prompt 文本）           │    │      │
 │  │  │ - watchdog 线程：伙伴存活检查 + 自动重启            │    │      │
 │  │  │ - turn_tracker：轮次追踪 + 死锁检测 + 提醒         │    │      │
@@ -132,6 +140,16 @@ python3 ccs.py send <role> "消息内容"
 
 # 查看 CCS 输出
 python3 ccs.py output <role> --tail 30
+
+# 流式输出（实时跟踪）
+python3 ccs.py stream <role>
+
+# CCS 直接通信（不走 bus，<1ms）
+python3 ccs.py send-direct <from_role> <to_role> "消息"
+
+# CCS Socket 管理
+python3 ccs.py socket start    # 启动 CCS Socket Server
+python3 ccs.py socket status   # 查看已注册 agent
 ```
 
 ---
@@ -195,14 +213,69 @@ bus_client.py write debate "<消息>"
 - **监听脚本断线** → 自动重连 + 指数退避
 - **CCS 兜底** → 仍可用 `read --cat debate --watch` 回退到轮询模式
 
-### 用法
+---
+
+## CCS Socket 直连通信
+
+**独立 Unix Socket Server**，支持动态角色注册。不走 SQLite bus，<1ms 延迟。
+
+### 架构
+
+```
+ccs.py send-direct alice bob "hi"
+  └─ CCSClient("alice").connect()
+       └─ SUBSCRIBE to /tmp/ccs-sockets/ccs.sock
+            └─ CSSocketServer 路由
+                 ├─ PUBLISH → bob ← CCSClient("bob").listen()  <1ms
+                 └─ agents.json 注册所有在线 agent
+```
+
+### 协议
+
+JSON-over-newline（JSONL），端口无关：
+
+| Cmd | 方向 | 说明 |
+|-----|------|------|
+| `SUBSCRIBE` | client → server | 注册 agent，传入 `token` 认证 |
+| `PUBLISH` | client → server | 发消息给 `to` agent |
+| `PING` / `STATS` | client → server | 健康/统计查询 |
+| `message` | server → client | 收到的新消息 |
+| `subscribed` | server → client | 确认注册成功 |
+
+### 认证
 
 ```bash
-# 实时监听 bus 新消息
-python3 feed_listener.py
+export CCS_SOCKET_TOKEN=my_secret_key
+python3 ccs.py socket start   # server 启用认证
+python3 ccs.py send-direct ... # client 自动携带 token
+```
 
-# 监听并检测辩论结束
-python3 feed_listener.py --on-debate-end --notify
+不匹配的 token → server 断开连接并返回 `{"event": "error", "detail": "auth failed"}`。
+
+### 异常处理
+
+- 连接断开 → client 感知 EOF，停止 listen
+- server 挂掉 → 异常日志化，不静默吞掉
+- 消息过大 → asyncio limit=64KB 自动断开
+
+---
+
+## 流式输出
+
+```bash
+python3 ccs.py stream <role>
+```
+
+替代 `ccs.py output` 的单次截取，采用 **0.5s 增量轮询** `tmux capture-pane`，
+只推送新增行。
+
+```python
+from ccs_socket import CCSStreamer
+
+streamer = CCSStreamer('verifier')
+streamer.start(lambda chunk: print(chunk, end=''))
+# ... 持续输出 ...
+streamer.stop()
 ```
 
 ---
@@ -217,6 +290,7 @@ ccs-ls                      # tmux 列表（只看 ccs-）
 ccs-stop <role>             # 停止 CCS
 ccs-send <role> "消息"       # 向 CCS 发消息
 ccs-out <role>              # 查看 CCS 输出
+ccs-stream <role>           # 流式输出（实时跟踪）
 ```
 
 ---
@@ -226,7 +300,8 @@ ccs-out <role>              # 查看 CCS 输出
 ```
 session-launcher/
   src/
-    ccs.py               → CCS 核心（start/stop/status/send）
+    ccs.py               → CCS 核心（start/stop/status/send/socket/stream）
+    ccs_socket.py        → CCS Socket Server + 流式输出（新增）
     launcher.py          → 旧版启动器（保留向后兼容）
     signals.py           → 8 种信号检查器
     ccs_start.py         → 旧版独立启动器（待重构为 ccs.py）
