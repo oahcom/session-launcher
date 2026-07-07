@@ -12,7 +12,8 @@ import json
 import sys
 
 from core import (
-    start, stop, status, send, output, health_check, register
+    start, stop, status, send, output, health_check, register,
+    workspace_create, workspace_list,
 )
 from pathlib import Path
 
@@ -82,6 +83,13 @@ def main():
     p_reg.add_argument("tmux_name", help="tmux session 名")
     p_reg.add_argument("title", nargs="?", default="", help="角色标题")
 
+    # workspace
+    p_ws = sub.add_parser("workspace", help="管理工作空间")
+    ws_sub = p_ws.add_subparsers(dest="ws_command")
+    ws_create = ws_sub.add_parser("create", help="创建新工作空间")
+    ws_create.add_argument("name", help="工作空间名（如 ccs-monitor）")
+    ws_sub.add_parser("list", help="列出所有工作空间")
+
     args = parser.parse_args()
 
     if args.command == "start":
@@ -139,6 +147,23 @@ def main():
         result = register(args.role, args.tmux_name, args.title)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
+            sys.exit(1)
+
+    elif args.command == "workspace":
+        if args.ws_command == "create":
+            result = workspace_create(args.name)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
+        elif args.ws_command == "list":
+            result = workspace_list()
+            if not result:
+                print("没有工作空间")
+            else:
+                for ws in result:
+                    print(f"  {ws['name']:20} {ws['path']}")
+        else:
+            print("用法: ccs.py workspace {create|list}")
             sys.exit(1)
 
     else:
