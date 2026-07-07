@@ -55,6 +55,10 @@ def main():
                          help="轮次超时秒数（默认 300）")
     p_start.add_argument("--workspace", default="",
                          help="系统级 CCS 工作空间名（如 ccs-monitor），使用独立 CLAUDE.md")
+    p_start.add_argument("--drive", default="loop",
+                         help="驱动方式: loop / feed / both（默认 loop）")
+    p_start.add_argument("--feed-cat", default="",
+                         help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
 
     # stop
     p_stop = sub.add_parser("stop", help="终止 CCS")
@@ -103,6 +107,8 @@ def main():
             bus_track=args.bus_track,
             bus_timeout=args.bus_timeout,
             workspace=args.workspace,
+            drive=args.drive,
+            feed_cat=args.feed_cat,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):

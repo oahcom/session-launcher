@@ -22,6 +22,7 @@ from tracker import start_tracker
 
 TMUX_PREFIX = "ccs-"
 BUS_CLIENT = Path("~/.hermes/scripts/bus_client.py").expanduser()
+FEED_LISTENER = Path(__file__).parent.parent / "feed_listener.py"
 
 
 # ── tmux 底层操作 ──────────────────────────────────────────
@@ -95,7 +96,8 @@ def _tmux_kill(tmux_name: str):
 def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
-          bus_timeout: int = 300, workspace: str = "") -> dict:
+          bus_timeout: int = 300, workspace: str = "",
+          drive: str = "loop", feed_cat: str = "") -> dict:
     """创建一个 CCS 并写入哨兵。"""
     tmux_name = f"{TMUX_PREFIX}{role}"
     partners = partners or []
@@ -174,6 +176,11 @@ def start(role: str, title: str = "", detach: bool = False,
             start_tracker(role, bus_track, timeout_sec=bus_timeout,
                           interval=10, partners=partners)
             print(f"✅ 轮次追踪: 监控 {bus_track} 死锁 (超时 {bus_timeout}s)")
+
+        # 7. 启动 feed listener（如有 feed_cat）
+        if feed_cat:
+            _start_feed_listener(role, feed_cat)
+            print(f"✅ feed listener: 实时监控 {feed_cat} 分类")
     elif partners or bus_track:
         print(f"⚠ 非 detach 模式，监控线程不会启动（需要 --no-attach）")
 
@@ -262,6 +269,55 @@ def health_check(role: str = "") -> dict:
             "uptime_sec": int(time.time() - s.started_at) if alive else 0,
         }
     return result
+
+
+def _start_feed_listener(role: str, feed_cat: str) -> None:
+    """启动 feed listener 线程，监听指定 bus 分类的新消息。"""
+    import socket as _socket
+    import json as _json
+    import threading
+
+    def _run():
+        """后台线程：连接 feed socket，检测新消息写 bus notice。"""
+        tag = f"feed:{role}"
+        while True:
+            try:
+                s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+                s.settimeout(30)
+                s.connect("/tmp/sister_bus_feed.sock")
+                s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
+                print(f"[{tag}] ✅ 已连接 feed socket，监听 {feed_cat}", flush=True)
+                buf = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        print(f"[{tag}] 连接断开，5秒后重试...", flush=True)
+                        time.sleep(5)
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if line:
+                            event = _json.loads(line).get("msg", {})
+                            cat = event.get("cat", "")
+                            if cat == feed_cat:
+                                title = event.get("title", "")[:100]
+                                src = event.get("src", "")
+                                print(f"[{tag}] 收到 {cat}: {title} (src={src})", flush=True)
+                                subprocess.run(
+                                    ["python3", str(BUS_CLIENT), "write", "notice",
+                                     f"[{role}] 收到 {cat} 消息: {title}", "--src", role],
+                                    capture_output=True, timeout=15
+                                )
+            except Exception as e:
+                print(f"[{tag}] 异常: {e}，5秒后重试...", flush=True)
+                time.sleep(5)
+            finally:
+                try: s.close()
+                except: pass
+
+    t = threading.Thread(target=_run, daemon=False, name=f"feed:{role}")
+    t.start()
 
 
 def register(role: str, tmux_name: str, title: str = "") -> dict:
