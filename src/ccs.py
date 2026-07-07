@@ -77,6 +77,12 @@ def main():
     p_out.add_argument("role", help="角色名")
     p_out.add_argument("--tail", type=int, default=20, help="行数")
 
+    # stream
+    p_stream = sub.add_parser("stream", help="流式输出 CCS 输出")
+    p_stream.add_argument("role", help="角色名")
+    p_stream.add_argument("--follow", action="store_true", default=True, help="持续跟踪输出")
+    p_stream.add_argument("--tail", type=int, default=50, help="显示最后N行")
+
     # health
     p_health = sub.add_parser("health", help="健康检查")
     p_health.add_argument("role", nargs="?", default="", help="角色名（空=全部）")
@@ -93,6 +99,18 @@ def main():
     ws_create = ws_sub.add_parser("create", help="创建新工作空间")
     ws_create.add_argument("name", help="工作空间名（如 ccs-monitor）")
     ws_sub.add_parser("list", help="列出所有工作空间")
+
+    # socket
+    p_socket = sub.add_parser("socket", help="Socket 管理")
+    socket_sub = p_socket.add_subparsers(dest="socket_cmd")
+    socket_sub.add_parser("start", help="启动 CCS socket server")
+    socket_sub.add_parser("status", help="查看 socket 状态")
+
+    # send-direct
+    p_direct = sub.add_parser("send-direct", help="直接发送消息（不走 bus，<1ms）")
+    p_direct.add_argument("from_role", help="发送方角色")
+    p_direct.add_argument("to_role", help="接收方角色")
+    p_direct.add_argument("message", help="消息内容")
 
     args = parser.parse_args()
 
@@ -145,6 +163,17 @@ def main():
     elif args.command == "output":
         print(output(args.role, tail=args.tail))
 
+    elif args.command == "stream":
+        from ccs_socket import CCSStreamer
+        client = CCSStreamer(args.role)
+        if client.start(lambda chunk: print(chunk, end="", flush=True)):
+            try:
+                import time
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                client.stop()
+
     elif args.command == "health":
         result = health_check(args.role)
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -171,6 +200,35 @@ def main():
         else:
             print("用法: ccs.py workspace {create|list}")
             sys.exit(1)
+
+    elif args.command == "socket":
+        if args.socket_cmd == "start":
+            from ccs_socket import start_server
+            start_server()
+            print(f"Socket server 启动在 /tmp/ccs-sockets/")
+        elif args.socket_cmd == "status":
+            import os
+            for f in os.listdir("/tmp/ccs-sockets"):
+                print(f"  {f}")
+        else:
+            print("用法: ccs.py socket {start|status}")
+            sys.exit(1)
+
+    elif args.command == "send-direct":
+        from ccs_socket import CCSClient
+        import asyncio
+
+        async def do_send():
+            client = CCSClient(args.from_role)
+            if await client.connect():
+                await client.send_to(args.to_role, args.message)
+                await client.close()
+                print(f"已发送: {args.from_role} -> {args.to_role}")
+            else:
+                print("连接失败，确保 socket server 正在运行")
+                sys.exit(1)
+
+        asyncio.run(do_send())
 
     else:
         parser.print_help()
