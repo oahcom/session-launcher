@@ -100,12 +100,6 @@ def main():
     ws_create.add_argument("name", help="工作空间名（如 ccs-monitor）")
     ws_sub.add_parser("list", help="列出所有工作空间")
 
-    # socket
-    p_socket = sub.add_parser("socket", help="Socket 管理")
-    socket_sub = p_socket.add_subparsers(dest="socket_cmd")
-    socket_sub.add_parser("start", help="启动 CCS socket server")
-    socket_sub.add_parser("status", help="查看 socket 状态")
-
     # send-direct
     p_direct = sub.add_parser("send-direct", help="直接发送消息（不走 bus，<1ms）")
     p_direct.add_argument("from_role", help="发送方角色")
@@ -201,19 +195,6 @@ def main():
             print("用法: ccs.py workspace {create|list}")
             sys.exit(1)
 
-    elif args.command == "socket":
-        if args.socket_cmd == "start":
-            from ccs_socket import start_server
-            start_server()
-            print(f"Socket server 启动在 /tmp/ccs-sockets/")
-        elif args.socket_cmd == "status":
-            import os
-            for f in os.listdir("/tmp/ccs-sockets"):
-                print(f"  {f}")
-        else:
-            print("用法: ccs.py socket {start|status}")
-            sys.exit(1)
-
     elif args.command == "send-direct":
         from ccs_socket import CCSClient
         import asyncio
@@ -225,7 +206,7 @@ def main():
                 await client.close()
                 print(f"已发送: {args.from_role} -> {args.to_role}")
             else:
-                print("连接失败，确保 socket server 正在运行")
+                print("连接失败，确保 sister_bus_ccs.sock 正在运行")
                 sys.exit(1)
 
         asyncio.run(do_send())

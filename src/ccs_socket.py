@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """
-ccs_socket.py — CCS 直接通信 + 流式输出
+ccs_socket.py — CCS 直接通信客户端（复用 sister_bus socket server）
 
-独立 Socket Server（不依赖 sister_socket_server）。
-每个 CCS 通过 agent 名订阅，PUBLISH 按 agent 路由，<1ms。
+CCS 通过 sister_bus /tmp/sister_bus_ccs.sock 通信。
+SUBSCRIBE 注册为 "ccs-{role}"，PUBLISH 按目标路由。
 
 用法:
-    ccs.py socket start              # 启动 CCS Socket Server
-    ccs.py send-direct alice bob hi  # A → B 直连
-    ccs.py stream bob                # 流式显示 B 输出
+    ccs.py send-direct alice bob hi     # 直连 <1ms
+    ccs.py stream bob                   # 流式输出
 """
 
 import asyncio
 import json
 import logging
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -24,158 +22,30 @@ from pathlib import Path
 from typing import Callable, Optional
 
 log = logging.getLogger("ccs-socket")
-_log_handler = logging.StreamHandler()
-_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s", datefmt="%H:%M:%S"))
-log.addHandler(_log_handler)
-log.setLevel(logging.WARNING)
 
-SOCKET_DIR = Path("/tmp/ccs-sockets")
-AGENTS_FILE = SOCKET_DIR / "agents.json"
-CCS_TOKEN = os.environ.get("CCS_SOCKET_TOKEN", "")
-
-
-# ── CCS Socket Server（独立，不依赖 sister_socket_server）────
-
-class CSSocketServer:
-    """动态 agent Socket Server — 任何 CCS 角色都能连接"""
-
-    def __init__(self, socket_path: Path = SOCKET_DIR / "ccs.sock"):
-        self.socket_path = socket_path
-        self.subscribers: dict[str, set[asyncio.StreamWriter]] = {}
-        self._servers: list[asyncio.AbstractServer] = []
-        self._start_time = time.time()
-        self._msg_count = 0
-
-    async def start(self):
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        self.socket_path.unlink(missing_ok=True)
-        server = await asyncio.start_unix_server(
-            self._handler, path=str(self.socket_path))
-        self._servers.append(server)
-        self.socket_path.chmod(0o600)
-        print(f"Socket server 监听 {self.socket_path}")
-
-    async def stop(self):
-        for s in self._servers:
-            s.close()
-            await s.wait_closed()
-        self.socket_path.unlink(missing_ok=True)
-        AGENTS_FILE.unlink(missing_ok=True)
-
-    async def _handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        agent = "unknown"
-        try:
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=600)
-                if not line:
-                    break
-                cmd = json.loads(line.decode().strip())
-                resp = await self._dispatch(cmd, agent, writer)
-                if resp and "agent" in resp.get("data", {}):
-                    agent = resp["data"]["agent"]
-        except asyncio.TimeoutError:
-            log.warning("[%s] client timed out (600s)", agent)
-        except (ConnectionError, OSError) as e:
-            log.warning("[%s] connection error: %s", agent, e)
-        except json.JSONDecodeError as e:
-            log.warning("[%s] invalid JSON: %s", agent, e)
-        finally:
-            for a in list(self.subscribers.keys()):
-                self.subscribers[a].discard(writer)
-            try:
-                writer.close()
-            except Exception as e:
-                log.warning("[%s] close error: %s", agent, e)
-
-    async def _check_auth(self, cmd: dict, writer: asyncio.StreamWriter) -> bool:
-        if CCS_TOKEN and cmd.get("token") != CCS_TOKEN:
-            await self._send(writer, {"event": "error", "detail": "auth failed"})
-            log.warning("auth failed: token mismatch")
-            raise ConnectionError("auth failed")
-        return True
-
-    async def _dispatch(self, cmd: dict, agent: str, writer: asyncio.StreamWriter) -> dict | None:
-        t = cmd.get("cmd", "")
-        if t == "SUBSCRIBE":
-            await self._check_auth(cmd, writer)
-            a = cmd.get("agent", agent)
-            if a not in self.subscribers:
-                self.subscribers[a] = set()
-            self.subscribers[a].add(writer)
-            self._save_agent(a)
-            await self._send(writer, {"event": "subscribed", "agent": a})
-            return {"data": {"agent": a}}
-        elif t == "PUBLISH":
-            target = cmd.get("to", "")
-            msg = cmd.get("msg", {})
-            msg["_from"] = agent
-            msg["_ts"] = time.time()
-            self._msg_count += 1
-            await self._push(target, {"event": "message", "msg": msg})
-            return {"data": {"ok": True}}
-        elif t == "PING":
-            await self._send(writer, {"event": "pong", "uptime": round(time.time() - self._start_time, 1)})
-        elif t == "STATS":
-            await self._send(writer, {
-                "event": "stats",
-                "agents": {k: len(v) for k, v in self.subscribers.items()},
-                "msg_count": self._msg_count,
-            })
-        else:
-            log.warning("[%s] unknown cmd: %s", agent, t)
-        return None
-
-    async def _push(self, agent: str, data: dict):
-        payload = (json.dumps(data, ensure_ascii=False) + "\n").encode()
-        dead = []
-        for w in self.subscribers.get(agent, set()):
-            try:
-                w.write(payload)
-                await w.drain()
-            except (ConnectionError, OSError) as e:
-                log.warning("push to %s: %s", agent, e)
-                dead.append(w)
-        for w in dead:
-            self.subscribers[agent].discard(w)
-
-    async def _send(self, writer: asyncio.StreamWriter, data: dict):
-        try:
-            payload = (json.dumps(data, ensure_ascii=False) + "\n").encode()
-            writer.write(payload)
-            await writer.drain()
-        except (ConnectionError, OSError) as e:
-            log.warning("send: %s", e)
-
-    @staticmethod
-    def _save_agent(agent: str):
-        try:
-            agents = {}
-            if AGENTS_FILE.exists():
-                agents = json.loads(AGENTS_FILE.read_text())
-            agents[agent] = time.time()
-            AGENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            AGENTS_FILE.write_text(json.dumps(agents, indent=2))
-        except Exception as e:
-            log.warning("save_agent(%s): %s", agent, e)
+# 复用 sister_bus socket server（由 systemd 管理）
+SISTER_BUS_SOCK = Path("/tmp/sister_bus_ccs.sock")
 
 
 class CCSClient:
-    """CCS Socket 客户端"""
+    """CCS Socket 客户端 — 连接 sister_bus_ccs.sock"""
 
-    def __init__(self, role: str, socket_path: Path = SOCKET_DIR / "ccs.sock"):
+    def __init__(self, role: str):
         self.role = role
-        self.socket_path = socket_path
+        self.agent = f"ccs-{role}"
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
 
     async def connect(self) -> bool:
         try:
-            self.reader, self.writer = await asyncio.open_unix_connection(str(self.socket_path))
-            cmd: dict = {"cmd": "SUBSCRIBE", "agent": self.role}
-            if CCS_TOKEN:
-                cmd["token"] = CCS_TOKEN
+            self.reader, self.writer = await asyncio.open_unix_connection(str(SISTER_BUS_SOCK))
+            # 注册 agent 名（server 根据 SUBSCRIBE 注册到 subscribers）
+            cmd = {"cmd": "SUBSCRIBE", "agent": self.agent}
             await self._send(cmd)
-            return True
+            # 读取确认
+            resp = await asyncio.wait_for(self.reader.readline(), timeout=5)
+            data = json.loads(resp.decode().strip())
+            return data.get("event") == "subscribed"
         except Exception as e:
             log.warning("connect(%s): %s", self.role, e)
             return False
@@ -185,11 +55,18 @@ class CCSClient:
         self.writer.write(data)
         await self.writer.drain()
 
-    async def send_to(self, target: str, text: str) -> bool:
-        await self._send({"cmd": "PUBLISH", "to": target, "msg": {"text": text, "type": "chat"}})
+    async def send_to(self, target_role: str, text: str) -> bool:
+        """发送消息给另一个 CCS。target_role 是角色名（不含 ccs- 前缀）。"""
+        target = f"ccs-{target_role}"
+        await self._send({
+            "cmd": "PUBLISH",
+            "to": target,
+            "msg": {"text": text, "type": "chat", "_from_role": self.role}
+        })
         return True
 
-    async def listen(self, cb: Callable):
+    async def listen(self, cb: Callable[[dict], None]):
+        """监听接收的消息。阻塞直到连接断开。"""
         while True:
             try:
                 line = await self.reader.readline()
@@ -199,7 +76,7 @@ class CCSClient:
                 if msg.get("event") == "message":
                     cb(msg.get("msg", {}))
             except Exception as e:
-                log.warning("listen: %s", e)
+                log.warning("listen(%s): %s", self.role, e)
                 break
 
     async def close(self):
@@ -208,13 +85,13 @@ class CCSClient:
                 self.writer.close()
                 await self.writer.wait_closed()
             except Exception as e:
-                log.warning("close: %s", e)
+                log.warning("close(%s): %s", self.role, e)
 
 
-# ── 流式输出（pexpect 实时捕获）────
+# ── 流式输出（tmux capture-pane）────
 
 class CCSStreamer:
-    """CCS 流式输出"""
+    """CCS 流式输出 — 实时捕获 tmux pane 增量"""
 
     def __init__(self, role: str):
         self.role = role
@@ -239,7 +116,7 @@ class CCSStreamer:
                                 cb(cur)
                             self._last = cur
                 except subprocess.TimeoutExpired:
-                    log.warning("stream poll timeout (ccs-%s)", self.role)
+                    pass
                 except Exception as e:
                     log.warning("stream poll error: %s", e)
                 time.sleep(0.5)
@@ -250,35 +127,7 @@ class CCSStreamer:
         self._running = False
 
 
-def start_server():
-    """启动 CCS Socket Server（后台进程）"""
-    script = Path(__file__).resolve()
-    proc = subprocess.Popen(
-        [sys.executable, str(script), "server-foreground"],
-        cwd=str(script.parent),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.5)
-    if proc.poll() is None:
-        print(f"CCS Socket server PID={proc.pid}")
-    else:
-        log.warning("server exited=%d", proc.returncode)
-        print(f"CCS Socket server 启动失败 (exit={proc.returncode})")
-
-
-async def run_server_foreground():
-    log.setLevel(logging.DEBUG if os.environ.get("CCS_SOCKET_DEBUG") else logging.WARNING)
-    server = CSSocketServer()
-    await server.start()
-    pid_path = SOCKET_DIR / "server.pid"
-    pid_path.write_text(str(os.getpid()))
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    except KeyboardInterrupt:
-        await server.stop()
-    finally:
-        pid_path.unlink(missing_ok=True)
-
+# ── CLI 工具 ──
 
 async def send_direct(from_role: str, to_role: str, text: str):
     cli = CCSClient(from_role)
@@ -287,38 +136,19 @@ async def send_direct(from_role: str, to_role: str, text: str):
         print(f"{from_role} → {to_role}: {text[:80]}")
         await cli.close()
     else:
-        print(f"❌ 无法连接 CCS Socket Server（{SOCKET_DIR / 'ccs.sock'}）")
+        print(f"❌ 无法连接 sister_bus_ccs.sock ({SISTER_BUS_SOCK})")
         sys.exit(1)
 
 
-def list_agents() -> list[str]:
-    if AGENTS_FILE.exists():
-        try:
-            return list(json.loads(AGENTS_FILE.read_text()).keys())
-        except Exception as e:
-            log.warning("list_agents: %s", e)
-    return []
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "server-foreground":
-        asyncio.run(run_server_foreground())
-    else:
-        import argparse
-        p = argparse.ArgumentParser(description="CCS Socket 工具")
-        sub = p.add_subparsers(dest="cmd")
-        sub.add_parser("server")
-        sub.add_parser("status")
-        s = sub.add_parser("send")
-        s.add_argument("from_role")
-        s.add_argument("to_role")
-        s.add_argument("message")
+    import argparse
+    p = argparse.ArgumentParser(description="CCS Socket 工具")
+    sub = p.add_subparsers(dest="cmd")
+    s = sub.add_parser("send")
+    s.add_argument("from_role")
+    s.add_argument("to_role")
+    s.add_argument("message")
 
-        args = p.parse_args()
-        if args.cmd == "server":
-            start_server()
-        elif args.cmd == "status":
-            agents = list_agents()
-            print(f"已注册 agent: {agents}")
-        elif args.cmd == "send":
-            asyncio.run(send_direct(args.from_role, args.to_role, args.message))
+    args = p.parse_args()
+    if args.cmd == "send":
+        asyncio.run(send_direct(args.from_role, args.to_role, args.message))
