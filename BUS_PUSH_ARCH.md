@@ -1,56 +1,87 @@
 # Bus Push Architecture 设计 V1
 
-## 整体架构
+## 全局消息流图
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │      sister_socket_server.py         │
-                    │  (已存在, asyncio Unix Socket Server) │
-                    │                                     │
-                    │  AGENT_NAMES = [dkk, ssk, cron,     │
-                    │                  FEED ← 新增]       │
-                    │                                     │
-                    │  /tmp/sister_bus_dkk.sock           │
-                    │  /tmp/sister_bus_ssk.sock           │
-                    │  /tmp/sister_bus_cron.sock          │
-                    │  /tmp/sister_bus_feed.sock ← 新增   │
-                    └──────────────────┬──────────────────┘
-                                       │
-          ┌────────────────────────────┼────────────────────────────┐
-          │                            │                            │
-          ▼                            ▼                            ▼
-┌──────────────────┐    ┌─────────────────────────┐    ┌──────────────────┐
-│ bus_protocol.py  │    │  ccs-verifier (监听器)    │    │ ccs-monitor      │
-│ Blackboard.write │    │  subscribe feed socket    │    │ (监听器)         │
-│  └→ INSERT facts  │    │ 收到 push → 实时反应      │    │ 收到 push → 检测 │
-│  └→ PUSH to feed │    │                         │    │ 终局标记         │
-└──────────────────┘    └─────────────────────────┘    └──────────────────┘
+                            ┌─────────────┐
+                            │ bus_client  │
+                            │ .py write   │
+                            │ debate "终局"│
+                            └──────┬──────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │                              │
+                    ▼                              ▼
+          ┌─────────────────┐          ┌──────────────────────┐
+          │ bus_protocol.py  │          │ sister_socket_server │
+          │ Blackboard      │          │ .py (asyncio)        │
+          │ .write()        │          │                      │
+          │                 │          │ AGENT_NAMES = [     │
+          │ ① INSERT INTO   │          │   dkk, ssk, cron,   │
+          │   facts (SQLite) │          │   feed ← NEW         │
+          │   ✅ #8212-#8248 │          │                      │
+          │                 │          │ /tmp/                 │
+          │ ② _notify_feed()│          │  sister_bus_dkk.sock │
+          │   ┌──── socket ─┼──────────┼→ sister_bus_ssk.sock │
+          │   │  PUBLISH    │          │  sister_bus_cron.sock │
+          │   │  to:"feed"  │          │  sister_bus_feed.sock │
+          │   │  {event:    │          │                      │
+          │   │   new_fact, │          │ ③ broadcast 到        │
+          │   │   cat, id,  │          │   所有订阅者          │
+          │   │   src,      │          └──────────┬───────────┘
+          │   │   title}    │                     │
+          │   └─────────────┘                     │
+          └─────────────────┘                     │
+                                   ┌─────────────┼──────────────┐
+                                   │             │              │
+                                   ▼             ▼              ▼
+                         ┌──────────────┐ ┌──────────┐ ┌──────────────┐
+                         │ feed_listener │ │ CCS      │ │ CCS          │
+                         │ .py          │ │ verifier │ │ monitor      │
+                         │              │ │          │ │              │
+                         │ listen to    │ │ 收到 push│ │ 收到 push    │
+                         │ feed.sock    │ │ → 实时    │ │ → 检测       │
+                         │              │ │   反应   │ │   终局关键词  │
+                         │ 检测终局     │ │          │ │              │
+                         │ 关键词       │ │          │ │ 检测到 终局   │
+                         │              │ │          │ │ → write      │
+                         │ 检测到 终局   │ │          │ │   notice     │
+                         │ → write      │ │          │ │   "辩论已结束"│
+                         │   notice     │ │          │ │              │
+                         └──────┬───────┘ └──────────┘ └──────────────┘
+                                │
+                                ▼
+                     ┌────────────────────┐
+                     │ bus notice         │
+                     │ "[feed-listener]   │
+                     │  辩论已结束: ..."   │
+                     │  (src=feed-listener)│
+                     └────────────────────┘
+
+
+ ──── 实测数据 (2026-07-07) ────
+ N=20 压力测试:
+   SQLite 写入:  20/20 ✅
+   实时推送:     20/20 ✅  (100% 到达率)
+   端到端延迟:   43-51ms (P50)
+   终局检测:     触发 ✅
+   feed 降级:    静默 ✅ (不丢 SQLite)
+   断线重连:     5s ✅
+
+ ──── 降级保障 ────
+   feed socket DOWN → _notify_feed 静默异常 → SQLite 不中断
+   监听脚本崩溃   → 5s 自动重连
+   CCS 兜底       → read --cat debate --watch (回退到轮询)
 ```
 
-## 核心数据流
+## 组件职责
 
-```
-bus_client.py write debate "<消息>" --src pro
-  │
-  ├─ Blackboard.write() → INSERT INTO facts (SQLite)
-  │
-  └─ _notify_feed() → 通过临时 socket 连接
-       │              发送 {"event":"new_fact",
-       │                    "cat":"debate",
-       Press│                    "id": 7563,
-       │                     "src": "pro",
-       │                     "title": "正方第39轮: ..."}
-       │
-       ▼
-  /tmp/sister_bus_feed.sock
-       │
-       ▼
-  socket_server.py 转发给所有 feed 订阅者
-       │
-       ├── ccs-verifier → 收到 push → 处理
-       ├── ccs-monitor  → 收到 push → 检查终局关键词
-       └── ...其他订阅方
-```
+| 组件 | 职责 | 路径 |
+|------|------|------|
+| `bus_protocol.Blackboard.write()` | SQLite 持久化 + feed socket 推送 | `~/.hermes/scripts/bus_protocol.py` |
+| `sister_socket_server.py` | asyncio 消息路由 (agent=feed → broadcast) | `~/.hermes/scripts/hermes_core/sister_bus/` |
+| `/tmp/sister_bus_feed.sock` | Unix Socket 通知通道 | 无 |
+| `feed_listener.py` | 实时监听 + 终局检测 + notice 告警 | `session-launcher/feed_listener.py` |
 
 ## 改动范围
 
