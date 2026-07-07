@@ -13,6 +13,7 @@ ccs_socket.py — CCS 直接通信 + 流式输出
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -22,8 +23,15 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+log = logging.getLogger("ccs-socket")
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+log.addHandler(_log_handler)
+log.setLevel(logging.WARNING)
+
 SOCKET_DIR = Path("/tmp/ccs-sockets")
 AGENTS_FILE = SOCKET_DIR / "agents.json"
+CCS_TOKEN = os.environ.get("CCS_SOCKET_TOKEN", "")
 
 
 # ── CCS Socket Server（独立，不依赖 sister_socket_server）────
@@ -65,24 +73,35 @@ class CSSocketServer:
                 resp = await self._dispatch(cmd, agent, writer)
                 if resp and "agent" in resp.get("data", {}):
                     agent = resp["data"]["agent"]
-        except (asyncio.TimeoutError, ConnectionError, OSError):
-            pass
+        except asyncio.TimeoutError:
+            log.warning("[%s] client timed out (600s)", agent)
+        except (ConnectionError, OSError) as e:
+            log.warning("[%s] connection error: %s", agent, e)
+        except json.JSONDecodeError as e:
+            log.warning("[%s] invalid JSON: %s", agent, e)
         finally:
             for a in list(self.subscribers.keys()):
                 self.subscribers[a].discard(writer)
             try:
                 writer.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("[%s] close error: %s", agent, e)
+
+    async def _check_auth(self, cmd: dict, writer: asyncio.StreamWriter) -> bool:
+        if CCS_TOKEN and cmd.get("token") != CCS_TOKEN:
+            await self._send(writer, {"event": "error", "detail": "auth failed"})
+            log.warning("auth failed: token mismatch")
+            raise ConnectionError("auth failed")
+        return True
 
     async def _dispatch(self, cmd: dict, agent: str, writer: asyncio.StreamWriter) -> dict | None:
         t = cmd.get("cmd", "")
         if t == "SUBSCRIBE":
+            await self._check_auth(cmd, writer)
             a = cmd.get("agent", agent)
             if a not in self.subscribers:
                 self.subscribers[a] = set()
             self.subscribers[a].add(writer)
-            # 注册到 agents.json
             self._save_agent(a)
             await self._send(writer, {"event": "subscribed", "agent": a})
             return {"data": {"agent": a}}
@@ -102,6 +121,8 @@ class CSSocketServer:
                 "agents": {k: len(v) for k, v in self.subscribers.items()},
                 "msg_count": self._msg_count,
             })
+        else:
+            log.warning("[%s] unknown cmd: %s", agent, t)
         return None
 
     async def _push(self, agent: str, data: dict):
@@ -111,7 +132,8 @@ class CSSocketServer:
             try:
                 w.write(payload)
                 await w.drain()
-            except (ConnectionError, OSError):
+            except (ConnectionError, OSError) as e:
+                log.warning("push to %s: %s", agent, e)
                 dead.append(w)
         for w in dead:
             self.subscribers[agent].discard(w)
@@ -121,8 +143,8 @@ class CSSocketServer:
             payload = (json.dumps(data, ensure_ascii=False) + "\n").encode()
             writer.write(payload)
             await writer.drain()
-        except (ConnectionError, OSError):
-            pass
+        except (ConnectionError, OSError) as e:
+            log.warning("send: %s", e)
 
     @staticmethod
     def _save_agent(agent: str):
@@ -133,8 +155,8 @@ class CSSocketServer:
             agents[agent] = time.time()
             AGENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
             AGENTS_FILE.write_text(json.dumps(agents, indent=2))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("save_agent(%s): %s", agent, e)
 
 
 class CCSClient:
@@ -149,9 +171,13 @@ class CCSClient:
     async def connect(self) -> bool:
         try:
             self.reader, self.writer = await asyncio.open_unix_connection(str(self.socket_path))
-            await self._send({"cmd": "SUBSCRIBE", "agent": self.role})
+            cmd: dict = {"cmd": "SUBSCRIBE", "agent": self.role}
+            if CCS_TOKEN:
+                cmd["token"] = CCS_TOKEN
+            await self._send(cmd)
             return True
-        except Exception:
+        except Exception as e:
+            log.warning("connect(%s): %s", self.role, e)
             return False
 
     async def _send(self, cmd: dict):
@@ -165,17 +191,24 @@ class CCSClient:
 
     async def listen(self, cb: Callable):
         while True:
-            line = await self.reader.readline()
-            if not line:
+            try:
+                line = await self.reader.readline()
+                if not line:
+                    break
+                msg = json.loads(line.decode().strip())
+                if msg.get("event") == "message":
+                    cb(msg.get("msg", {}))
+            except Exception as e:
+                log.warning("listen: %s", e)
                 break
-            msg = json.loads(line.decode().strip())
-            if msg.get("event") == "message":
-                cb(msg.get("msg", {}))
 
     async def close(self):
         if self.writer:
-            self.writer.close()
-            await self.writer.wait_closed()
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except Exception as e:
+                log.warning("close: %s", e)
 
 
 # ── 流式输出（pexpect 实时捕获）────
@@ -205,8 +238,10 @@ class CCSStreamer:
                             else:
                                 cb(cur)
                             self._last = cur
-                except Exception:
-                    pass
+                except subprocess.TimeoutExpired:
+                    log.warning("stream poll timeout (ccs-%s)", self.role)
+                except Exception as e:
+                    log.warning("stream poll error: %s", e)
                 time.sleep(0.5)
         t = threading.Thread(target=_poll, daemon=True)
         t.start()
@@ -226,10 +261,12 @@ def start_server():
     if proc.poll() is None:
         print(f"CCS Socket server PID={proc.pid}")
     else:
+        log.warning("server exited=%d", proc.returncode)
         print(f"CCS Socket server 启动失败 (exit={proc.returncode})")
 
 
 async def run_server_foreground():
+    log.setLevel(logging.DEBUG if os.environ.get("CCS_SOCKET_DEBUG") else logging.WARNING)
     server = CSSocketServer()
     await server.start()
     pid_path = SOCKET_DIR / "server.pid"
@@ -256,7 +293,10 @@ async def send_direct(from_role: str, to_role: str, text: str):
 
 def list_agents() -> list[str]:
     if AGENTS_FILE.exists():
-        return list(json.loads(AGENTS_FILE.read_text()).keys())
+        try:
+            return list(json.loads(AGENTS_FILE.read_text()).keys())
+        except Exception as e:
+            log.warning("list_agents: %s", e)
     return []
 
 
