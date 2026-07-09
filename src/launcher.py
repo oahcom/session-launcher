@@ -26,8 +26,14 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-SESSION_ROLES_ROOT = Path("/home/administrator/hermes-session-roles")
-BUS_CLIENT = Path("~/.hermes/scripts/bus_client.py").expanduser()
+SESSION_ROLES_ROOT = Path(os.environ.get(
+    "SESSION_ROLES_ROOT",
+    str(Path.home() / "hermes-session-roles")
+))
+BUS_CLIENT = Path(os.environ.get(
+    "BUS_CLIENT_PATH",
+    str(Path("~/.hermes/scripts/bus_client.py").expanduser())
+))
 CLAUDE_MD = Path(os.environ.get("CLAUDE_MD_PATH",
                   "~/.claude/projects/-home-administrator/CLAUDE.md")).expanduser()
 SESSION_MARKER_START = "<!-- SESSION_ROLE:START -->"

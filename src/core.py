@@ -131,8 +131,13 @@ def start(role: str, title: str = "", detach: bool = False,
     if _is_alive(tmux_name):
         return {"success": False, "error": "已存在", "tmux_session": tmux_name}
 
-    # 1. 启动 tmux + claude
-    # 每个 CCS 分配固定的 session ID，存储在哨兵中用于恢复
+    # 1. 自动创建工作空间和 CLAUDE.MD（如果不存在）
+    ws_path = Path(f"~/ccs-workspaces/{role}").expanduser()
+    if not ws_path.exists():
+        workspace_create(role)
+        print(f"📁 已创建工作空间: {ws_path}")
+
+    # 2. 启动 tmux + claude（在工作空间目录中启动）
     import uuid
     old_sentinel = read_sentinel(role)
     if old_sentinel and old_sentinel.session_id:
@@ -151,6 +156,7 @@ def start(role: str, title: str = "", detach: bool = False,
     )
     r = subprocess.run([
         "tmux", "new-session", "-d", "-s", tmux_name,
+        "-c", str(ws_path),  # 在工作空间目录中启动
         "-e", "FORCE_PERSONA=0",
         "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
     ], capture_output=True, text=True, timeout=10)
@@ -369,17 +375,26 @@ def register(role: str, tmux_name: str, title: str = "") -> dict:
 
 
 def workspace_create(name: str) -> dict:
-    """创建系统级 CCS 工作空间并写入默认 CLAUDE.md。"""
+    """创建系统级 CCS 工作空间并写入默认 CLAUDE.MD。"""
     path = Path(f"~/ccs-workspaces/{name}").expanduser()
     path.mkdir(parents=True, exist_ok=True)
     claude_md = path / "CLAUDE.md"
     if claude_md.exists():
         return {"success": False, "error": f"工作空间已存在: {claude_md}"}
+
+    # 读取公用基础提示词（workflow 操作手册）
+    guide_path = Path.home() / ".hermes" / "templates" / "WORKFLOW_GUIDE.md"
+
+    guide_content = ""
+    if guide_path.exists():
+        guide_content = guide_path.read_text().replace("{role_name}", name)
+
+    # CLAUDE.MD = 角色身份 + 引用公用基础提示词
     claude_md.write_text(f"""# {name}
 
 ## 身份
 
-你是 {name}，系统级 CCS。你通过两种驱动方式接收指令：
+你是 {name}，系统级 CCS。你通过以下方式接收指令：
 
 | 驱动方式 | 触发源 | 说明 |
 |---------|--------|------|
@@ -387,26 +402,12 @@ def workspace_create(name: str) -> dict:
 | ② ccs-send | 其他 CCS 发消息 | 按需分析 |
 | ③ feed push | bus 新消息实时推送 | 即时检测 |
 
-## 驱动方式
+---
 
-### ① /loop 自循环
-每一轮执行 CLAUDE.md 中定义的工作内容，完成后自动进入下一轮。不可退出。
-
-### ② ccs-send 外驱
-接收到其他 CCS / 本 session 发来的消息后，按需分析并回复。
-
-### ③ feed push 实时
-接收到 bus cat=watch_cat 的新消息后，即时处理并回复。
-
-## 禁令
-- 不调 9Router / 不执行业务逻辑（除非明确职责包含）
-- 不退出 / 不休眠超过 60s
-- 不直接操作 tmux（通过 bus action 指令）
-- 所有决策写入 bus cat=audit 审计
-
-## 工作空间
-~/ccs-workspaces/{name}/
+{guide_content}
 """)
+    return {"success": True, "workspace": str(path)}
+    return {"success": True, "workspace": str(path)}
     return {"success": True, "workspace": str(path)}
 
 
