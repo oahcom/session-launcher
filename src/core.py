@@ -251,6 +251,8 @@ def start(role: str, title: str = "", detach: bool = False,
 
 def stop(role: str) -> dict:
     """终止 CCS 并清理哨兵。"""
+    if not _validate_role_name(role):
+        return {"success": False, "error": f"非法角色名: {role}"}
     tmux_name = f"{TMUX_PREFIX}{role}"
     was_alive = _is_alive(tmux_name)
     _tmux_kill(tmux_name)
@@ -328,6 +330,8 @@ def health_check(role: str = "") -> dict:
 def force_start_ccs(role_name: str, by_role: str = "",
                     init_prompt: str = "") -> dict:
     """强制启动 CCS（内部独立检查权限）。"""
+    if not _validate_role_name(role_name):
+        return {"success": False, "error": f"非法角色名: {role_name}"}
     if by_role and not check_wake_permission(by_role, role_name):
         return {"success": False,
                 "error": f"权限不足: {by_role} 无权启动 {role_name}"}

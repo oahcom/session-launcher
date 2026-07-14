@@ -28,7 +28,7 @@ def _load_role_registry() -> list[str]:
         try:
             with open(f) as fh:
                 d = json.load(fh)
-            roles.add(d.get("assignee", d.get("name", "")))
+            roles.add(d.get("name", ""))
         except (json.JSONDecodeError, OSError):
             continue
     roles.discard("")
