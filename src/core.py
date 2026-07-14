@@ -286,6 +286,8 @@ def status() -> list[dict]:
 
 def send(role: str, message: str, source: str = "") -> dict:
     """向 CCS 发送消息。"""
+    if not _validate_role_name(role):
+        return {"success": False, "error": f"非法角色名: {role}"}
     # 跨角色路由拦截（存根：当前仅记录日志，始终放行）
     if role != "self":
         try:
