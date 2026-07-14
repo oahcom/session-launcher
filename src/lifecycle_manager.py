@@ -16,6 +16,38 @@ from typing import Optional
 
 from paths import WORKFLOWS_DB as DB_PATH
 
+
+
+# ── 资源治理约束（agent-contracts 模式）──
+_RESOURCE_BUDGETS: dict[str, dict] = {}
+_DEFAULT_BUDGET = {"max_sessions": 3, "max_memory_mb": 2000, "max_calls_per_hour": 60, "cooldown_sec": 10}
+
+def set_role_budget(role: str, budget: dict) -> None:
+    merged = dict(_DEFAULT_BUDGET); merged.update(budget)
+    _RESOURCE_BUDGETS[role] = merged
+
+def get_role_budget(role: str) -> dict:
+    return _RESOURCE_BUDGETS.get(role, dict(_DEFAULT_BUDGET))
+
+def check_resource_constraints(role: str) -> dict:
+    import subprocess
+    budget = get_role_budget(role); violations = []; usage = {}
+    try:
+        r = subprocess.run(["tmux","ls"], capture_output=True, text=True, timeout=5)
+        usage["sessions"] = r.stdout.count(f"ccs-{role}")
+        if usage["sessions"] > budget["max_sessions"]:
+            violations.append(f"sessions {usage['sessions']}/{budget['max_sessions']}")
+    except: usage["sessions"] = -1
+    try:
+        mem = subprocess.run(["free","-m"], capture_output=True, text=True, timeout=5)
+        for line in mem.stdout.split("\n"):
+            if line.startswith("Mem:"):
+                usage["memory_mb"] = int(line.split()[3])
+                if usage["memory_mb"] < budget["max_memory_mb"]:
+                    violations.append(f"mem {usage['memory_mb']} < {budget['max_memory_mb']}MB")
+    except: usage["memory_mb"] = -1
+    return {"ok": len(violations)==0, "violations": violations, "usage": usage}
+
 class LifecycleManager:
     """生命周期管理器：状态机 + 步骤执行 + 推进逻辑。"""
 

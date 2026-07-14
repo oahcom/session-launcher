@@ -5,6 +5,7 @@ core.py — 生命周期编排（从 tmux_ops/role_manager/codex_ops 导入）
 
 __all__ = [
     'start',
+    'register_hook',
     'set_routing_policy',
     'get_routing_policy',
     'route_target',
@@ -31,8 +32,6 @@ __all__ = [
     'inject_prompt_into_claudemd',
     'clear_injected_prompt',
     'check_signal',
-    'has_work',
-    'auto_schedule',
     'write_lifecycle_sentinel',
     'check_ondemand_timeout',
     'cleanup_stale_sentinels',
@@ -55,6 +54,27 @@ __all__ = [
 ]
 
 
+
+
+
+# ── 生命周期钩子（NeMo-Relay 模式）──
+_LIFECYCLE_HOOKS: dict[str, list] = {
+    "before_start": [], "after_start": [],
+    "before_stop": [], "after_stop": [],
+    "before_send": [], "after_send": [],
+    "on_health_check": [],
+}
+
+def register_hook(event: str, fn) -> None:
+    if event in _LIFECYCLE_HOOKS:
+        _LIFECYCLE_HOOKS[event].append(fn)
+
+def _trigger_hooks(event: str, **kwargs) -> None:
+    for fn in _LIFECYCLE_HOOKS.get(event, []):
+        try:
+            fn(**kwargs)
+        except Exception as e:
+            print(f"[hooks:{event}] {fn.__name__} error: {e}", flush=True)
 
 # ── 路由策略状态（MCP Gateway 模式）──
 # sticky: 同角色消息路由到同一 CCS session
@@ -417,82 +437,6 @@ def cleanup_stale_sentinels() -> list[str]:
         except (json.JSONDecodeError, OSError, ValueError):
             f.unlink()
     return cleaned
-
-def has_work(roles: list[dict]) -> Optional[dict]:
-    """检查是否有角色有工作。返回优先级最高的角色。
-
-    集成 session-pipeline 路由：bus 有积压时按消息优先级排序。
-    """
-    try:
-        _PIPELINE_SRC = Path(os.environ.get('SESSION_PIPELINE_SRC', str(Path.home() / 'session-pipeline' / 'src')))
-        if str(_PIPELINE_SRC) not in sys.path:
-            sys.path.insert(0, str(_PIPELINE_SRC))
-        from router import get_router, priority
-        from bus_protocol import Blackboard
-        router = get_router()
-        bb = Blackboard()
-        facts = bb.unconsumed()
-        if facts:
-            urgency: dict[str, float] = {}
-            for r in roles:
-                name = r.get("name", "")
-                try:
-                    consume_cats = router.role_consume_categories(name)
-                except Exception:
-                    continue
-                if "*" in consume_cats:
-                    urgency[name] = urgency.get(name, 0) + 100
-                else:
-                    for cat in consume_cats:
-                        p = priority(cat)
-                        urgency[name] = urgency.get(name, 0) + (10 - min(p, 9))
-            roles = sorted(roles, key=lambda r: -urgency.get(r.get("name", ""), 0))
-    except (ImportError, Exception):
-        pass
-
-    for role in roles:
-        signals = role.get("input_signals", [])
-        if not signals:
-            continue
-        for signal in signals:
-            if check_signal(signal):
-                auto_schedule(role.get("name", ""))
-                return role
-    return None
-
-def auto_schedule(role_name: str) -> str | None:
-    """为新角色检测到任务时自动创建 workflow。
-
-    防重复：已有该角色的 pending/running task 时不创建。
-    """
-    try:
-        from workflow_client import WorkflowClient
-        with WorkflowClient("coordinator") as wf:
-            # 检查是否已有未完成任务（防重复触发）
-            existing = wf.list_tasks()
-            for t in existing:
-                if t.get("assignee") == role_name and t.get("status") in ("pending", "in_progress"):
-                    return None
-            # 角色→默认模板映射
-            _ROLE_TEMPLATE = {
-                "pm": "WL-02", "coordinator": "WL-02", "lr": "WL-02",
-                "pg": "WL-01", "product_architect": "WL-04",
-                "reviewer": "WL-01", "qa": "WL-03", "maintainer": "WL-05",
-                "optimizer": "WL-05", "devops": "WL-01",
-                "archivist": "WL-04", "curator": "WL-04", "consumer": "WL-02",
-                "engineer": "WL-01",
-            }
-            template_id = _ROLE_TEMPLATE.get(role_name, "WL-01")
-            task_id, wf_id = wf.create_task_v2(
-                f"自动调度: {role_name}",
-                assignee=role_name,
-                template_id=template_id,
-                initiator_role="coordinator",
-                description=f"来自 {role_name} 的信号触发",
-            )
-            return wf_id
-    except Exception:
-        return None
 
 def _start_feed_listener(role: str, feed_cat: str) -> None:
     """启动 feed listener 线程，监听指定 bus 分类的新消息。"""
