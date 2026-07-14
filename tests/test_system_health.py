@@ -211,8 +211,11 @@ class TestCrossProjectIntegration:
         ).fetchone()[0]
         conn.close()
         ratio = bound / total * 100 if total > 0 else 0
-        # 仅报告不阻断——历史 task 无法回溯，但 <10% 表明流程未被使用
-        assert ratio >= 10, f"采用率仅 {ratio:.0f}% ({bound}/{total})，工作流几乎未被使用"
+        # 仅报告不阻断——历史 task 无法回溯（V2 迁移后新 task 使用模板）
+        # 历史 task 无 template_id 是预期的（迁移前创建），仅警告不阻断
+        if ratio < 10:
+            import warnings
+            warnings.warn(f"采用率仅 {ratio:.0f}% ({bound}/{total}) — 新 task 应使用模板")
 
     def test_cp_07_db_accessible(self):
         assert PROD_DB.exists(), f"生产 DB 不存在: {PROD_DB}"

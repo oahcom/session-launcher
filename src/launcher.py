@@ -17,7 +17,7 @@ if str(_THIS_DIR) not in sys.path:
 # 函数
 from core import (
     load_roles, get_role, _invalidate_role_cache,
-    check_signal, has_work, auto_schedule,
+    check_signal,
     _forbidden_list, check_wake_permission,
     _build_role_prompt, _action_templates,
     inject_role_knowledge_into_workspace, inject_prompt_into_claudemd,
