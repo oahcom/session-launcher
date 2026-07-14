@@ -5,12 +5,46 @@ sentinel.py — 哨兵文件管理
 读/写/清理 /tmp/ccs-sentinels/<role>.json 哨兵文件。
 哨兵记录 CCS 的完整运行状态，供其他模块查询。
 """
+__all__ = [
+    'CcsSentinel',
+    'CcsHealth',
+    'write_sentinel',
+    'read_sentinel',
+    'delete_sentinel',
+    'list_sentinels',
+    'update_health',
+    'SENTINEL_DIR',
+    'record_cross_session_action',
+    'get_cross_session_memory',
+    'get_all_cross_session_memories',
+]
+
 import json
+import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+
+# ── 跨 Session 内存（omux 模式）──
+# 记录每个角色上次操作摘要，供其他 session 引用
+_CROSS_SESSION_MEMORY: dict[str, dict] = {}  # role -> {last_action, last_ts, summary}
+
+def record_cross_session_action(role: str, action: str, summary: str = "") -> None:
+    _CROSS_SESSION_MEMORY[role] = {
+        "last_action": action,
+        "last_ts": __import__("time").time(),
+        "summary": summary,
+    }
+
+def get_cross_session_memory(role: str) -> dict:
+    return _CROSS_SESSION_MEMORY.get(role, {})
+
+def get_all_cross_session_memories() -> dict:
+    return dict(_CROSS_SESSION_MEMORY)
 
 SENTINEL_DIR = Path("/tmp/ccs-sentinels")
 
@@ -34,10 +68,11 @@ class CcsSentinel:
     pid: Optional[int] = None
     started_at: float = 0.0
     lifecycle: str = "infinite"
-    partner: str = ""
+    partners: list[str] = field(default_factory=list)
     bus_track: str = ""
     bus_timeout: int = 300
     session_id: str = ""
+    engine: str = "ccs"
     health: CcsHealth = field(default_factory=CcsHealth)
 
     def to_dict(self) -> dict:
@@ -48,10 +83,11 @@ class CcsSentinel:
             "pid": self.pid,
             "started_at": self.started_at,
             "lifecycle": self.lifecycle,
-            "partner": self.partner,
+            "partners": self.partners,
             "bus_track": self.bus_track,
             "bus_timeout": self.bus_timeout,
             "session_id": self.session_id,
+            "engine": self.engine,
             "health": {
                 "last_watchdog_check": self.health.last_watchdog_check,
                 "watchdog_ok": self.health.watchdog_ok,
@@ -71,6 +107,12 @@ class CcsSentinel:
             last_bus_msg_age=h.get("last_bus_msg_age", -1.0),
             restart_count=h.get("restart_count", 0),
         )
+        # 兼容旧版哨兵：旧文件可能用了单字符串 partner
+        partners_raw = data.get("partners", data.get("partner", ""))
+        if isinstance(partners_raw, str):
+            partners = [partners_raw] if partners_raw else []
+        else:
+            partners = list(partners_raw) if partners_raw else []
         return cls(
             role=data.get("role", ""),
             title=data.get("title", ""),
@@ -78,16 +120,18 @@ class CcsSentinel:
             pid=data.get("pid"),
             started_at=data.get("started_at", 0.0),
             lifecycle=data.get("lifecycle", "infinite"),
-            partner=data.get("partner", ""),
+            partners=partners,
             bus_track=data.get("bus_track", ""),
             bus_timeout=data.get("bus_timeout", 300),
+            session_id=data.get("session_id", ""),
+            engine=data.get("engine", "ccs"),
             health=health,
         )
 
 
 # ── 操作函数 ──────────────────────────────────────────────────
 
-_WRITE_LOCK = threading.Lock()
+_WRITE_LOCK = threading.RLock()
 
 def write_sentinel(s: CcsSentinel) -> Path:
     """线程安全写入哨兵文件（加锁 + 原子替换）。"""
@@ -103,15 +147,12 @@ def write_sentinel(s: CcsSentinel) -> Path:
             except (json.JSONDecodeError, OSError):
                 pass
         content = json.dumps(s.to_dict(), ensure_ascii=False, indent=2)
-        json.loads(content)
-        import tempfile, os
         fd, tmp = tempfile.mkstemp(dir=str(SENTINEL_DIR), suffix='.json', prefix=f"{s.role}_")
         try:
             os.write(fd, content.encode())
         finally:
             os.close(fd)
-        if path.exists():
-            path.unlink()
+        # os.replace 在 POSIX 上是原子的，无需先 unlink
         os.replace(tmp, path)
         return path
 
@@ -129,11 +170,12 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
 
 def delete_sentinel(role: str) -> bool:
     """删除哨兵文件。返回是否成功。"""
-    path = SENTINEL_DIR / f"{role}.json"
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    with _WRITE_LOCK:
+        path = SENTINEL_DIR / f"{role}.json"
+        if path.exists():
+            path.unlink()
+            return True
+        return False
 
 
 def list_sentinels() -> list[CcsSentinel]:
@@ -150,9 +192,7 @@ def list_sentinels() -> list[CcsSentinel]:
 
 def update_health(role: str, **kwargs) -> bool:
     """更新哨兵的 health 字段（线程安全，不覆盖其他字段）。"""
-    import threading as _threading
-    _LOCK = getattr(_threading, '_WRITE_LOCK', None) or (setattr(_threading, '_WRITE_LOCK', _threading.Lock()) or getattr(_threading, '_WRITE_LOCK'))
-    with _LOCK:
+    with _WRITE_LOCK:
         s = read_sentinel(role)
         if not s:
             return False

@@ -13,9 +13,10 @@ import sys
 
 from core import (
     start, stop, status, send, output, health_check, register,
-    workspace_create, workspace_list,
+    workspace_create, workspace_list, force_start_ccs, wake_ccs,
+    start_codex_session, run_codex_task, cdx_status,
+    get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
 )
-from pathlib import Path
 
 
 def main():
@@ -39,7 +40,7 @@ def main():
 """)
     sub = parser.add_subparsers(dest="command")
 
-    # start
+    # ── start ──
     p_start = sub.add_parser("start", help="创建并启动 CCS")
     p_start.add_argument("role", help="角色名（自动加 ccs- 前缀）")
     p_start.add_argument("title", nargs="?", default="", help="角色标题")
@@ -53,60 +54,105 @@ def main():
                          help="追踪 bus 分类的轮次（防死锁）")
     p_start.add_argument("--bus-timeout", type=int, default=300,
                          help="轮次超时秒数（默认 300）")
-    p_start.add_argument("--workspace", default="",
-                         help="系统级 CCS 工作空间名（如 ccs-monitor），使用独立 CLAUDE.md")
     p_start.add_argument("--drive", default="loop",
                          help="驱动方式: loop / feed / both（默认 loop）")
     p_start.add_argument("--feed-cat", default="",
                          help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
 
-    # stop
+    # ── stop ──
     p_stop = sub.add_parser("stop", help="终止 CCS")
     p_stop.add_argument("role", help="角色名")
+    p_start.add_argument("--route-policy", default="sticky", choices=["sticky", "round-robin", "priority"], help="Route policy")
 
-    # status
+
+    # ── status ──
     sub.add_parser("status", help="列出所有 CCS 状态")
 
-    # send
+    # ── send ──
     p_send = sub.add_parser("send", help="向 CCS 发消息")
     p_send.add_argument("role", help="角色名")
     p_send.add_argument("message", help="消息内容")
 
-    # output
+    # ── output ──
     p_out = sub.add_parser("output", help="查看 CCS 输出")
     p_out.add_argument("role", help="角色名")
     p_out.add_argument("--tail", type=int, default=20, help="行数")
 
-    # stream
+    # ── stream ──
     p_stream = sub.add_parser("stream", help="流式输出 CCS 输出")
     p_stream.add_argument("role", help="角色名")
-    p_stream.add_argument("--follow", action="store_true", default=True, help="持续跟踪输出")
+    p_stream.add_argument("--follow", action="store_true", default=True,
+                          help="持续跟踪输出")
     p_stream.add_argument("--tail", type=int, default=50, help="显示最后N行")
 
-    # health
+    # ── health ──
     p_health = sub.add_parser("health", help="健康检查")
-    p_health.add_argument("role", nargs="?", default="", help="角色名（空=全部）")
+    p_health.add_argument("role", nargs="?", default="",
+                          help="角色名（空=全部）")
 
-    # register
+    # ── register ──
     p_reg = sub.add_parser("register", help="注册手动 tmux 为 CCS")
     p_reg.add_argument("role", help="角色名")
     p_reg.add_argument("tmux_name", help="tmux session 名")
     p_reg.add_argument("title", nargs="?", default="", help="角色标题")
 
-    # workspace
+    # ── workspace ──
     p_ws = sub.add_parser("workspace", help="管理工作空间")
     ws_sub = p_ws.add_subparsers(dest="ws_command")
     ws_create = ws_sub.add_parser("create", help="创建新工作空间")
     ws_create.add_argument("name", help="工作空间名（如 ccs-monitor）")
     ws_sub.add_parser("list", help="列出所有工作空间")
 
-    # send-direct
-    p_direct = sub.add_parser("send-direct", help="直接发送消息（不走 bus，<1ms）")
+    # ── send-direct ──
+    p_direct = sub.add_parser("send-direct",
+                               help="直接发送消息（不走 bus，<1ms）")
     p_direct.add_argument("from_role", help="发送方角色")
     p_direct.add_argument("to_role", help="接收方角色")
     p_direct.add_argument("message", help="消息内容")
 
+    # ═══════════════ 从 launcher 迁移的命令 ═══════════════
+
+    # ── wake ──
+    p_wake = sub.add_parser("wake", help="唤醒 CCS 角色")
+    p_wake.add_argument("role", help="目标角色名")
+    p_wake.add_argument("--by-role", required=True, help="调用方角色")
+    p_wake.add_argument("--context", default="", help="唤醒附带上下文")
+
+    # ── status-role ──
+    p_sr = sub.add_parser("status-role", help="查询单个角色状态")
+    p_sr.add_argument("role", help="角色名")
+
+    # ── send-safe（自动唤醒后发送） ──
+    p_ss = sub.add_parser("send-safe", help="安全发送消息（自动唤醒）")
+    p_ss.add_argument("role", help="目标角色名")
+    p_ss.add_argument("message", help="消息内容")
+    p_ss.add_argument("--by-role", required=True, help="调用方角色")
+    p_ss.add_argument("--no-auto-wake", action="store_true", help="不自动唤醒")
+
+    # ── codex ──
+    p_cdx = sub.add_parser("codex", help="Codex session 管理")
+    cdx_sub = p_cdx.add_subparsers(dest="cdx_command")
+
+    cdx_start = cdx_sub.add_parser("start", help="启动 Codex session")
+    cdx_start.add_argument("role", help="角色名")
+
+    cdx_exec = cdx_sub.add_parser("exec", help="在 Codex session 上执行任务")
+    cdx_exec.add_argument("role", help="角色名")
+    cdx_exec.add_argument("message", help="任务描述")
+    cdx_exec.add_argument("--timeout", type=int, default=300,
+                          help="超时秒数 (默认 300)")
+
+    cdx_sub.add_parser("status", help="列出所有运行中的 Codex sessions")
+
+    # ── reload-knowledge ──
+    p_reload = sub.add_parser("reload-knowledge",
+                               help="刷新角色 KNOWLEDGE 块（无需重启 CCS）")
+    p_reload.add_argument("role", nargs="?", default="",
+                          help="角色名（空=全部）")
+
     args = parser.parse_args()
+
+    # ═══════════ 命令分发 ═══════════
 
     if args.command == "start":
         result = start(
@@ -118,7 +164,6 @@ def main():
             auto_restart=args.auto_restart,
             bus_track=args.bus_track,
             bus_timeout=args.bus_timeout,
-            workspace=args.workspace,
             drive=args.drive,
             feed_cat=args.feed_cat,
         )
@@ -159,6 +204,7 @@ def main():
 
     elif args.command == "stream":
         from ccs_socket import CCSStreamer
+
         client = CCSStreamer(args.role)
         if client.start(lambda chunk: print(chunk, end="", flush=True)):
             try:
@@ -210,6 +256,76 @@ def main():
                 sys.exit(1)
 
         asyncio.run(do_send())
+
+    # ═══════════ 从 launcher 迁移的命令 ═══════════
+
+    elif args.command == "wake":
+        result = wake_ccs(args.role, context=args.context, by_role=args.by_role)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if not result.get("success"):
+            sys.exit(1)
+
+    elif args.command == "status-role":
+        from partner_client import PartnerClient
+        pc = PartnerClient("launcher")
+        s = pc.resolve(args.role)
+        print(json.dumps(s, ensure_ascii=False, indent=2))
+
+    elif args.command == "send-safe":
+        from partner_client import PartnerClient
+        pc = PartnerClient(args.by_role)
+        result = pc.force_send(args.role, args.message,
+                               auto_wake=not args.no_auto_wake)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    elif args.command == "codex":
+        if args.cdx_command == "start":
+            result = start_codex_session(args.role)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.cdx_command == "exec":
+            result = run_codex_task(args.role, args.message, args.timeout)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.cdx_command == "status":
+            stats = cdx_status()
+            if not stats:
+                print("没有运行中的 Codex sessions")
+            else:
+                print(f"运行中的 Codex sessions: {len(stats)}")
+                for s in stats:
+                    uptime_m = int(s["uptime_sec"] / 60)
+                    mark = "✅" if s["alive"] else "❌"
+                    print(f"  [{s['role']:12}] {s['title']}  {mark}  "
+                          f"运行 {uptime_m}分  pid={s['pid']}")
+        else:
+            print("用法: ccs.py codex {start|exec|status}")
+            sys.exit(1)
+
+    elif args.command == "reload-knowledge":
+        _invalidate_role_cache()
+        from pathlib import Path as _Path
+        if args.role:
+            role = get_role(args.role)
+            if not role:
+                print(f"❌ 角色 {args.role} 不存在")
+                sys.exit(1)
+            result = inject_role_knowledge_into_workspace(role)
+            print(f"  {args.role}: {result}")
+        else:
+            # 全部角色
+            ws_root = _Path.home() / "ccs-workspaces"
+            if ws_root.exists():
+                for d in sorted(ws_root.iterdir()):
+                    if not (d / "CLAUDE.md").exists():
+                        continue
+                    name = d.name.removeprefix("ccs-")
+                    role_def = get_role(name)
+                    if role_def:
+                        r = inject_role_knowledge_into_workspace(role_def)
+                        print(f"  {d.name}: {r}")
+                    else:
+                        print(f"  {d.name}: 角色定义未找到，跳过")
+            else:
+                print("没有 workspace 目录")
 
     else:
         parser.print_help()

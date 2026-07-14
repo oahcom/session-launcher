@@ -4,19 +4,21 @@ tracker.py — 轮次追踪 + 死锁检测
 
 定期 poll bus 某分类的最新时间戳，超时则发提醒。
 与 watchdog 交叉验证：如果伙伴也活但 bus 仍停，强制触发。
+
+从 subprocess bus_client 迁移到 Blackboard 直接 API（P2 修复）。
 """
-import json
-import subprocess
+__all__ = [
+    'start_tracker',
+]
+
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from sentinel import update_health
 
 TMUX_PREFIX = "ccs-"
-BUS_CLIENT = Path("~/.hermes/scripts/bus_client.py").expanduser()
 
 
 def _log(tag: str, msg: str):
@@ -24,24 +26,23 @@ def _log(tag: str, msg: str):
 
 
 def _bus_read_latest(cat: str) -> Optional[dict]:
-    """读取 bus 某分类最新一条消息。"""
+    """读取 bus 某分类最新一条消息，直接使用 Blackboard API。"""
     try:
-        r = subprocess.run(
-            ["python3", str(BUS_CLIENT), "read", "--cat", cat, "--limit", "1", "--json"],
-            capture_output=True, text=True, timeout=15
-        )
-        data = __import__("json").loads(r.stdout)
-        facts = data.get("facts", data) if isinstance(data, dict) else data
+        from bus_protocol import Blackboard
+        bb = Blackboard()
+        facts = bb.read(cat=cat, limit=1)
         return facts[0] if facts else None
     except Exception:
         return None
 
 
 def _bus_write(cat: str, text: str, src: str = ""):
-    cmd = ["python3", str(BUS_CLIENT), "write", cat, text]
-    if src:
-        cmd += ["--src", src]
-    subprocess.run(cmd, capture_output=True, timeout=15)
+    try:
+        from bus_protocol import Blackboard
+        bb = Blackboard()
+        bb.write(cat, text, src=src)
+    except Exception:
+        pass
 
 
 def _run(this_role: str, bus_cat: str, timeout_sec: int,
@@ -69,7 +70,7 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             if age <= timeout_sec:
                 continue
 
-            # 已超时且自己不是上一轮作者 → 发提醒
+            # 已超时且自己不是上一轮作者 → 可能死锁
             if src == this_role:
                 continue
 
@@ -82,6 +83,7 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             for p in partners:
                 p_alive = False
                 try:
+                    import subprocess
                     r = subprocess.run(
                         ["tmux", "has-session", "-t", f"{TMUX_PREFIX}{p}"],
                         capture_output=True, timeout=5
@@ -111,7 +113,7 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
 def start_tracker(this_role: str, bus_cat: str,
                   timeout_sec: int = 300,
                   interval: int = 10,
-                  partners: list[str] = None) -> threading.Thread:
+                  partners: Optional[list[str]] = None) -> threading.Thread:
     """启动轮次追踪线程。daemon=False 保持存活。"""
     t = threading.Thread(
         target=_run,

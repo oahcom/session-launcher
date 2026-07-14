@@ -5,6 +5,12 @@ watchdog.py — 伙伴存活守护线程
 定期检查伙伴 CCS 的 tmux session 是否存活，
 挂了则自动重启并恢复上下文（从哨兵读取伙伴信息）。
 """
+__all__ = [
+    'start_watchdog',
+    'check_auto_continue',
+    'AUTO_CONTINUE_THRESHOLD',
+]
+
 import subprocess
 import sys
 import threading
@@ -16,6 +22,8 @@ from sentinel import (
     CcsSentinel, read_sentinel, write_sentinel, delete_sentinel,
     update_health, SENTINEL_DIR,
 )
+# 延迟导入，避免 watchdog → launcher 循环依赖
+# 实际导入在 _restart_partner() 内部
 
 TMUX_PREFIX = "ccs-"
 
@@ -36,20 +44,25 @@ def _log(tag: str, msg: str):
 
 
 def _restart_partner(partner_role: str):
-    """从哨兵读取伙伴上下文并重启。"""
+    """从哨兵读取伙伴上下文并重启（保留 title/partners/bus_track 等配置）。
+
+    必须在 read_sentinel 之后才 delete_sentinel，否则上下文永远丢失。
+    """
+    from core import start  # 延迟导入打破循环
     old = read_sentinel(partner_role)
-    cmd = [sys.executable, sys.argv[0], "start", partner_role]
+    # 读完旧上下文后才删除旧哨兵（防止并发重启时哨兵膨胀）
+    delete_sentinel(partner_role)
     if old:
-        cmd.append(old.title or partner_role)
-        if old.partner:
-            cmd += ["--partner", old.partner]
-        if old.bus_track:
-            cmd += ["--bus-track", old.bus_track, "--bus-timeout", str(old.bus_timeout)]
+        result = start(partner_role, title=old.title,
+                       partners=old.partners if old.partners else None,
+                       auto_restart=True,
+                       bus_track=old.bus_track,
+                       bus_timeout=old.bus_timeout,
+                       detach=True)
+        _log("watchdog", f"已发起 {partner_role} 重启: {result}")
     else:
-        cmd.append(partner_role)
-    cmd += ["--no-attach"]
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _log("watchdog", f"已发起 {partner_role} 重启")
+        result = start(partner_role, detach=True)
+        _log("watchdog", f"已发起 {partner_role} 重启: {result}")
 
 
 def _run(this_role: str, partner_role: str, auto_restart: bool,
@@ -93,6 +106,36 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
             time.sleep(interval)
 
 
+
+
+# ── Auto-Continue 模式（omux 启发）──
+# 当 CCS session 无响应超过阈值时，自动发送 continue 指令唤醒
+# 而非直接重启，减少上下文丢失
+
+AUTO_CONTINUE_THRESHOLD = 120  # 秒
+_AUTO_CONTINUE_SENT: dict[str, float] = {}  # role -> last_sent_ts
+
+def check_auto_continue(role: str) -> bool:
+    """检查是否需要 auto-continue。返回 True 如果发送了 continue。"""
+    from core import _is_alive, _tmux_send
+    
+    now = __import__("time").time()
+    last_sent = _AUTO_CONTINUE_SENT.get(role, 0)
+    if now - last_sent < AUTO_CONTINUE_THRESHOLD:
+        return False
+    
+    tmux_name = f"ccs-{role}"
+    if not _is_alive(tmux_name):
+        return False
+    
+    try:
+        _tmux_send(tmux_name, "/continue")
+        _AUTO_CONTINUE_SENT[role] = now
+        print(f"[auto-continue:{role}] 发送 /continue 唤醒", flush=True)
+        return True
+    except Exception as e:
+        print(f"[auto-continue:{role}] 失败: {e}", flush=True)
+        return False
 def start_watchdog(this_role: str, partner_role: str,
                    auto_restart: bool = False,
                    interval: int = 30,

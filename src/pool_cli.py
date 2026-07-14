@@ -7,7 +7,7 @@ import sys, json, warnings, os
 warnings.filterwarnings("ignore")
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
-sys.path.insert(0, '/home/administrator/session-launcher/src')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 from worker_pool import run_parallel
 
 if __name__ == '__main__':

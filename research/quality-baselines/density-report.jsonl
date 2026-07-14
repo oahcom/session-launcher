@@ -1,0 +1,25 @@
+{"role": "maintainer", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "00_maintainer", "workspace_dir": "maintainer", "claude_md_exists": true}
+{"role": "scout", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/scout/CLAUDE.md 不存在", "persona_role": "01_scout", "workspace_dir": "scout", "claude_md_exists": false}
+{"role": "curator", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "03_curator", "workspace_dir": "curator", "claude_md_exists": true}
+{"role": "coordinator", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "04_coordinator", "workspace_dir": "coordinator", "claude_md_exists": true}
+{"role": "engineer", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/engineer/CLAUDE.md 不存在", "persona_role": "05_developer", "workspace_dir": "engineer", "claude_md_exists": false}
+{"role": "closer", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/closer/CLAUDE.md 不存在", "persona_role": "06_closer", "workspace_dir": "closer", "claude_md_exists": false}
+{"role": "optimizer", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "08_optimizer", "workspace_dir": "optimizer", "claude_md_exists": true}
+{"role": "codex-dev", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/codex-dev/CLAUDE.md 不存在", "persona_role": "10_codex_dev", "workspace_dir": "codex-dev", "claude_md_exists": false}
+{"role": "ccs-monitor", "l1": 1, "l3": 0, "total": 1, "grade": "不合格", "persona_role": "11_ccs_monitor", "workspace_dir": "ccs-monitor", "claude_md_exists": true}
+{"role": "debate_verifier", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/debate_verifier/CLAUDE.md 不存在", "persona_role": "12_debate_verifier", "workspace_dir": "debate_verifier", "claude_md_exists": false}
+{"role": "product_architect", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "13_product_architect", "workspace_dir": "product_architect", "claude_md_exists": true}
+{"role": "knowledge_curator", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/knowledge_curator/CLAUDE.md 不存在", "persona_role": "14_knowledge_curator", "workspace_dir": "knowledge_curator", "claude_md_exists": false}
+{"role": "security_auditor", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/security_auditor/CLAUDE.md 不存在", "persona_role": "15_security_auditor", "workspace_dir": "security_auditor", "claude_md_exists": false}
+{"role": "pm", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "16_pm", "workspace_dir": "pm", "claude_md_exists": true}
+{"role": "reviewer", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "17_reviewer", "workspace_dir": "reviewer", "claude_md_exists": true}
+{"role": "qa", "l1": 5, "l3": 0, "total": 5, "grade": "良好", "persona_role": "18_qa", "workspace_dir": "qa", "claude_md_exists": true}
+{"role": "devops", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/devops/CLAUDE.md 不存在", "persona_role": "19_devops", "workspace_dir": "devops", "claude_md_exists": false}
+{"role": "writer", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/writer/CLAUDE.md 不存在", "persona_role": "20_writer", "workspace_dir": "writer", "claude_md_exists": false}
+{"role": "lr", "l1": 8, "l3": 0, "total": 8, "grade": "良好", "persona_role": "21_lr", "workspace_dir": "lr", "claude_md_exists": true}
+{"role": "pg", "l1": 11, "l3": 0, "total": 11, "grade": "良好", "persona_role": "22_pg", "workspace_dir": "pg", "claude_md_exists": true}
+{"role": "investigator_python", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/investigator_python/CLAUDE.md 不存在", "persona_role": "23_investigator_python", "workspace_dir": "investigator_python", "claude_md_exists": false}
+{"role": "investigator_senior", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/investigator_senior/CLAUDE.md 不存在", "persona_role": "24_investigator_senior", "workspace_dir": "investigator_senior", "claude_md_exists": false}
+{"role": "investigator_general", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/investigator_general/CLAUDE.md 不存在", "persona_role": "25_investigator_general", "workspace_dir": "investigator_general", "claude_md_exists": false}
+{"role": "test-pg", "l1": 11, "l3": 0, "total": 11, "grade": "良好", "persona_role": "99_test_pg", "workspace_dir": "test-pg", "claude_md_exists": true}
+{"role": "test-qa", "l1": 0, "l3": 0, "total": 0, "grade": "无文件", "error": "/home/administrator/ccs-workspaces/test-qa/CLAUDE.md 不存在", "persona_role": "99_test_qa", "workspace_dir": "test-qa", "claude_md_exists": false}

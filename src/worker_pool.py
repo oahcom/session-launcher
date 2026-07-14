@@ -16,10 +16,11 @@ import asyncio
 import json
 import time
 import sys
-import requests
+import urllib.request
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+import io
 
 POOL_DIR = Path("/tmp/cdx-pools")
 MAX_CONCURRENT = 100  # per dispatcher
@@ -33,13 +34,16 @@ def worker_sync(task_id: str, prompt: str, timeout: int = 60) -> dict:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 5000,
         }
-        resp = requests.post(
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
             "http://localhost:20128/v1/chat/completions",
-            json=payload,
-            timeout=timeout,
+            data=data_bytes,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        text = resp.read().decode("utf-8")
         # Strip SSE suffix if present (9Router sometimes appends data: [DONE])
-        text = resp.text
         if "data:" in text:
             text = text[:text.index("data:")].rstrip()
         data = json.loads(text)

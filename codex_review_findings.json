@@ -1,0 +1,110 @@
+{"findings": [
+  {
+    "dimension": "D3",
+    "file": "src/core.py",
+    "line": 676,
+    "severity": "P2",
+    "summary": "`start_codex_session` 函数体过长(约68行)",
+    "issue": "函数体从 line 677 到 line 744 共约 68 行，超过规范要求的 20 行上限的 3 倍。职责混杂：角色加载、tmux 检查、runner 脚本生成、tmux 启动、sleep 等待、哨兵写入全在一个函数中。违反单一职责原则，难以单独测试和复用。",
+    "fix": "拆分为子函数：1) `_build_codex_runner(role) -> str` 生成 while-true shell 脚本；2) `_write_codex_sentinel(name, tmux, pid) -> None` 处理哨兵写入；3) `_launch_tmux_session(name, runner) -> dict` 处理 tmux 启动与错误返回。主函数保持协调逻辑，每子函数不超过 15 行。"
+  },
+  {
+    "dimension": "D3",
+    "file": "src/core.py",
+    "line": 695,
+    "severity": "P2",
+    "summary": "手写 shell 转义逻辑脆弱且不完整",
+    "issue": "`prompt_safe = prompt.replace('\"', '\\\\\"').replace('$', '\\\\$').replace('`', '\\\\`')` 仅转义双引号、美元符和反引号，未处理换行符、反斜杠自身、感叹号等 shell 特殊字符。在黑名单模式下遗漏任一特殊字符都可能导致 shell 注入或脚本错误。",
+    "fix": "使用 `shlex.quote(prompt)` 标准库替代手写 replace 链。`shlex.quote()` 采用白名单策略（只允许安全字符通过），自动处理所有 shell 特殊字符，安全性更高且语义明确。"
+  },
+  {
+    "dimension": "D3",
+    "file": "src/core.py",
+    "line": 699,
+    "severity": "P3",
+    "summary": "硬编码魔数无命名常量",
+    "issue": "`loop_delay = 60`、line 714 的 prompt 截断 `[:2000]`、line 757-758 的输出截断 `[-2000:]` 和 `[:500]` 都是无命名的魔数。缺乏注释说明选型理由，若多处引用会导致散布重复。",
+    "fix": "在模块上方常量区定义：`CODEX_LOOP_DELAY = 60` (默认循环间隔秒)、`CODEX_PROMPT_MAX = 2000`、`CODEX_OUTPUT_MAX = 2000`、`CODEX_ERROR_MAX = 500`，并在相关位置引用这些常量。"
+  },
+  {
+    "dimension": "D3",
+    "file": "src/core.py",
+    "line": 733,
+    "severity": "P2",
+    "summary": "Codex 哨兵直接写 JSON dict 而非复用 CcsSentinel dataclass",
+    "issue": "`sentinel.write_text(json.dumps({...}))` 手动构建并写入 JSON，而 CCS 体系已有 `CcsSentinel` dataclass 和 `write_sentinel()` 函数提供：线程安全锁、原子写入（tempfile + os.replace）、CcsSentinel 类型校验、health 字段、session_id 合并逻辑。Codex 方式缺失上述全部保护。",
+    "fix": "复用 CcsSentinel dataclass：创建 `s = CcsSentinel(role=name, title=role.get('title',''), tmux_session=tmux_name, pid=pid, started_at=time.time(), lifecycle=role.get('lifecycle','infinite'))`，调用 `write_sentinel(s)`。可在 CcsSentinel 中增加 `engine` 字段以区分 ccs/codex。"
+  },
+  {
+    "dimension": "D3",
+    "file": "src/core.py",
+    "line": 736,
+    "severity": "P3",
+    "summary": "start_codex_session 返回 dict 使用不一致的 engin/engine 拼写",
+    "issue": "line 740 哨兵中写 `\"engine\": \"codex\"` 使用 `engine` 拼写，而 line 743-744 返回 dict 中二次出现 `\"engine\": \"codex\"` 但 line 738 哨兵的 `lifecycle` 字段从 `role.get(\"lifecycle\", \"infinite\")` 获取。dict 返回中未包含 lifecycle 导致调用方无法区分 infinite 与 ondemand 模式。",
+    "fix": "返回 dict 中加入 lifecycle 字段：`\"lifecycle\": role.get(\"lifecycle\", \"infinite\")`。统一 engin/engine 拼写（当前 engin 仅在哨兵中出现，建议统一到 engine）。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 676,
+    "severity": "P1",
+    "summary": "Codex 函数与现有 CCS 函数风格不统一：tmux 启动后无 readiness 探测",
+    "issue": "现有 `start()` 函数（line 425-437）使用 15 轮循环、每秒探测一次 tmux pane 输出中是否出现提示符 `❯`，确保 claude 就绪。而 `start_codex_session()` 仅 `time.sleep(3)` 后即认为就绪。3 秒硬等待在 wasm/模型加载慢时不可靠，在加载快时浪费。",
+    "fix": "复用 `_is_alive()` + 循环探测模式：`for _ in range(15): time.sleep(1); if _is_alive(tmux_name): break`。或将 tmux has-session 探测整合到 `_is_alive()` 调用中。同步 README 或 docstring 说明等待策略。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 747,
+    "severity": "P2",
+    "summary": "exec_codex 使用 subprocess.run 而非与现有 send() 风格一致",
+    "issue": "现有 `send(role, message)` 函数（line 529-535）通过 tmux send-keys 向已运行的 CCS session 发送消息，是进程内通信。而 `exec_codex()` 每次用 subprocess.run 拉起独立 `codex exec` 进程。两者语义不同（进程内 vs 进程外），但名字相近易混淆。更严重的问题是：`exec_codex` 不检查目标 session 是否存活，每次启动全新进程。",
+    "fix": "重命名为 `exec_codex_once()` 或 `run_codex_task()` 以区分 send 语义。在函数开头增加 role 存活检查（调用 `cdx_status()` 或直接查哨兵），若 session 不在运行则返回 404 错误而非默认 5 分钟超时等待。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 774,
+    "severity": "P2",
+    "summary": "cdx_status 与 status() 返回结构不统一",
+    "issue": "CCS 的 `status()` 返回（line 507-526）包含 partner、bus_track、workspace、health(watchdog_ok, bus_msg_age, restart_count) 精细字段。而 `cdx_status()` 返回缺少 workspace、health 指标。哨兵中 lifecycle 字段（line 739 写入）在 status 输出中丢失。",
+    "fix": "统一 status 返回结构：新增 `workspace` 字段（`~/ccs-workspaces/<role>` 是否存在）；新增 `health` 字段（虽然 codex 无 watchdog/tracker，但可以提供基础 `{\"alive_since\": started_at}`）。复用 status 的返回模式。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 682,
+    "severity": "P3",
+    "summary": "Codex 哨兵目录名与 CCS 哨兵目录不兼容",
+    "issue": "CCS 哨兵使用 `SENTINEL_DIR = /tmp/ccs-sentinels/` 并通过 sentinel.py 管理。Codex 使用 `CODEX_SENTINEL_DIR = /tmp/cdx-sentinels/` 且直接通过 `pathlib.write_text / json.loads` 读写。两个目录分离导致 ccs-status 看不到 codex session，cdx_status 也看不到 CCS session。监控/审计需遍历两个目录。",
+    "fix": "方案一（推荐）：同目录复用，Codex 哨兵也写入 `/tmp/ccs-sentinels/<role>.json` 但添加 `\"engine\": \"codex\"` 标识，`status()` 通过 engine 字段区分。方案二（最短路径）：将 CODEX_SENTINEL_DIR 软链接到 CCS_SENTINEL_DIR，但 dataclass 兼容性问题仍存在。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 720,
+    "severity": "P3",
+    "summary": "start_codex_session 缺少 SSE feed_listener 支持",
+    "issue": "现有 `start()` 在 detach 模式下支持 `feed_cat` 参数启动 feed_listener（line 472-474），提供实时事件推送。而 `start_codex_session()` 无此参数。若 codex session 需要实时响应 bus 事件将无法实现，只能通过 sleep 轮询。",
+    "fix": "在 `start_codex_session` 函数签名中增加 `feed_cat: str = \"\"` 参数，detach/loop 模式下启动 feed_listener。或在 docstring 中注明 codex 模式不支持 feed_listener 作为已知限制。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 672,
+    "severity": "P3",
+    "summary": "_find_codex_pid 直接委托给 _find_claude_pid 但查找目标不同",
+    "issue": "`_find_codex_pid(tmux_name)` 直接返回 `_find_claude_pid(tmux_name)`，但后者在内部使用 `pgrep -P <pane_pid> -f \"claude\"` 查找 claude 进程。Codex session 运行的可能是 `codex` 而非 `claude` 进程（line 703,714 都使用 codex 命令）。这将导致 pid 查找失败或误匹配。",
+    "fix": "修改 `_find_codex_pid` 实现：将 `pgrep -f \"claude\"` 替换为 `pgrep -f \"codex\"` 查找 codex 进程。或增加一个 `process_name` 参数给 `_find_claude_pid`。"
+  },
+  {
+    "dimension": "D5",
+    "file": "src/core.py",
+    "line": 770,
+    "severity": "P2",
+    "summary": "exec_codex 与现有 send 函数的错误处理模式不一致",
+    "issue": "现有 `send()` 函数（line 529-535）不捕获异常，异常会自然向上传播（由调用方处理）。而 `exec_codex()` 在 line 766-771 同时捕获 `subprocess.TimeoutExpired` 和通用 `Exception` 并转为错误 dict。同一模块内对相近操作（向 session 发送命令）采用截然不同的错误处理模式，增加调用方认知负担。",
+    "fix": "统一模式：移除 exec_codex 的通用 Exception 捕获（至少移除裸 `except Exception`），让不可预见的异常向上传播，与 send() 风格一致。仅保留 TimeoutExpired 这一可预期异常的处理。或者在 send() 中也增加错误返回，但应二者一致。"
+  }
+]}

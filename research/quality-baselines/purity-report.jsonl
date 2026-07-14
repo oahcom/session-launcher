@@ -1,0 +1,25 @@
+{"role": "maintainer", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "00_maintainer", "workspace_dir": "maintainer", "claude_md_exists": true}
+{"persona_role": "01_scout", "workspace_dir": "scout", "claude_md_exists": false, "grade": "无文件"}
+{"role": "curator", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "03_curator", "workspace_dir": "curator", "claude_md_exists": true}
+{"role": "coordinator", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "04_coordinator", "workspace_dir": "coordinator", "claude_md_exists": true}
+{"persona_role": "05_developer", "workspace_dir": "engineer", "claude_md_exists": false, "grade": "无文件"}
+{"persona_role": "06_closer", "workspace_dir": "closer", "claude_md_exists": false, "grade": "无文件"}
+{"role": "optimizer", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "08_optimizer", "workspace_dir": "optimizer", "claude_md_exists": true}
+{"persona_role": "10_codex_dev", "workspace_dir": "codex-dev", "claude_md_exists": false, "grade": "无文件"}
+{"role": "ccs-monitor", "forbidden": false, "signal": false, "fails": 0, "grade": "良好", "persona_role": "11_ccs_monitor", "workspace_dir": "ccs-monitor", "claude_md_exists": true}
+{"persona_role": "12_debate_verifier", "workspace_dir": "debate_verifier", "claude_md_exists": false, "grade": "无文件"}
+{"role": "product_architect", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "13_product_architect", "workspace_dir": "product_architect", "claude_md_exists": true}
+{"persona_role": "14_knowledge_curator", "workspace_dir": "knowledge_curator", "claude_md_exists": false, "grade": "无文件"}
+{"persona_role": "15_security_auditor", "workspace_dir": "security_auditor", "claude_md_exists": false, "grade": "无文件"}
+{"role": "pm", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "16_pm", "workspace_dir": "pm", "claude_md_exists": true}
+{"role": "reviewer", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "17_reviewer", "workspace_dir": "reviewer", "claude_md_exists": true}
+{"role": "qa", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "18_qa", "workspace_dir": "qa", "claude_md_exists": true}
+{"persona_role": "19_devops", "workspace_dir": "devops", "claude_md_exists": false, "grade": "无文件"}
+{"persona_role": "20_writer", "workspace_dir": "writer", "claude_md_exists": false, "grade": "无文件"}
+{"role": "lr", "forbidden": false, "signal": true, "fails": 1, "grade": "及格", "persona_role": "21_lr", "workspace_dir": "lr", "claude_md_exists": true}
+{"role": "pg", "forbidden": true, "signal": true, "fails": 2, "grade": "不合格", "persona_role": "22_pg", "workspace_dir": "pg", "claude_md_exists": true}
+{"persona_role": "23_investigator_python", "workspace_dir": "investigator_python", "claude_md_exists": false, "grade": "无文件"}
+{"persona_role": "24_investigator_senior", "workspace_dir": "investigator_senior", "claude_md_exists": false, "grade": "无文件"}
+{"persona_role": "25_investigator_general", "workspace_dir": "investigator_general", "claude_md_exists": false, "grade": "无文件"}
+{"role": "test-pg", "forbidden": true, "signal": true, "fails": 2, "grade": "不合格", "persona_role": "99_test_pg", "workspace_dir": "test-pg", "claude_md_exists": true}
+{"persona_role": "99_test_qa", "workspace_dir": "test-qa", "claude_md_exists": false, "grade": "无文件"}
