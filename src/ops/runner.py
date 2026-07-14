@@ -45,7 +45,8 @@ def dashboard() -> str:
     try:
         _pipeline_router_path = Path.home() / "session-pipeline" / "src"
         if str(_pipeline_router_path) not in sys.path:
-            from router import get_router
+            sys.path.insert(0, str(_pipeline_router_path))
+        from router import get_router
         r = get_router()
         for role, data in sorted(r.routing.items()):
             cat_count = len(data.get("produce", []))
@@ -64,58 +65,58 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
     import json as _json
     import threading
 
-    def _run():
-        tag = f"feed:{role}"
-        s = None
-        retry = 0
-        while True:
-            try:
-                s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-                s.settimeout(30)
-                s.connect("/tmp/sister_bus_feed.sock")
-                s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
+    s = None
 
-                retry = 0
-                buf = b""
-                while True:
-                    try:
-                        chunk = s.recv(4096)
-                        if not chunk:
-                            break
-                        buf += chunk
-                        while b"\n" in buf:
-                            line_bytes, buf = buf.split(b"\n", 1)
-                            if not line_bytes:
-                                continue
-                            try:
-                                data = _json.loads(line_bytes.decode())
-                            except _json.JSONDecodeError:
-                                continue
-                            if data.get("cmd") == "MESSAGE":
-                                cat = data.get("cat", "")
-                                if cat == feed_cat:
-                                    from tmux_ops import _tmux_send
-                                    tmux_name = f"ccs-{role}"
-                                    _tmux_send(tmux_name, _json.dumps(data, ensure_ascii=False))
-                    except Exception:
+    def _connect():
+        nonlocal s
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(30)
+            s.connect("/tmp/sister_bus_feed.sock")
+            s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
+            return True
+        except Exception:
+            return False
+
+    def _run():
+        nonlocal s
+        tag = f"feed:{role}"
+        while True:
+            if not _connect():
+                time.sleep(5)
+                continue
+            buf = b""
+            while True:
+                try:
+                    chunk = s.recv(4096)
+                    if not chunk:
                         break
-            except Exception:
-                pass
-            finally:
-                if s:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
+                    buf += chunk
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        if not line_bytes:
+                            continue
+                        try:
+                            data = _json.loads(line_bytes.decode())
+                        except _json.JSONDecodeError:
+                            continue
+                        if data.get("cmd") == "MESSAGE":
+                            cat = data.get("cat", "")
+                            if cat == feed_cat:
+                                from tmux_ops import _tmux_send
+                                _tmux_send(f"ccs-{role}", _json.dumps(data, ensure_ascii=False))
+                except Exception:
+                    break
+            if s:
+                try:
+                    s.close()
+                except Exception:
+                    pass
                 s = None
-            retry += 1
-            if retry >= 10:
-                break
-            time.sleep(min(retry * 2, 30))
+            time.sleep(5)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    # Store reference to prevent GC
     if not hasattr(_start_feed_listener, "_threads"):
         _start_feed_listener._threads = []
     _start_feed_listener._threads.append(t)

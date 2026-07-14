@@ -14,7 +14,7 @@ from typing import Optional
 
 from paths import WORKFLOWS_DB as DB_PATH
 from paths import BUS_CLIENT
-CCS_CLI = Path("/home/administrator/session-launcher/src/ccs.py")
+CCS_CLI = Path.home() / "session-launcher" / "src" / "ccs.py"
 
 
 class NotificationEngine:
