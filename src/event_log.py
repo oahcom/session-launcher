@@ -18,6 +18,66 @@ from pathlib import Path
 
 EVENT_DB = Path.home() / ".hermes" / "state" / "event_log.db"
 
+
+
+# ── 分布式追踪（OpenTelemetry 模式）──
+# 简化的 span-based tracing，支持跨 session/role 的 trace context 传播
+
+import threading
+import uuid as _uuid
+
+_TRACE_CONTEXT = threading.local()
+
+class TraceSpan:
+    """一个追踪 span，记录操作的开始/结束/元数据。"""
+
+    def __init__(self, name: str, parent_span_id: str = None, trace_id: str = None, attributes: dict = None):
+        self.span_id = _uuid.uuid4().hex[:16]
+        self.parent_span_id = parent_span_id or getattr(_TRACE_CONTEXT, "current_span_id", None)
+        # Inherit trace_id from parent if available
+        parent_trace = getattr(_TRACE_CONTEXT, "current_trace_id", None)
+        self.trace_id = trace_id or parent_trace or _uuid.uuid4().hex[:16]
+        self.name = name
+        self.attributes = attributes or {}
+        self.start = __import__("time").time()
+        self.end: float = 0
+
+    def set_attribute(self, key: str, value: str) -> None:
+        self.attributes[key] = value
+
+    def finish(self) -> dict:
+        self.end = __import__("time").time()
+        duration_ms = round((self.end - self.start) * 1000, 1)
+        return {
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "parent_span_id": self.parent_span_id,
+            "name": self.name,
+            "duration_ms": duration_ms,
+            "attributes": self.attributes,
+        }
+
+def start_trace(name: str, attributes: dict = None) -> TraceSpan:
+    """开始一个新的追踪 span。"""
+    span = TraceSpan(name, attributes=attributes)
+    _TRACE_CONTEXT.current_span_id = span.span_id
+    _TRACE_CONTEXT.current_trace_id = span.trace_id
+    return span
+
+def end_trace(span: TraceSpan, event_log=None) -> dict:
+    """结束追踪 span，可选记录到 event_log。"""
+    result = span.finish()
+    if event_log:
+        event_log.record(
+            source="tracer",
+            event_type=f"trace:{span.name}",
+            role=span.attributes.get("role", "system"),
+            payload=result,
+        )
+    _TRACE_CONTEXT.current_span_id = span.parent_span_id
+    _TRACE_CONTEXT.current_trace_id = span.trace_id
+    return result
+
 class EventLog:
     """追加式事件日志，支持跨项目统一审计。"""
 

@@ -65,7 +65,7 @@ class TestOldTemplateMigration:
             CREATE TABLE workflow_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_instance_id TEXT, task_id TEXT, action TEXT NOT NULL, actor TEXT NOT NULL, detail TEXT, ts REAL NOT NULL);
         """)
         conn.commit(); conn.close()
-        from migration_scripts import run_migration
+        from migration.scripts import run_migration
         r1 = run_migration(db_path=f.name, dry_run=False)
         assert r1["success"]
         r2 = run_migration(db_path=f.name, dry_run=False)
@@ -144,7 +144,7 @@ class TestCrossProjectIntegration:
     """跨三项目集成验证。"""
 
     def test_cp_01_gate_loads_persona_roles(self):
-        from workflow_gate import _load_role_registry
+        from workflow.gateway import _load_role_registry
         roles = _load_role_registry()
         core = {"coordinator", "pm", "pg", "reviewer", "qa", "lr", "product_architect"}
         missing = core - set(roles)

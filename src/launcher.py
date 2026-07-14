@@ -40,10 +40,9 @@ from core import (
     health_check,
 )
 
-# 常量
+# 常量（从实际定义模块导入，core 只 re-export 公共 API）
 from core import (
     TMUX_PREFIX as CCS_TMUX_PREFIX,
-    CODEX_TMUX_PREFIX, CODEX_SENTINEL_DIR,
     BUS_CLIENT, SESSION_ROLES_ROOT,
     _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY,
     _WAKE_PERMISSION_MAP,
@@ -52,9 +51,11 @@ from core import (
     _CLAUDE_MD as CLAUDE_MD,
     _LIFECYCLE_SENTINEL_DIR as LIFECYCLE_SENTINEL_DIR,
 )
+from tmux_ops import CODEX_TMUX_PREFIX
+from ops.sentinel import SENTINEL_DIR as CODEX_SENTINEL_DIR  # 兼容名
 
 # 哨兵目录兼容名
-from sentinel import SENTINEL_DIR as CCS_SENTINEL_DIR
+from ops.sentinel import SENTINEL_DIR as CCS_SENTINEL_DIR
 
 # 旧名兼容
 exec_codex = run_codex_task

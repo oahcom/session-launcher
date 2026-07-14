@@ -26,7 +26,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
 
 
 # ── 项目根路径 ──────────────────────────────────────────────
@@ -116,11 +115,22 @@ def _check_dir_exists(path: Path, name: str) -> CheckItem:
                      duration_ms=(time.time() - start) * 1000)
 
 
+# ── 子包映射 ──
+_IMPORT_MAP = {
+    "sentinel": "ops.sentinel",
+    "signals": "events.signals",
+    "signal_parser": "signal_parser",
+    "template_registry": "template_registry",
+    "workflow_client": "workflow.client",
+    "partner_client": "routing.partner",
+}
+
 def _check_module_import(project_path: Path, module: str) -> CheckItem:
     start = time.time()
     python_path = f"{project_path}/src"
+    actual = _IMPORT_MAP.get(module, module)
     result = subprocess.run(
-        [sys.executable, "-c", f"import {module}"],
+        [sys.executable, "-c", f"import {actual}"],
         env={**os.environ, "PYTHONPATH": python_path},
         capture_output=True, text=True, timeout=10
     )
@@ -196,12 +206,12 @@ def _check_hardcoded_paths() -> CheckItem:
 
 
 def _check_sentinels() -> CheckItem:
-    """检查 CCS 哨兵。"""
+    """检查 CCS 会话（tmux 实时派生）。"""
+    from ops.sentinel import list_sentinels
     start = time.time()
-    sentinel_dir = Path("/tmp/ccs-sentinels")
-    count = len(list(sentinel_dir.glob("*.json"))) if sentinel_dir.is_dir() else 0
+    sentinels = list_sentinels()
     return CheckItem(name="sentinels:active", passed=True,
-                     detail=f"{count} 活跃哨兵",
+                     detail=f"{len(sentinels)} 活跃会话",
                      duration_ms=(time.time() - start) * 1000)
 
 

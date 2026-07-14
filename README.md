@@ -282,6 +282,33 @@ PYTHONPATH=src python3 -c "import core, tmux_ops, role_manager, codex_ops, signa
 
 ---
 
+## 快速恢复指南
+
+当 session 重启后，CCS 进程会丢失（WSL2 无 systemd 持久化时）：
+
+```bash
+# 1. 启动守护进程（pipeline-daemon + workflow-engine）
+bash ~/session-launcher/scripts/start_daemons.sh
+
+# 2. 启动核心 CCS 角色
+for role in pg engineer maintainer coordinator scout; do
+  python3 src/ccs.py start $role --no-attach
+done
+
+# 3. 检查恢复状态
+python3 src/ccs.py status
+python3 ~/session-pipeline/src/auto_route.py --status
+
+# 4. 给 PG 分配任务
+python3 src/ccs.py workspace create pg
+python3 src/ccs.py start pg --no-attach
+```
+
+**已知限制**：
+- systemd 不可用时（WSL2），daemon 和 CCS 需手动启动
+- `--bare` 参数解决 hook 渗透问题（2026-07-15 修复）
+- 多 CCS 同时启动需注意内存（`_MEM_FREE_MIN_MB=1000`）
+
 ## 系统别名（注册到 ~/.bash_aliases）
 
 ```bash

@@ -11,9 +11,9 @@ from typing import Optional
 
 from paths import BUS_CLIENT
 
-CCS_CLI = Path(__file__).resolve().parent / "ccs.py"
+CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 def check(role: str) -> str:
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
     client = WorkflowClient(role)
     task = client.check_task()
     client.close()
@@ -25,7 +25,7 @@ def check(role: str) -> str:
 
 
 def complete_task(role: str, wf_id: str, summary: str, files: list = None) -> str:
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
     import subprocess
     client = WorkflowClient(role)
     client.complete(wf_id, summary, files)
@@ -47,7 +47,7 @@ def complete_task(role: str, wf_id: str, summary: str, files: list = None) -> st
 
 
 def fail_task(role: str, wf_id: str, reason: str) -> str:
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
     client = WorkflowClient(role)
     client.fail(wf_id, reason)
     client.notify("blocker", f"{role} 任务失败: {reason}", evidence=reason)
@@ -56,7 +56,7 @@ def fail_task(role: str, wf_id: str, reason: str) -> str:
 
 
 def logs(role: str, wf_id: str = None, task_id: str = None) -> str:
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
     client = WorkflowClient(role)
     entries = client.get_logs(wf_id, task_id)
     client.close()
@@ -96,7 +96,7 @@ def _next_step_id(step: dict) -> str:
 
 
 def execute_handoff(wf, wf_id: str, step: dict) -> dict:
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
     """执行 handoff 步骤（分配 + 等待确认 + 上下文迁移 + 降级）。
 
     流程：
@@ -129,7 +129,7 @@ def execute_handoff(wf, wf_id: str, step: dict) -> dict:
         wf._conn.commit()
 
     # 第 1 次等确认
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     result = PartnerClient(wf.role).confirm_delivery(task_id, target, timeout)
 
     # 超时 → wake → 第 2 次等确认

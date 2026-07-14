@@ -1,0 +1,1803 @@
+{
+  "modules": {
+    "__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "sys",
+        "pathlib"
+      ],
+      "is_wrapper": false,
+      "line_count": 10
+    },
+    "__main__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "os",
+        "sys",
+        "ccs"
+      ],
+      "is_wrapper": false,
+      "line_count": 15
+    },
+    "ccs.py": {
+      "classes": [],
+      "functions": [
+        "main"
+      ],
+      "imports": [
+        "argparse",
+        "json",
+        "sys",
+        "core",
+        "ccs_socket",
+        "time",
+        "core",
+        "ccs_socket",
+        "asyncio",
+        "partner_client",
+        "partner_client",
+        "pathlib"
+      ],
+      "is_wrapper": false,
+      "line_count": 348
+    },
+    "ccs_socket.py": {
+      "classes": [
+        {
+          "name": "CCSClient",
+          "line": 30,
+          "methods": [
+            "__init__",
+            "connect",
+            "_send",
+            "send_to",
+            "listen",
+            "close"
+          ],
+          "public_methods": [
+            "connect",
+            "send_to",
+            "listen",
+            "close"
+          ]
+        },
+        {
+          "name": "CCSStreamer",
+          "line": 93,
+          "methods": [
+            "__init__",
+            "start",
+            "stop"
+          ],
+          "public_methods": [
+            "start",
+            "stop"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "asyncio",
+        "json",
+        "logging",
+        "os",
+        "subprocess",
+        "sys",
+        "threading",
+        "time",
+        "pathlib",
+        "typing",
+        "argparse"
+      ],
+      "is_wrapper": false,
+      "line_count": 154
+    },
+    "codex_ops.py": {
+      "classes": [],
+      "functions": [
+        "_get_codex_lock",
+        "start_codex_session",
+        "_tmux_session_exists",
+        "_runner_path",
+        "_write_runner_script",
+        "_launch_tmux_session",
+        "_build_codex_runner_script",
+        "run_codex_task",
+        "cdx_status"
+      ],
+      "imports": [
+        "json",
+        "logging",
+        "os",
+        "re",
+        "shlex",
+        "subprocess",
+        "threading",
+        "time",
+        "pathlib",
+        "role_manager",
+        "tmux_ops"
+      ],
+      "is_wrapper": false,
+      "line_count": 259
+    },
+    "core.py": {
+      "classes": [],
+      "functions": [
+        "register_hook",
+        "_trigger_hooks",
+        "set_routing_policy",
+        "get_routing_policy",
+        "route_target",
+        "start",
+        "stop",
+        "status",
+        "send",
+        "output",
+        "health_check",
+        "force_start_ccs",
+        "wake_ccs",
+        "write_lifecycle_sentinel",
+        "check_ondemand_timeout",
+        "cleanup_stale_sentinels",
+        "dashboard",
+        "_start_feed_listener",
+        "register",
+        "workspace_create",
+        "workspace_list"
+      ],
+      "imports": [
+        "tmux_ops",
+        "role_manager",
+        "codex_ops",
+        "json",
+        "logging",
+        "os",
+        "re",
+        "shlex",
+        "socket",
+        "subprocess",
+        "sys",
+        "threading",
+        "time",
+        "datetime",
+        "pathlib",
+        "typing",
+        "sentinel",
+        "watchdog",
+        "tracker",
+        "signals",
+        "paths",
+        "paths",
+        "socket",
+        "json",
+        "threading",
+        "router",
+        "cross_role_router"
+      ],
+      "is_wrapper": false,
+      "line_count": 626
+    },
+    "cross_role_router.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "routing.router"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "ecosystem_cli.py": {
+      "classes": [],
+      "functions": [
+        "cmd_status",
+        "cmd_relations",
+        "cmd_board",
+        "cmd_fleet",
+        "main"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "sys",
+        "time",
+        "datetime",
+        "pathlib",
+        "core",
+        "role_relations",
+        "workflow_client",
+        "role_relations",
+        "workflow_client",
+        "sentinel",
+        "core",
+        "argparse"
+      ],
+      "is_wrapper": false,
+      "line_count": 130
+    },
+    "ecosystem_health.py": {
+      "classes": [
+        {
+          "name": "CheckItem",
+          "line": 44,
+          "methods": [
+            "to_dict"
+          ],
+          "public_methods": [
+            "to_dict"
+          ]
+        },
+        {
+          "name": "HealthReport",
+          "line": 57,
+          "methods": [
+            "add",
+            "passed_count",
+            "total_count",
+            "all_passed",
+            "summary",
+            "json",
+            "text_report"
+          ],
+          "public_methods": [
+            "add",
+            "passed_count",
+            "total_count",
+            "all_passed",
+            "summary",
+            "json",
+            "text_report"
+          ]
+        }
+      ],
+      "functions": [
+        "_check_dir_exists",
+        "_check_module_import",
+        "_check_syntax",
+        "_check_roles",
+        "_check_router",
+        "_check_hardcoded_paths",
+        "_check_sentinels",
+        "_check_workspaces",
+        "check_all",
+        "main"
+      ],
+      "imports": [
+        "ast",
+        "json",
+        "os",
+        "subprocess",
+        "sys",
+        "time",
+        "dataclasses",
+        "pathlib",
+        "typing",
+        "argparse"
+      ],
+      "is_wrapper": false,
+      "line_count": 287
+    },
+    "event_log.py": {
+      "classes": [
+        {
+          "name": "TraceSpan",
+          "line": 31,
+          "methods": [
+            "__init__",
+            "set_attribute",
+            "finish"
+          ],
+          "public_methods": [
+            "set_attribute",
+            "finish"
+          ]
+        },
+        {
+          "name": "EventLog",
+          "line": 81,
+          "methods": [
+            "__init__",
+            "_init_schema",
+            "record",
+            "replay",
+            "stats",
+            "close"
+          ],
+          "public_methods": [
+            "record",
+            "replay",
+            "stats",
+            "close"
+          ]
+        }
+      ],
+      "functions": [
+        "start_trace",
+        "end_trace"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "uuid",
+        "pathlib",
+        "threading",
+        "uuid"
+      ],
+      "is_wrapper": false,
+      "line_count": 157
+    },
+    "events/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "events.signals",
+        "events.parser",
+        "events.notify"
+      ],
+      "is_wrapper": false,
+      "line_count": 20
+    },
+    "events/notify.py": {
+      "classes": [
+        {
+          "name": "NotificationEngine",
+          "line": 20,
+          "methods": [
+            "__init__",
+            "notify_handoff_complete",
+            "notify_review_complete",
+            "notify_gate_timeout",
+            "notify_wf_closed",
+            "notify_step_complete",
+            "notify_step_events",
+            "_get_step",
+            "_get_workflow_template",
+            "_resolve_template",
+            "_default_template",
+            "_format_msg",
+            "_get_task_title",
+            "_ccs_send",
+            "_bus_write",
+            "_apply_custom_template",
+            "close"
+          ],
+          "public_methods": [
+            "notify_handoff_complete",
+            "notify_review_complete",
+            "notify_gate_timeout",
+            "notify_wf_closed",
+            "notify_step_complete",
+            "notify_step_events",
+            "close"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "paths",
+        "subprocess",
+        "subprocess"
+      ],
+      "is_wrapper": false,
+      "line_count": 245
+    },
+    "events/parser.py": {
+      "classes": [],
+      "functions": [
+        "_check_bus",
+        "_check_shell",
+        "_check_http",
+        "_check_journalctl",
+        "_check_memory",
+        "_check_disk",
+        "_check_custom",
+        "_legacy",
+        "_check_signal_legacy",
+        "parse_signal"
+      ],
+      "imports": [
+        "__future__",
+        "subprocess",
+        "os",
+        "re",
+        "urllib.request",
+        "warnings",
+        "pathlib",
+        "paths",
+        "events.signals",
+        "json"
+      ],
+      "is_wrapper": false,
+      "line_count": 240
+    },
+    "events/signals.py": {
+      "classes": [],
+      "functions": [
+        "check_signal",
+        "check_bus_unread",
+        "check_systemctl_active",
+        "check_http_health",
+        "check_journalctl_errors",
+        "check_git_staged",
+        "check_session_size",
+        "check_running_sessions",
+        "check_mem_disk",
+        "check_signal_by_name"
+      ],
+      "imports": [
+        "subprocess",
+        "shlex",
+        "os",
+        "warnings",
+        "re",
+        "urllib.request",
+        "pathlib",
+        "typing",
+        "paths",
+        "events.parser"
+      ],
+      "is_wrapper": false,
+      "line_count": 230
+    },
+    "launcher.py": {
+      "classes": [],
+      "functions": [
+        "ccs_capture_output_raw",
+        "is_ccs_running",
+        "main"
+      ],
+      "imports": [
+        "sys",
+        "pathlib",
+        "core",
+        "core",
+        "core",
+        "sentinel",
+        "core",
+        "core",
+        "ccs"
+      ],
+      "is_wrapper": false,
+      "line_count": 81
+    },
+    "lesson_injector.py": {
+      "classes": [
+        {
+          "name": "LessonInjector",
+          "line": 29,
+          "methods": [
+            "__init__",
+            "load_lessons",
+            "group_by_role",
+            "deduplicate",
+            "format_for_injection",
+            "inject_to_role",
+            "inject_lessons_to_role"
+          ],
+          "public_methods": [
+            "load_lessons",
+            "group_by_role",
+            "deduplicate",
+            "format_for_injection",
+            "inject_to_role",
+            "inject_lessons_to_role"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "os",
+        "sys",
+        "pathlib",
+        "typing",
+        "paths",
+        "bus_protocol"
+      ],
+      "is_wrapper": false,
+      "line_count": 155
+    },
+    "lifecycle/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "lifecycle.manager",
+        "lifecycle.engine"
+      ],
+      "is_wrapper": false,
+      "line_count": 12
+    },
+    "lifecycle/engine.py": {
+      "classes": [
+        {
+          "name": "StepEngine",
+          "line": 23,
+          "methods": [
+            "__init__",
+            "complete_step",
+            "confirm_step",
+            "fail_step",
+            "check_gate_timeouts",
+            "_complete_handoff",
+            "_complete_review",
+            "_complete_single",
+            "_complete_gate",
+            "_complete_notify",
+            "_get_wf",
+            "_get_step",
+            "_get_template",
+            "_get_step_from_template",
+            "_get_step_result",
+            "_put_step_result",
+            "_set_step_done_ready",
+            "_set_step_completed",
+            "_set_wf_status",
+            "_advance",
+            "_close_wf",
+            "_has_next_step",
+            "_get_all_steps",
+            "_sync_task_status",
+            "_check_condition",
+            "_log",
+            "_notify_ccs",
+            "_notify_bus",
+            "close"
+          ],
+          "public_methods": [
+            "complete_step",
+            "confirm_step",
+            "fail_step",
+            "check_gate_timeouts",
+            "close"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "paths",
+        "subprocess",
+        "subprocess"
+      ],
+      "is_wrapper": false,
+      "line_count": 445
+    },
+    "lifecycle/manager.py": {
+      "classes": [
+        {
+          "name": "LifecycleManager",
+          "line": 51,
+          "methods": [
+            "__init__",
+            "get_wf",
+            "get_step",
+            "_get_template",
+            "_log",
+            "start_wf",
+            "complete_step",
+            "confirm_step",
+            "fail_step",
+            "close_wf",
+            "_get_wf_unsafe",
+            "_parse_results",
+            "_log_unsafe",
+            "_set_step_result_unsafe",
+            "_complete_single_unsafe",
+            "_complete_handoff_unsafe",
+            "_complete_review_unsafe",
+            "_complete_gate_unsafe",
+            "_complete_notify_unsafe",
+            "_check_gate_condition",
+            "_advance_unsafe",
+            "_sync_task_unsafe",
+            "_get_all_steps_unsafe",
+            "check_gate_timeouts",
+            "close"
+          ],
+          "public_methods": [
+            "get_wf",
+            "get_step",
+            "start_wf",
+            "complete_step",
+            "confirm_step",
+            "fail_step",
+            "close_wf",
+            "check_gate_timeouts",
+            "close"
+          ]
+        }
+      ],
+      "functions": [
+        "set_role_budget",
+        "get_role_budget",
+        "check_resource_constraints"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "threading",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "subprocess"
+      ],
+      "is_wrapper": false,
+      "line_count": 441
+    },
+    "lifecycle_manager.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "lifecycle.manager"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "migrate_v11_collab.py": {
+      "classes": [],
+      "functions": [
+        "migrate"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "sys",
+        "time",
+        "pathlib",
+        "paths"
+      ],
+      "is_wrapper": false,
+      "line_count": 107
+    },
+    "migration/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "migration.scripts"
+      ],
+      "is_wrapper": false,
+      "line_count": 12
+    },
+    "migration/scripts.py": {
+      "classes": [],
+      "functions": [
+        "pre_flight",
+        "dry_run_assessment",
+        "export_backup",
+        "truncate_tables",
+        "restore_from_backup",
+        "run_migration"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "datetime",
+        "pathlib",
+        "paths",
+        "paths",
+        "warnings",
+        "warnings",
+        "warnings",
+        "warnings",
+        "warnings"
+      ],
+      "is_wrapper": false,
+      "line_count": 371
+    },
+    "migration_scripts.py": {
+      "classes": [],
+      "functions": [
+        "pre_flight",
+        "dry_run_assessment",
+        "export_backup",
+        "truncate_tables",
+        "restore_from_backup",
+        "run_migration"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "datetime",
+        "pathlib",
+        "paths",
+        "paths",
+        "sys",
+        "warnings",
+        "warnings",
+        "warnings",
+        "warnings",
+        "warnings"
+      ],
+      "is_wrapper": false,
+      "line_count": 415
+    },
+    "notification_engine.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "events.notify"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "observability.py": {
+      "classes": [],
+      "functions": [
+        "_make_trace_hook",
+        "auto_register"
+      ],
+      "imports": [
+        "event_log",
+        "core"
+      ],
+      "is_wrapper": false,
+      "line_count": 34
+    },
+    "ops/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "ops.sentinel",
+        "ops.tracker",
+        "ops.watchdog"
+      ],
+      "is_wrapper": false,
+      "line_count": 18
+    },
+    "ops/sentinel.py": {
+      "classes": [
+        {
+          "name": "CcsHealth",
+          "line": 53,
+          "methods": [],
+          "public_methods": []
+        },
+        {
+          "name": "CcsSentinel",
+          "line": 63,
+          "methods": [
+            "to_dict",
+            "from_dict"
+          ],
+          "public_methods": [
+            "to_dict",
+            "from_dict"
+          ]
+        }
+      ],
+      "functions": [
+        "record_cross_session_action",
+        "get_cross_session_memory",
+        "get_all_cross_session_memories",
+        "write_sentinel",
+        "read_sentinel",
+        "delete_sentinel",
+        "list_sentinels",
+        "update_health"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "tempfile",
+        "threading",
+        "time",
+        "dataclasses",
+        "pathlib",
+        "typing",
+        "paths"
+      ],
+      "is_wrapper": false,
+      "line_count": 203
+    },
+    "ops/tracker.py": {
+      "classes": [],
+      "functions": [
+        "_log",
+        "_bus_read_latest",
+        "_bus_write",
+        "_audit_monitor",
+        "_run",
+        "start_tracker"
+      ],
+      "imports": [
+        "threading",
+        "time",
+        "datetime",
+        "typing",
+        "ops.sentinel",
+        "bus_protocol",
+        "bus_protocol",
+        "subprocess"
+      ],
+      "is_wrapper": false,
+      "line_count": 136
+    },
+    "ops/watchdog.py": {
+      "classes": [],
+      "functions": [
+        "_is_alive",
+        "_log",
+        "_audit_monitor",
+        "_restart_partner",
+        "_run",
+        "check_auto_continue",
+        "start_watchdog"
+      ],
+      "imports": [
+        "subprocess",
+        "sys",
+        "threading",
+        "time",
+        "datetime",
+        "typing",
+        "ops.sentinel",
+        "ops.launcher",
+        "ops.launcher",
+        "bus_protocol"
+      ],
+      "is_wrapper": false,
+      "line_count": 168
+    },
+    "p0_exemption.py": {
+      "classes": [
+        {
+          "name": "P0Exemption",
+          "line": 23,
+          "methods": [
+            "__init__",
+            "_init_schema",
+            "can_mark_p0",
+            "create_p0_task",
+            "update_task_template_id",
+            "check_timeouts",
+            "_violation_action",
+            "_get_task",
+            "_log_audit",
+            "_notify_bus",
+            "close"
+          ],
+          "public_methods": [
+            "can_mark_p0",
+            "create_p0_task",
+            "update_task_template_id",
+            "check_timeouts",
+            "close"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "uuid",
+        "subprocess",
+        "workflow_client",
+        "workflow_client"
+      ],
+      "is_wrapper": false,
+      "line_count": 206
+    },
+    "partner_client.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "routing.partner",
+        "routing.partner",
+        "sentinel"
+      ],
+      "is_wrapper": true,
+      "line_count": 22
+    },
+    "paths.py": {
+      "classes": [],
+      "functions": [
+        "ensure_paths"
+      ],
+      "imports": [
+        "os",
+        "sys",
+        "pathlib"
+      ],
+      "is_wrapper": false,
+      "line_count": 70
+    },
+    "pool_cli.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "sys",
+        "json",
+        "warnings",
+        "os",
+        "worker_pool"
+      ],
+      "is_wrapper": false,
+      "line_count": 18
+    },
+    "role_manager.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "routing.roles"
+      ],
+      "is_wrapper": true,
+      "line_count": 27
+    },
+    "routing/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "routing.router",
+        "routing.roles",
+        "routing.partner"
+      ],
+      "is_wrapper": false,
+      "line_count": 21
+    },
+    "routing/partner.py": {
+      "classes": [
+        {
+          "name": "PartnerClient",
+          "line": 69,
+          "methods": [
+            "__init__",
+            "confirm_delivery",
+            "_get_task",
+            "_check_bus_notification",
+            "resolve",
+            "check_wake_permission",
+            "wake",
+            "force_send",
+            "_write_bus"
+          ],
+          "public_methods": [
+            "confirm_delivery",
+            "resolve",
+            "check_wake_permission",
+            "wake",
+            "force_send"
+          ]
+        }
+      ],
+      "functions": [
+        "_core",
+        "_output",
+        "_check_wake",
+        "_wake_ccs",
+        "_force_start",
+        "_find_pid",
+        "_send",
+        "_bus_client",
+        "is_ccs_running",
+        "cli_resolve",
+        "cli_wake",
+        "cli_confirm",
+        "cli_send",
+        "main"
+      ],
+      "imports": [
+        "argparse",
+        "json",
+        "os",
+        "subprocess",
+        "sys",
+        "time",
+        "pathlib",
+        "typing",
+        "sentinel",
+        "paths",
+        "core",
+        "core",
+        "sqlite3",
+        "sqlite3"
+      ],
+      "is_wrapper": false,
+      "line_count": 430
+    },
+    "routing/roles.py": {
+      "classes": [],
+      "functions": [
+        "load_roles",
+        "get_role",
+        "_invalidate_role_cache",
+        "_forbidden_list",
+        "check_wake_permission",
+        "_action_templates",
+        "_build_role_prompt",
+        "_resolve_ws_paths",
+        "inject_role_knowledge_into_workspace",
+        "_validate_role_name",
+        "_ensure_bus_aliases_in_bashrc",
+        "inject_prompt_into_claudemd",
+        "clear_injected_prompt",
+        "validate_ccs_execution"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "subprocess",
+        "sys",
+        "time",
+        "pathlib",
+        "typing",
+        "workflow_client",
+        "workflow_gate"
+      ],
+      "is_wrapper": false,
+      "line_count": 365
+    },
+    "routing/router.py": {
+      "classes": [
+        {
+          "name": "CrossRoleRouter",
+          "line": 23,
+          "methods": [
+            "__init__",
+            "_get_conn",
+            "intercept",
+            "_source_triple_check",
+            "_check_bus_source",
+            "_check_db_assigner",
+            "_check_sentinel",
+            "check_send_permission",
+            "_log_cross_role_send",
+            "_log_violation"
+          ],
+          "public_methods": [
+            "intercept",
+            "check_send_permission"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "json",
+        "sqlite3",
+        "subprocess",
+        "time",
+        "pathlib",
+        "paths",
+        "paths"
+      ],
+      "is_wrapper": false,
+      "line_count": 221
+    },
+    "sentinel.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "ops.sentinel"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "signal_parser.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "events.parser"
+      ],
+      "is_wrapper": true,
+      "line_count": 28
+    },
+    "signals.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "events.signals"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "step_engine.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "lifecycle.engine"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "task_utils.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "workflow.utils"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "template_registry.py": {
+      "classes": [
+        {
+          "name": "ValidationReport",
+          "line": 123,
+          "methods": [
+            "__init__",
+            "add_error",
+            "to_dict",
+            "__repr__"
+          ],
+          "public_methods": [
+            "add_error",
+            "to_dict"
+          ]
+        },
+        {
+          "name": "TemplateRegistry",
+          "line": 273,
+          "methods": [
+            "__init__",
+            "_ensure_schema",
+            "register",
+            "get",
+            "list",
+            "activate",
+            "deactivate",
+            "validate",
+            "get_allowed_roles",
+            "_row_to_template",
+            "close"
+          ],
+          "public_methods": [
+            "register",
+            "get",
+            "list",
+            "activate",
+            "deactivate",
+            "validate",
+            "get_allowed_roles",
+            "close"
+          ]
+        }
+      ],
+      "functions": [
+        "_load_role_registry",
+        "get_role_registry",
+        "_validate_schema",
+        "_validate_step",
+        "_check_role_existence",
+        "_cli_register",
+        "_cli_list",
+        "_cli_validate"
+      ],
+      "imports": [
+        "json",
+        "re",
+        "sqlite3",
+        "time",
+        "uuid",
+        "pathlib",
+        "typing",
+        "paths",
+        "sys"
+      ],
+      "is_wrapper": false,
+      "line_count": 528
+    },
+    "template_validator.py": {
+      "classes": [],
+      "functions": [
+        "run_validation",
+        "_result",
+        "_step1_schema",
+        "_step2_role",
+        "_step3_prompt",
+        "_step4_review_logic",
+        "_step5_dry_run",
+        "print_report"
+      ],
+      "imports": [
+        "json",
+        "subprocess",
+        "sys",
+        "pathlib",
+        "typing",
+        "template_registry",
+        "template_registry",
+        "template_registry"
+      ],
+      "is_wrapper": false,
+      "line_count": 198
+    },
+    "tmux_ops.py": {
+      "classes": [],
+      "functions": [
+        "_check_memory_before_launch",
+        "_find_claude_pid",
+        "_find_claude_session_id",
+        "_is_alive",
+        "_tmux_send",
+        "_tmux_output",
+        "_tmux_kill",
+        "_find_codex_pid",
+        "_active_codex_session_count",
+        "_write_codex_sentinel",
+        "_wait_codex_ready"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "re",
+        "subprocess",
+        "time",
+        "pathlib",
+        "typing",
+        "tempfile"
+      ],
+      "is_wrapper": false,
+      "line_count": 279
+    },
+    "tracker.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "ops.tracker"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "watchdog.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "ops.watchdog"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "worker_pool.py": {
+      "classes": [],
+      "functions": [
+        "worker_sync",
+        "dispatch_sync",
+        "run_parallel"
+      ],
+      "imports": [
+        "asyncio",
+        "json",
+        "time",
+        "sys",
+        "urllib.request",
+        "pathlib",
+        "concurrent.futures",
+        "typing",
+        "io",
+        "paths"
+      ],
+      "is_wrapper": false,
+      "line_count": 127
+    },
+    "workflow/__init__.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "workflow.client",
+        "workflow.utils",
+        "workflow.gateway"
+      ],
+      "is_wrapper": false,
+      "line_count": 14
+    },
+    "workflow/client.py": {
+      "classes": [
+        {
+          "name": "WorkflowClient",
+          "line": 15,
+          "methods": [
+            "__init__",
+            "__enter__",
+            "__exit__",
+            "_log",
+            "list_templates",
+            "find_template",
+            "create_task",
+            "create_task_v2",
+            "_create_task_impl",
+            "_create_workflow_instance",
+            "get_task",
+            "_compute_progress",
+            "list_tasks",
+            "delete_task",
+            "create",
+            "get",
+            "check_task",
+            "list_my_tasks",
+            "start",
+            "complete",
+            "_sync_task_from_workflows",
+            "fail",
+            "cancel",
+            "delete",
+            "archive",
+            "list_all",
+            "get_logs",
+            "notify",
+            "confirm_delivery",
+            "check_wake_permission",
+            "resolve_partner",
+            "wake_partner",
+            "kanban_board",
+            "workflow_stats",
+            "close"
+          ],
+          "public_methods": [
+            "list_templates",
+            "find_template",
+            "create_task",
+            "create_task_v2",
+            "get_task",
+            "list_tasks",
+            "delete_task",
+            "create",
+            "get",
+            "check_task",
+            "list_my_tasks",
+            "start",
+            "complete",
+            "fail",
+            "cancel",
+            "delete",
+            "archive",
+            "list_all",
+            "get_logs",
+            "notify",
+            "confirm_delivery",
+            "check_wake_permission",
+            "resolve_partner",
+            "wake_partner",
+            "kanban_board",
+            "workflow_stats",
+            "close"
+          ]
+        }
+      ],
+      "functions": [],
+      "imports": [
+        "json",
+        "time",
+        "warnings",
+        "pathlib",
+        "typing",
+        "paths",
+        "workflow.db",
+        "workflow.gateway",
+        "uuid",
+        "subprocess",
+        "subprocess",
+        "routing.partner",
+        "routing.partner",
+        "routing.partner",
+        "routing.partner"
+      ],
+      "is_wrapper": false,
+      "line_count": 394
+    },
+    "workflow/db.py": {
+      "classes": [],
+      "functions": [
+        "create_connection"
+      ],
+      "imports": [
+        "sqlite3",
+        "pathlib",
+        "typing",
+        "paths"
+      ],
+      "is_wrapper": false,
+      "line_count": 68
+    },
+    "workflow/gateway.py": {
+      "classes": [
+        {
+          "name": "Gate",
+          "line": 40,
+          "methods": [
+            "__init__",
+            "is_template_active",
+            "is_template_exists",
+            "get_template",
+            "check_can_initiate",
+            "check_can_execute",
+            "is_valid_role",
+            "validate_create_task",
+            "record_p0_audit",
+            "close"
+          ],
+          "public_methods": [
+            "is_template_active",
+            "is_template_exists",
+            "get_template",
+            "check_can_initiate",
+            "check_can_execute",
+            "is_valid_role",
+            "validate_create_task",
+            "record_p0_audit",
+            "close"
+          ]
+        }
+      ],
+      "functions": [
+        "_load_role_registry"
+      ],
+      "imports": [
+        "json",
+        "sqlite3",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "template_registry"
+      ],
+      "is_wrapper": false,
+      "line_count": 178
+    },
+    "workflow/utils.py": {
+      "classes": [],
+      "functions": [
+        "check",
+        "complete_task",
+        "fail_task",
+        "logs",
+        "render_step",
+        "_next_step_id",
+        "execute_handoff"
+      ],
+      "imports": [
+        "json",
+        "subprocess",
+        "time",
+        "pathlib",
+        "typing",
+        "paths",
+        "workflow.client",
+        "workflow.client",
+        "subprocess",
+        "workflow.client",
+        "workflow.client",
+        "re",
+        "workflow.client",
+        "routing.partner"
+      ],
+      "is_wrapper": false,
+      "line_count": 164
+    },
+    "workflow_client.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "workflow.client"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    },
+    "workflow_gate.py": {
+      "classes": [],
+      "functions": [],
+      "imports": [
+        "workflow.gateway"
+      ],
+      "is_wrapper": true,
+      "line_count": 6
+    }
+  },
+  "categories": {
+    "🏗️ Infrastructure (基础设施)": {
+      "desc": "Core plumbing: DB, paths, connections",
+      "modules": [
+        "paths.py",
+        "sentinel.py",
+        "tmux_ops.py",
+        "tracker.py",
+        "watchdog.py"
+      ]
+    },
+    "🔄 Lifecycle (生命周期)": {
+      "desc": "Workflow state machines, step engines",
+      "modules": [
+        "lifecycle/manager.py",
+        "lifecycle/engine.py"
+      ]
+    },
+    "🌐 Workflow (工作流)": {
+      "desc": "Task management, templates, gates",
+      "modules": [
+        "workflow/client.py",
+        "workflow/gateway.py",
+        "workflow/db.py"
+      ]
+    },
+    "🧭 Routing (路由)": {
+      "desc": "Role management, partner client, cross-role routing",
+      "modules": [
+        "routing/roles.py",
+        "routing/partner.py",
+        "routing/router.py"
+      ]
+    },
+    "📡 Events (事件)": {
+      "desc": "Signals, notifications, bus communication",
+      "modules": [
+        "events/signals.py",
+        "events/parser.py",
+        "events/notify.py"
+      ]
+    },
+    "⚙️ Operations (运维)": {
+      "desc": "CCS lifecycle, sentinel management",
+      "modules": [
+        "ops/sentinel.py",
+        "ops/tracker.py",
+        "ops/watchdog.py"
+      ]
+    },
+    "🔗 Core (核心)": {
+      "desc": "Orchestration, launcher, CCS management",
+      "modules": [
+        "core.py",
+        "ccs.py",
+        "launcher.py"
+      ]
+    },
+    "🧪 Testing (测试)": {
+      "desc": "Thin wrappers for backward compatibility",
+      "modules": [
+        "role_manager.py",
+        "partner_client.py",
+        "signal_parser.py",
+        "signals.py",
+        "workflow_client.py",
+        "workflow_gate.py",
+        "lifecycle_manager.py",
+        "step_engine.py",
+        "cross_role_router.py"
+      ]
+    },
+    "📝 Migration (迁移)": {
+      "desc": "DB schema evolution",
+      "modules": [
+        "migration/scripts.py"
+      ]
+    }
+  },
+  "stats": {
+    "total_modules": 57,
+    "total_classes": 19,
+    "total_functions": 178,
+    "total_lines": 8743,
+    "thin_wrappers": 14,
+    "core_modules": 43
+  },
+  "dep_graph": {
+    "__init__.py": [],
+    "__main__.py": [
+      "ccs.py"
+    ],
+    "ccs.py": [
+      "partner_client.py",
+      "core.py",
+      "ccs_socket.py"
+    ],
+    "ccs_socket.py": [],
+    "codex_ops.py": [
+      "tmux_ops.py",
+      "role_manager.py"
+    ],
+    "core.py": [
+      "tmux_ops.py",
+      "sentinel.py",
+      "watchdog.py",
+      "codex_ops.py",
+      "signals.py",
+      "paths.py",
+      "cross_role_router.py",
+      "role_manager.py",
+      "tracker.py"
+    ],
+    "cross_role_router.py": [
+      "routing/router.py"
+    ],
+    "ecosystem_cli.py": [
+      "workflow_client.py",
+      "core.py",
+      "sentinel.py"
+    ],
+    "ecosystem_health.py": [],
+    "event_log.py": [],
+    "events/__init__.py": [
+      "events/notify.py",
+      "signals.py",
+      "events/signals.py",
+      "events/parser.py"
+    ],
+    "events/notify.py": [
+      "paths.py"
+    ],
+    "events/parser.py": [
+      "paths.py",
+      "signals.py",
+      "events/signals.py"
+    ],
+    "events/signals.py": [
+      "paths.py",
+      "events/parser.py"
+    ],
+    "launcher.py": [
+      "ccs.py",
+      "core.py",
+      "sentinel.py"
+    ],
+    "lesson_injector.py": [
+      "paths.py"
+    ],
+    "lifecycle/__init__.py": [
+      "lifecycle/engine.py",
+      "lifecycle/manager.py"
+    ],
+    "lifecycle/engine.py": [
+      "paths.py"
+    ],
+    "lifecycle/manager.py": [
+      "paths.py"
+    ],
+    "lifecycle_manager.py": [
+      "lifecycle/manager.py"
+    ],
+    "migrate_v11_collab.py": [
+      "paths.py"
+    ],
+    "migration/__init__.py": [
+      "migration/scripts.py"
+    ],
+    "migration/scripts.py": [
+      "paths.py"
+    ],
+    "migration_scripts.py": [
+      "paths.py"
+    ],
+    "notification_engine.py": [
+      "events/notify.py"
+    ],
+    "observability.py": [
+      "event_log.py",
+      "core.py"
+    ],
+    "ops/__init__.py": [
+      "sentinel.py",
+      "watchdog.py",
+      "ops/sentinel.py",
+      "tracker.py",
+      "ops/tracker.py",
+      "ops/watchdog.py"
+    ],
+    "ops/sentinel.py": [
+      "paths.py"
+    ],
+    "ops/tracker.py": [
+      "sentinel.py",
+      "ops/sentinel.py"
+    ],
+    "ops/watchdog.py": [
+      "launcher.py",
+      "sentinel.py",
+      "ops/sentinel.py"
+    ],
+    "p0_exemption.py": [
+      "workflow_client.py",
+      "paths.py"
+    ],
+    "partner_client.py": [
+      "routing/partner.py",
+      "sentinel.py"
+    ],
+    "paths.py": [],
+    "pool_cli.py": [
+      "worker_pool.py"
+    ],
+    "role_manager.py": [
+      "routing/roles.py"
+    ],
+    "routing/__init__.py": [
+      "routing/partner.py",
+      "routing/router.py",
+      "routing/roles.py"
+    ],
+    "routing/partner.py": [
+      "paths.py",
+      "core.py",
+      "sentinel.py"
+    ],
+    "routing/roles.py": [
+      "workflow_client.py",
+      "workflow_gate.py"
+    ],
+    "routing/router.py": [
+      "paths.py"
+    ],
+    "sentinel.py": [
+      "sentinel.py",
+      "ops/sentinel.py"
+    ],
+    "signal_parser.py": [
+      "events/parser.py"
+    ],
+    "signals.py": [
+      "signals.py",
+      "events/signals.py"
+    ],
+    "step_engine.py": [
+      "lifecycle/engine.py"
+    ],
+    "task_utils.py": [
+      "workflow/utils.py"
+    ],
+    "template_registry.py": [
+      "paths.py"
+    ],
+    "template_validator.py": [
+      "template_registry.py"
+    ],
+    "tmux_ops.py": [],
+    "tracker.py": [
+      "ops/tracker.py",
+      "tracker.py"
+    ],
+    "watchdog.py": [
+      "watchdog.py",
+      "ops/watchdog.py"
+    ],
+    "worker_pool.py": [
+      "paths.py"
+    ],
+    "workflow/__init__.py": [
+      "workflow/client.py",
+      "workflow/gateway.py",
+      "workflow/utils.py"
+    ],
+    "workflow/client.py": [
+      "workflow/db.py",
+      "routing/partner.py",
+      "paths.py",
+      "workflow/gateway.py"
+    ],
+    "workflow/db.py": [
+      "paths.py"
+    ],
+    "workflow/gateway.py": [
+      "paths.py",
+      "template_registry.py"
+    ],
+    "workflow/utils.py": [
+      "routing/partner.py",
+      "paths.py",
+      "workflow/client.py"
+    ],
+    "workflow_client.py": [
+      "workflow/client.py"
+    ],
+    "workflow_gate.py": [
+      "workflow/gateway.py"
+    ]
+  }
+}

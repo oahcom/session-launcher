@@ -13,7 +13,6 @@ import warnings
 import re
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 
 from paths import BUS_CLIENT as _BUS_CLIENT_PATH
@@ -41,7 +40,7 @@ def check_signal(signal_def: dict) -> bool:
     旧格式（source 字段）自动转换并打印 warning。
     """
     # 委托给 signal_parser 统一解析器
-    from signal_parser import parse_signal
+    from events.parser import parse_signal
     return parse_signal(signal_def)
 
 
@@ -100,7 +99,8 @@ def check_systemctl_active(filter_str: str = "") -> bool:
 
 def check_http_health(filter_str: str = "") -> bool:
     """检查 HTTP 端点是否健康。"""
-    endpoints = ["http://localhost:8890", "http://localhost:20128"]
+    from paths import HEALTH_CHECK_ENDPOINTS
+    endpoints = HEALTH_CHECK_ENDPOINTS
     for ep in endpoints:
         try:
             result = subprocess.run(

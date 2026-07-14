@@ -22,6 +22,7 @@ import time
 import traceback
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import pytest
 
 # 路径设置：确保能从 tests/ 或项目根 import src
 _THIS_DIR = Path(__file__).resolve().parent
@@ -36,7 +37,18 @@ SISTER_BUS_CCS_SOCK = Path("/tmp/sister_bus_ccs.sock")
 
 
 def _sister_bus_sock_exists() -> bool:
-    return SISTER_BUS_CCS_SOCK.exists()
+    """检查 sister_bus socket server 是否真正运行（连接而非仅文件存在）。"""
+    if not SISTER_BUS_CCS_SOCK.exists():
+        return False
+    import socket
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(str(SISTER_BUS_CCS_SOCK))
+        s.close()
+        return True
+    except (ConnectionRefusedError, FileNotFoundError, OSError):
+        return False
 
 
 # ── 测试函数 ──
@@ -152,7 +164,6 @@ def test_concurrent_connections():
 def test_streamer_capture():
     """CCSStreamer 捕获 tmux 输出。"""
     import subprocess
-    # CCSStreamer 用 ccs-{role} 格式，tmux session 必须匹配
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", "ccs-stream_test", "-x", "80", "-y", "24"],
         capture_output=True, timeout=3)
@@ -172,7 +183,6 @@ def test_streamer_capture():
 
         assert len(chunks) > 0, "no output captured"
         assert "STREAM_TEST_42" in chunks[-1], "expected text not in output"
-        return True
     finally:
         subprocess.run(["tmux", "kill-session", "-t", "ccs-stream_test"],
                        capture_output=True, timeout=3)
@@ -182,15 +192,13 @@ def test_cli_send_direct():
     """send-direct CLI 发送成功（需 sister_bus_ccs.sock）。"""
     import subprocess
     if not _sister_bus_sock_exists():
-        print("  (skipped: sister_bus_ccs.sock 不存在)")
-        return True
+        pytest.skip("sister_bus_ccs.sock 不可用")
 
     result = subprocess.run(
         [sys.executable, str(_SRC_DIR / "ccs.py"),
          "send-direct", "cli_a", "cli_b", "CLI测试消息"],
         capture_output=True, text=True, timeout=10)
     assert "已发送" in result.stdout, f"unexpected: {result.stdout}{result.stderr}"
-    return True
 
 
 # ── 主入口 ──

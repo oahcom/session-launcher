@@ -89,7 +89,7 @@ def migrate():
             continue
 
         conn.execute("""
-            INSERT INTO workflow_templates (template_id, name, description,
+            INSERT OR IGNORE INTO workflow_templates (template_id, name, description,
                                             steps_json, steps_mermaid, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (tmpl["template_id"], tmpl["name"], tmpl["description"],

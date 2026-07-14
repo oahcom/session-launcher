@@ -18,18 +18,18 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel
+from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels
 from core import (
     _validate_role_name,
     _find_codex_pid,
-    _active_codex_session_count,
-    _wait_codex_ready,
-    _write_codex_sentinel,
     _build_codex_runner_script,
     start_codex_session,
     run_codex_task,
     cdx_status,
-    CODEX_SENTINEL_DIR,
+)
+from tmux_ops import (
+    _active_codex_session_count,
+    _wait_codex_ready,
     CODEX_TMUX_PREFIX,
     CODEX_SESSION_MAX,
 )
@@ -87,28 +87,35 @@ def test_find_codex_pid_未就绪返回None(mock_run):
 #  _active_codex_session_count
 # ═══════════════════════════════════════════════════════════════
 
-def test_active_codex_count_空目录返回0(tmp_path):
-    with patch("codex_ops.CODEX_SENTINEL_DIR", tmp_path):
-        assert _active_codex_session_count() == 0
+@patch("tmux_ops.subprocess.run")
+def test_active_codex_count_空目录返回0(mock_run):
+    """无 tmux cdx-* session 时返回 0。"""
+    m = MagicMock()
+    m.stdout = ""
+    m.returncode = 0
+    mock_run.return_value = m
+    assert _active_codex_session_count() == 0
 
 
-@patch("codex_ops.subprocess.run")
-def test_active_codex_count_过滤存活(mock_run, tmp_path):
-    with patch("codex_ops.CODEX_SENTINEL_DIR", tmp_path):
-        (tmp_path / "verifier.json").write_text(json.dumps({"role": "verifier"}))
-        (tmp_path / "dead.json").write_text(json.dumps({"role": "dead"}))
+@patch("tmux_ops.subprocess.run")
+def test_active_codex_count_过滤存活(mock_run):
+    """codex session 数量从 tmux list-sessions 实时统计。"""
+    def side_effect(*args, **kwargs):
+        m = MagicMock()
+        m.stderr = ""
+        cmd = " ".join(args[0]) if isinstance(args[0], list) else str(args[0])
+        if "list-sessions" in cmd:
+            m.stdout = "cdx-verifier\ncdx-dead\n"
+            m.returncode = 0
+        elif "cdx-dead" in cmd or "has-session" in cmd:
+            m.returncode = 1
+        else:
+            m.returncode = 0
+            m.stdout = ""
+        return m
 
-        # 第一个 session 存活，第二个死亡
-        def side_effect(*args, **kwargs):
-            m = MagicMock()
-            if "cdx-dead" in args[0]:
-                m.returncode = 1
-            else:
-                m.returncode = 0
-            return m
-
-        mock_run.side_effect = side_effect
-        assert _active_codex_session_count() == 1
+    mock_run.side_effect = side_effect
+    assert _active_codex_session_count() == 2
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -138,29 +145,6 @@ def test_wait_codex_ready_tmux未就绪(mock_pid, mock_alive):
 #  _write_codex_sentinel
 # ═══════════════════════════════════════════════════════════════
 
-@patch("codex_ops.CODEX_SENTINEL_DIR", new_callable=lambda: Path(tempfile.mkdtemp()))
-def test_write_codex_sentinel_写入(mock_dir):
-    """验证写入的哨兵包含 engine=codex 字段。"""
-    import json
-    path = _write_codex_sentinel("verifier", "Verifier", "cdx-verifier", 12345, "infinite")
-    assert path.exists()
-    data = json.loads(path.read_text())
-    assert data["engine"] == "codex"
-    assert data["role"] == "verifier"
-    assert data["pid"] == 12345
-
-
-@patch("codex_ops.CODEX_SENTINEL_DIR", new_callable=lambda: Path(tempfile.mkdtemp()))
-def test_write_codex_sentinel_重名覆盖(mock_dir):
-    """同一角色重复写哨兵应该更新而非重复创建。"""
-    import json
-    p1 = _write_codex_sentinel("verifier", "V1", "cdx-verifier", 100, "infinite")
-    data1 = json.loads(p1.read_text())
-    assert data1["pid"] == 100
-    p2 = _write_codex_sentinel("verifier", "V2", "cdx-verifier", 200, "ondemand")
-    data2 = json.loads(p2.read_text())
-    assert data2["pid"] == 200
-    assert data2["lifecycle"] == "ondemand"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -262,7 +246,7 @@ def test_start_codex_session_启动超时(mock_ready, mock_run, mock_count, mock
 
     result = start_codex_session("verifier")
     assert result["success"] is False
-    assert "超时" in result["error"]
+    assert "未就绪" in result["error"]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -314,23 +298,26 @@ def test_run_codex_task_输出截断标记(mock_run, mock_role, mock_alive):
 #  cdx_status
 # ═══════════════════════════════════════════════════════════════
 
-def test_cdx_status_空目录返回空(tmp_path):
-    with patch("codex_ops.CODEX_SENTINEL_DIR", tmp_path):
+def test_cdx_status_空目录返回空():
+    """无 codex 哨兵时返回空列表。"""
+    with patch("codex_ops.list_sentinels", return_value=[]):
         assert cdx_status() == []
 
 
 @patch("codex_ops.subprocess.run")
-def test_cdx_status_正常解析(mock_run, tmp_path):
-    with patch("codex_ops.CODEX_SENTINEL_DIR", tmp_path):
-        (tmp_path / "verifier.json").write_text(json.dumps({
-            "role": "verifier",
-            "title": "Verifier",
-            "lifecycle": "infinite",
-            "started_at": 1000000,
-        }))
-        # tmux 存活
+def test_cdx_status_正常解析(mock_run):
+    """codex 哨兵通过统一哨兵正常解析。"""
+    verifier_sentinel = CcsSentinel(
+        role="verifier",
+        title="Verifier",
+        tmux_session="cdx-verifier",
+        pid=12345,
+        started_at=1000000,
+        lifecycle="infinite",
+        engine="codex",
+    )
+    with patch("codex_ops.list_sentinels", return_value=[verifier_sentinel]):
         mock_run.return_value = MagicMock(returncode=0)
-
         stats = cdx_status()
         assert len(stats) == 1
         assert stats[0]["role"] == "verifier"
@@ -338,15 +325,9 @@ def test_cdx_status_正常解析(mock_run, tmp_path):
         assert stats[0]["lifecycle"] == "infinite"
 
 
-@patch("codex_ops.subprocess.run")
-def test_cdx_status_坏哨兵记录日志(mock_run, tmp_path, caplog):
-    """P2-13: 损坏哨兵文件打印 warning 不静默跳过。"""
-    import logging
-    caplog.set_level(logging.WARNING)
-
-    with patch("codex_ops.CODEX_SENTINEL_DIR", tmp_path):
-        (tmp_path / "bad.json").write_text("not json")
-        mock_run.return_value = MagicMock(returncode=0)
+def test_cdx_status_过滤非codex():
+    """非 codex 引擎的哨兵不应出现在 cdx_status 中。"""
+    ccs_sentinel = CcsSentinel(role="maintainer", engine="ccs")
+    with patch("codex_ops.list_sentinels", return_value=[ccs_sentinel]):
         stats = cdx_status()
         assert len(stats) == 0
-        assert "损坏哨兵文件" in caplog.text

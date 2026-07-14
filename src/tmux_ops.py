@@ -8,17 +8,15 @@ __all__ = [
     '_tmux_kill',
     '_find_codex_pid',
     '_active_codex_session_count',
-    '_write_codex_sentinel',
     '_wait_codex_ready',
     'TMUX_PREFIX',
     'CODEX_TMUX_PREFIX',
-    'CODEX_SENTINEL_DIR',
     'CODEX_LOOP_DELAY',
     'CODEX_OUTPUT_MAX',
     'CODEX_ERROR_MAX',
     'CODEX_SESSION_MAX',
     'CODEX_READY_RETRIES',
-    'CODEX_READY_INTERVAL',
+    'CODEX_READY_INTERVAL', 'CODEX_SENTINEL_DIR',
     '_MEM_FREE_MIN_MB',
     '_CCS_LAUNCH_INTERVAL',
 ]
@@ -27,6 +25,7 @@ __all__ = [
 """Auto-generated: tmux_ops.py — extracted from core.py"""
 
 import json
+import threading
 import os
 import re
 import subprocess
@@ -39,6 +38,7 @@ TMUX_PREFIX = "ccs-"
 CODEX_TMUX_PREFIX = "cdx-"
 
 CODEX_SENTINEL_DIR = Path("/tmp/cdx-sentinels")
+
 
 CODEX_LOOP_DELAY = 60
 
@@ -216,55 +216,32 @@ def _find_codex_pid(tmux_name: str) -> Optional[int]:
 
 
 def _active_codex_session_count() -> int:
-    """当前运行的 Codex session 数量（通过哨兵 + tmux 存活确认）。"""
-    count = 0
-    if not CODEX_SENTINEL_DIR.exists():
+    """当前运行的 Codex session 数量（tmux session 前缀 cdx- 实时统计）。"""
+    try:
+        r = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5
+        )
+        if not r.stdout.strip():
+            return 0
+        return sum(1 for line in r.stdout.strip().split("\n")
+                   if line.strip().startswith("cdx-"))
+    except Exception:
         return 0
-    for f in CODEX_SENTINEL_DIR.glob("*.json"):
-        try:
-            data = json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        tmux_name = f"{CODEX_TMUX_PREFIX}{data.get('role', '')}"
-        try:
-            r = subprocess.run(["tmux", "has-session", "-t", tmux_name],
-                               capture_output=True, timeout=5)
-            if r.returncode == 0:
-                count += 1
-        except Exception:
-            continue
-    return count
 
 
-def _write_codex_sentinel(role_name: str, role_title: str,
-                          tmux_name: str, pid: Optional[int],
-                          lifecycle: str) -> Path:
-    """线程安全写入 Codex 哨兵（直接写 CODEX_SENTINEL_DIR）。"""
-    CODEX_SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
-    data = {
-        "role": role_name,
-        "title": role_title,
-        "tmux_session": tmux_name,
-        "pid": pid,
-        "started_at": time.time(),
-        "lifecycle": lifecycle,
-        "engine": "codex",
-    }
-    path = CODEX_SENTINEL_DIR / f"{role_name}.json"
-    # 原子写入：先写临时文件再 rename，避免并发读写出错
-    tmp = path.with_suffix(f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(data, ensure_ascii=False))
-    tmp.replace(path)
-    return path
 
 
 def _wait_codex_ready(tmux_name: str, timeout: float = 15) -> bool:
-    """轮询等待 tmux session 就绪 + PID 有效，最大等待 timeout 秒。"""
-    deadline = time.time() + timeout
+    """轮询等待 tmux session 就绪 + PID 有效，最大等待 timeout 秒。
+
+    ponytail: 使用 deadline 而非 retry_count*interval。如需更复杂的 readiness
+    (health endpoint, 日志模式匹配)，扩展 check 函数。"""
+    deadline = time.time() + max(timeout, 1.0)
     while time.time() < deadline:
         if _is_alive(tmux_name):
             pid = _find_codex_pid(tmux_name)
             if pid is not None:
                 return True
-        time.sleep(CODEX_READY_INTERVAL)
+        time.sleep(min(CODEX_READY_INTERVAL, timeout / 3))
     return False

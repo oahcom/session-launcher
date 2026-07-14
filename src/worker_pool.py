@@ -21,6 +21,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import io
+from paths import ROUTER_API_ENDPOINT
 
 POOL_DIR = Path("/tmp/cdx-pools")
 MAX_CONCURRENT = 100  # per dispatcher
@@ -36,7 +37,7 @@ def worker_sync(task_id: str, prompt: str, timeout: int = 60) -> dict:
         }
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            "http://localhost:20128/v1/chat/completions",
+            ROUTER_API_ENDPOINT,
             data=data_bytes,
             headers={"Content-Type": "application/json"},
             method="POST",

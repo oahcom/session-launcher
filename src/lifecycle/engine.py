@@ -15,7 +15,7 @@ from typing import Optional
 
 from paths import WORKFLOWS_DB as DB_PATH
 from paths import BUS_CLIENT
-CCS_CLI = Path(__file__).resolve().parent / "ccs.py"
+CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 
 VALID_TYPES = {"handoff", "review", "single", "gate", "notify"}
 
@@ -120,9 +120,12 @@ class StepEngine:
         超时则通知 escalation_role，保持 workflow 状态不变。
         """
         triggered = []
-        rows = self._conn.execute(
-            "SELECT * FROM workflow_instances WHERE status='running'"
-        ).fetchall()
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM workflow_instances WHERE status='running'"
+            ).fetchall()
+        except Exception:
+            return triggered  # 空 DB / 无表时静默返回
         for row in rows:
             inst = dict(row)
             tid = inst.get("template_id")

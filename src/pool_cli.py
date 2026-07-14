@@ -3,11 +3,12 @@
 Usage: python3 pool_cli.py <role> '<json_tasks>' [--max-workers N]
 """
 import sys, json, warnings, os
+from pathlib import Path
 # Suppress all warnings
 warnings.filterwarnings("ignore")
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker_pool import run_parallel
 
 if __name__ == '__main__':

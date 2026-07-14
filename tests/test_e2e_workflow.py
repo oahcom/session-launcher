@@ -17,9 +17,9 @@ if str(SRC) not in sys.path:
 
 import pytest
 from template_registry import TemplateRegistry
-from workflow_client import WorkflowClient
-from lifecycle_manager import LifecycleManager
-from migration_scripts import run_migration
+from workflow.client import WorkflowClient
+from lifecycle.manager import LifecycleManager
+from migration.scripts import run_migration
 
 
 def _build_db():

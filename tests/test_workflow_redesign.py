@@ -21,15 +21,15 @@ if str(SRC) not in sys.path:
 
 import pytest
 from template_registry import TemplateRegistry, ValidationReport, _validate_schema, _check_role_existence
-from workflow_gate import Gate
-from workflow_client import WorkflowClient
-from lifecycle_manager import LifecycleManager
-from step_engine import StepEngine
-from notification_engine import NotificationEngine
+from workflow.gateway import Gate
+from workflow.client import WorkflowClient
+from lifecycle.manager import LifecycleManager
+from lifecycle.engine import StepEngine
+from events.notify import NotificationEngine
 from p0_exemption import P0Exemption
-from cross_role_router import CrossRoleRouter
+from routing.router import CrossRoleRouter
 from template_validator import run_validation
-from migration_scripts import (
+from migration.scripts import (
     pre_flight, dry_run_assessment, export_backup,
     truncate_tables, restore_from_backup, run_migration,
 )
@@ -1258,7 +1258,12 @@ class TestCrossRoleRouter:
     """T13+T15: cross_role_router.py — 路由 + 敏感操作门禁。"""
 
     def test_t13_01_intercept_returns_true(self, test_db):
-        assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "你好") is True
+        # 同角色放行
+        assert CrossRoleRouter(db_path=test_db).intercept("pm", "pm", "你好") is True
+        # CLI 来源放行
+        assert CrossRoleRouter(db_path=test_db).intercept("cli", "pm", "指令") is True
+        # 跨角色无证据拒绝
+        assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is False
 
     def test_t13_02_intercept_logs_to_db(self, test_db):
         router = CrossRoleRouter(db_path=test_db)
@@ -1273,14 +1278,19 @@ class TestCrossRoleRouter:
         assert detail["source"] == "pm" and detail["target"] == "pg"
 
     def test_t15_01_check_send_permission(self, test_db):
-        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is True
+        # 同角色放行
+        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pm") is True
+        # 无证据的跨角色 → 拒绝（三源验证）
+        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is False
 
     def test_t15_02_log_violation(self, test_db):
         router = CrossRoleRouter(db_path=test_db)
-        router.log_violation("pg", "pm", "越权消息")
+        # 使用不存在的源触发验证拒绝
+        result = router.intercept("i_do_not_exist_xyz", "pm", "越权消息")
+        assert result is False, "不应通过三源验证"
         conn = sqlite3.connect(test_db); conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM workflow_logs WHERE action='cross_role_violation'"
+            "SELECT * FROM workflow_logs WHERE action='source_verification_denied'"
         ).fetchall()
         conn.close()
         assert len(rows) >= 1
@@ -1480,7 +1490,7 @@ class TestRegression:
         wc.close()
 
     def test_reg_02_execute_handoff_compatible(self, test_db):
-        from task_utils import execute_handoff
+        from workflow.utils import execute_handoff
         assert callable(execute_handoff)
 
     def test_reg_03_sync_step_done_ready(self, test_db):

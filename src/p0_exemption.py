@@ -47,7 +47,7 @@ class P0Exemption:
         self._conn.commit()
         # 延迟导入确保 tasks 表由 workflow_db 统一管理
         try:
-            from workflow_client import WorkflowClient
+            from workflow.client import WorkflowClient
             wc = WorkflowClient(self.role, db_path=str(self.db_path))
             wc.close()
         except Exception:
@@ -81,7 +81,7 @@ class P0Exemption:
         now = time.time()
 
         self._conn.execute("""
-            INSERT INTO tasks (task_id, title, description, assigner, assignee,
+            INSERT OR IGNORE INTO tasks (task_id, title, description, assigner, assignee,
                                priority, status, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, 0, 'created', ?, ?)
         """, (task_id, title, description, self.role, assignee, now, now))
@@ -177,7 +177,7 @@ class P0Exemption:
         if row:
             return dict(row)
         try:
-            from workflow_client import WorkflowClient
+            from workflow.client import WorkflowClient
             with WorkflowClient(self.role) as wc:
                 return wc.get_task(task_id)
         except Exception:

@@ -29,14 +29,14 @@ if str(SRC) not in sys.path:
 import pytest
 
 from template_registry import TemplateRegistry, ValidationReport, get_role_registry
-from workflow_gate import Gate
-from workflow_client import WorkflowClient
-from lifecycle_manager import LifecycleManager
-from step_engine import StepEngine
-from notification_engine import NotificationEngine
+from workflow.gateway import Gate
+from workflow.client import WorkflowClient
+from lifecycle.manager import LifecycleManager
+from lifecycle.engine import StepEngine
+from events.notify import NotificationEngine
 from p0_exemption import P0Exemption
-from cross_role_router import CrossRoleRouter
-from migration_scripts import (
+from routing.router import CrossRoleRouter
+from migration.scripts import (
     pre_flight, dry_run_assessment, export_backup,
     truncate_tables, restore_from_backup, run_migration
 )
@@ -393,7 +393,7 @@ class TestD1_Correctness:
 
     def test_d1_completion_check_expression_output_exists(self, wf_with_seeded, seeded_db, tmp_path):
         """D1-4a output_exists 运行时检查文件存在。"""
-        from step_engine import StepEngine
+        from lifecycle.engine import StepEngine
         se = StepEngine("pg", db_path=seeded_db)
 
         # 创建一个临时文件
@@ -408,7 +408,7 @@ class TestD1_Correctness:
 
     def test_d1_completion_check_file_not_found(self, wf_with_seeded, seeded_db):
         """D1-4b output_exists 文件不存在 → failed。"""
-        from step_engine import StepEngine
+        from lifecycle.engine import StepEngine
         se = StepEngine("pg", db_path=seeded_db)
         result = se._check_condition({"output_exists": ["/tmp/nonexistent_file.md"]})
         assert result[0] is False
@@ -417,7 +417,7 @@ class TestD1_Correctness:
 
     def test_d1_completion_check_empty_passes(self, wf_with_seeded, seeded_db):
         """D1-4c 空的 completion_check 视为通过。"""
-        from step_engine import StepEngine
+        from lifecycle.engine import StepEngine
         se = StepEngine("pg", db_path=seeded_db)
         result = se._check_condition({})
         assert result[0] is True
@@ -543,7 +543,7 @@ class TestD2_Security:
     def test_d2_rollback_only_assigner(self, seeded_db):
         """D2-7 非分配者 rollback → 拒绝（通过 Gate 校验）。"""
         # 此测试验证 T16 的安全约束
-        from workflow_gate import Gate
+        from workflow.gateway import Gate
         g = Gate(db_path=seeded_db)
 
         # 先验证 Gate 能正确识别有效角色
@@ -628,13 +628,13 @@ class TestD3_Maintainability:
         import importlib
         modules = [
             "template_registry",
-            "workflow_gate",
-            "lifecycle_manager",
-            "step_engine",
-            "notification_engine",
+            "workflow.gateway",
+            "lifecycle.manager",
+            "lifecycle.engine",
+            "events.notify",
             "p0_exemption",
-            "cross_role_router",
-            "migration_scripts",
+            "routing.router",
+            "migration.scripts",
             "template_validator",
         ]
         for mod_name in modules:
@@ -742,7 +742,7 @@ class TestD4_Performance:
     def test_d4_index_on_workflow_logs(self, seeded_db):
         """D4-3 workflow_logs 有 action 和 ts 索引。"""
         # 确保 schema 完整
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -757,7 +757,7 @@ class TestD4_Performance:
     def test_d4_log_query_with_index(self, seeded_db):
         """D4-4 通过索引查询日志应高效（验证 EXPLAIN 无全表扫描）。"""
         # 确保 schema 完整
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -861,7 +861,7 @@ class TestD5_Consistency:
     def test_d5_migration_preserves_data(self, seeded_db):
         """D5-5 迁移后数据不丢失。"""
         # 先确保 schema 完整（migration 需要先有 schema）
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -967,7 +967,7 @@ class TestD6_Testability:
     def test_d6_migration_dry_run_safe(self, seeded_db):
         """D6-5 迁移脚本 dry-run 模式不修改数据。"""
         # 确保完整 schema 存在
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -983,11 +983,11 @@ class TestD6_Testability:
 
     def test_d6_truncate_and_restore(self, wf_with_seeded, seeded_db):
         """D6-6 truncate + 恢复流程完整性。"""
-        from migration_scripts import export_backup, truncate_tables, restore_from_backup
+        from migration.scripts import export_backup, truncate_tables, restore_from_backup
         import json
 
         # 确保完整 schema 存在
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -1021,9 +1021,9 @@ class TestD6_Testability:
 
     def test_d6_cross_module_no_side_effects(self, seeded_db):
         """D6-7 跨模块操作不产生意料之外的副作用。"""
-        from workflow_client import WorkflowClient as WC
-        from lifecycle_manager import LifecycleManager as LM
-        from notification_engine import NotificationEngine as NE
+        from workflow.client import WorkflowClient as WC
+        from lifecycle.manager import LifecycleManager as LM
+        from events.notify import NotificationEngine as NE
 
         # 各模块独立操作同一 db_path
         c1 = WC("pg", db_path=seeded_db)
@@ -1104,10 +1104,10 @@ class TestCrossDimension:
     def test_p0_creation_and_template_binding(self, seeded_db):
         """P0 创建后补录 template_id 的完整路径。"""
         # 确保 schema 完整（含 template_id 列）
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
-        from migration_scripts import run_migration
+        from migration.scripts import run_migration
         run_migration(db_path=seeded_db, dry_run=False)
         p0 = P0Exemption("coordinator", db_path=seeded_db)
         tid = p0.create_p0_task("紧急P0", "紧急修复生产Bug", "pg", "coordinator",
@@ -1128,7 +1128,7 @@ class TestCrossDimension:
     def test_gate_rejection_and_cross_role_audit(self, seeded_db):
         """Gate 拒绝后路由层记录审计日志。"""
         # 确保 schema 完整
-        from workflow_client import WorkflowClient
+        from workflow.client import WorkflowClient
         c = WorkflowClient("pg", db_path=seeded_db)
         c.close()
 
@@ -1142,7 +1142,8 @@ class TestCrossDimension:
         # 路由层记录跨角色通信
         router = CrossRoleRouter(db_path=seeded_db)
         allowed = router.intercept("pg", "pm", "请处理这个Bug")
-        assert allowed is True  # 当前存根放行
+        # 三源验证：无 bus 证据 + 无 DB assigner + 无 sentinel → 拒绝
+        assert allowed is False
 
         # 验证日志记录
         conn = sqlite3.connect(seeded_db)

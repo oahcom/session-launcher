@@ -16,9 +16,9 @@ import sys
 import time
 from pathlib import Path
 
-SESSION_LAUNCHER = Path("/home/administrator/session-launcher")
-CCS_WORKSPACES = Path("/home/administrator/ccs-workspaces")
-PROD_DB = Path("/home/administrator/.hermes/state/workflows.db")
+SESSION_LAUNCHER = Path.home() / "session-launcher"
+CCS_WORKSPACES = Path.home() / "ccs-workspaces"
+PROD_DB = Path.home() / ".hermes" / "state" / "workflows.db"
 
 DEFAULT_TEMPLATE = {
     "pm": "WL-02", "coordinator": "WL-02", "ccs-coordinator": "WL-02",
@@ -77,7 +77,7 @@ def migrate_file(filepath, role):
         f"\n"
         f"```python\n"
         f"import sys; sys.path.insert(0, '{SESSION_LAUNCHER}')\n"
-        f"from workflow_client import WorkflowClient\n"
+        f"from workflow.client import WorkflowClient\n"
         f"\n"
         f"with WorkflowClient(\"{role}\") as wf:\n"
         f"    task_id, wf_id = wf.create_task_v2(\n"
@@ -138,7 +138,7 @@ def migrate_file(filepath, role):
         f"\n"
         f"```python\n"
         f"import sys; sys.path.insert(0, '{SESSION_LAUNCHER}')\n"
-        f"from workflow_client import WorkflowClient\n"
+        f"from workflow.client import WorkflowClient\n"
         f"wf = WorkflowClient(\"{role}\")\n"
         f"result = wf.complete_step(\"{{wf_id}}\", \"s1\")\n"
         f"print(result)\n"
@@ -159,7 +159,7 @@ def migrate_file(filepath, role):
         f"\n"
         f"```python\n"
         f"import sys; sys.path.insert(0, '{SESSION_LAUNCHER}')\n"
-        f"from workflow_client import WorkflowClient\n"
+        f"from workflow.client import WorkflowClient\n"
         f"wf = WorkflowClient(\"{role}\")\n"
         f"wf.fail_step(\"{{wf_id}}\", \"s1\", \"失败原因\")\n"
         f"```"
@@ -216,12 +216,12 @@ def migrate_file(filepath, role):
     # 6. check() → 保持兼容（check 函数还在）
     # 7. 清理 import
     content = content.replace(
-        "from workflow_client import complete_task",
-        "# from workflow_client import complete_step, confirm_step"
+        "from workflow.client import complete_task",
+        "# from workflow.client import complete_step, confirm_step"
     )
     content = content.replace(
-        "from workflow_client import fail_task",
-        "# from workflow_client import fail_step"
+        "from workflow.client import fail_task",
+        "# from workflow.client import fail_step"
     )
 
     filepath.write_text(content, encoding="utf-8")

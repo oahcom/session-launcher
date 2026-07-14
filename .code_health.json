@@ -1,0 +1,52 @@
+{
+  "timestamp": 1784065278.6255612,
+  "file_size_violations": [
+    {
+      "file": "core.py",
+      "lines": 626,
+      "status": "🔴",
+      "action": "BLOCK MERGE — split required"
+    },
+    {
+      "file": "lifecycle/engine.py",
+      "lines": 445,
+      "status": "🟡",
+      "action": "plan to split"
+    },
+    {
+      "file": "lifecycle/manager.py",
+      "lines": 441,
+      "status": "🟡",
+      "action": "plan to split"
+    },
+    {
+      "file": "migration_scripts.py",
+      "lines": 415,
+      "status": "🟡",
+      "action": "plan to split"
+    },
+    {
+      "file": "routing/partner.py",
+      "lines": 430,
+      "status": "🟡",
+      "action": "plan to split"
+    },
+    {
+      "file": "template_registry.py",
+      "lines": 528,
+      "status": "🟡",
+      "action": "plan to split"
+    }
+  ],
+  "long_functions": [
+    {
+      "file": "ccs.py",
+      "function": "main",
+      "line": 22,
+      "length": 322
+    }
+  ],
+  "high_imports": [],
+  "anti_patterns": [],
+  "total_issues": 7
+}

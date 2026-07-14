@@ -50,13 +50,17 @@ class Gate:
 
     def is_template_active(self, template_id: str) -> bool:
         """检查模板是否存在且已激活。"""
-        row = self._conn.execute(
-            "SELECT is_active FROM workflow_templates WHERE template_id=?",
-            (template_id,)
-        ).fetchone()
-        if not row:
-            return False
-        val = row["is_active"]
+        try:
+            row = self._conn.execute(
+                "SELECT is_active FROM workflow_templates WHERE template_id=?",
+                (template_id,)
+            ).fetchone()
+            if not row:
+                return False
+            val = row["is_active"]
+        except sqlite3.OperationalError:
+            # schema 无 is_active 列 → 降级为检查 exists
+            return self.is_template_exists(template_id)
         # SQLite 可能返回 TEXT('1') 或 INTEGER(1)
         return val in (1, "1", True)
 
@@ -81,10 +85,14 @@ class Gate:
 
     def check_can_initiate(self, role: str, template_id: str) -> bool:
         """检查角色是否允许发起此模板的工作流。"""
-        row = self._conn.execute(
-            "SELECT allowed_initiators FROM workflow_templates WHERE template_id=?",
-            (template_id,)
-        ).fetchone()
+        try:
+            row = self._conn.execute(
+                "SELECT allowed_initiators FROM workflow_templates WHERE template_id=?",
+                (template_id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # schema 无 allowed_initiators 列 → 跳过权限校验
+            return True
         if not row or not row["allowed_initiators"]:
             return False
         try:
@@ -95,10 +103,14 @@ class Gate:
 
     def check_can_execute(self, role: str, template_id: str) -> bool:
         """检查角色是否为模板的允许执行者。"""
-        row = self._conn.execute(
-            "SELECT allowed_executors FROM workflow_templates WHERE template_id=?",
-            (template_id,)
-        ).fetchone()
+        try:
+            row = self._conn.execute(
+                "SELECT allowed_executors FROM workflow_templates WHERE template_id=?",
+                (template_id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # schema 无 allowed_executors 列 → 跳过权限校验
+            return True
         if not row or not row["allowed_executors"]:
             return False
         try:

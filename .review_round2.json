@@ -1,0 +1,457 @@
+{
+  "round": 2,
+  "total": 56,
+  "blocker": 0,
+  "important": 38,
+  "nit": 18,
+  "issues": [
+    {
+      "dimension": 6,
+      "severity": "nit",
+      "file": "workflow/client.py",
+      "line": 71,
+      "description": "模糊命名: _create_task_impl",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "core.py",
+      "line": 0,
+      "description": "🟡 455行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "migration_scripts.py",
+      "line": 0,
+      "description": "🟡 415行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "template_registry.py",
+      "line": 0,
+      "description": "🟡 528行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "routing/partner.py",
+      "line": 0,
+      "description": "🟡 430行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "lifecycle/engine.py",
+      "line": 0,
+      "description": "🟡 445行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 7,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 0,
+      "description": "🟡 441行 — 计划拆分 (≥400)",
+      "detail": ""
+    },
+    {
+      "dimension": 9,
+      "severity": "important",
+      "file": "workflow/gateway.py",
+      "line": 0,
+      "description": "Gateway 中有业务条件判断",
+      "detail": ""
+    },
+    {
+      "dimension": 11,
+      "severity": "important",
+      "file": "src/ccs.py",
+      "line": 0,
+      "description": "缺少测试文件 test_ccs.py",
+      "detail": ""
+    },
+    {
+      "dimension": 11,
+      "severity": "important",
+      "file": "src/core.py",
+      "line": 0,
+      "description": "缺少测试文件 test_core.py",
+      "detail": ""
+    },
+    {
+      "dimension": 11,
+      "severity": "important",
+      "file": "src/paths.py",
+      "line": 0,
+      "description": "缺少测试文件 test_paths.py",
+      "detail": ""
+    },
+    {
+      "dimension": 14,
+      "severity": "nit",
+      "file": "tmux_ops.py",
+      "line": 0,
+      "description": "缺少模块级文档字符串",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "event_log.py",
+      "line": 138,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "event_log.py",
+      "line": 143,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migrate_v11_collab.py",
+      "line": 82,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration_scripts.py",
+      "line": 182,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration_scripts.py",
+      "line": 278,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration_scripts.py",
+      "line": 331,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration_scripts.py",
+      "line": 357,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "template_registry.py",
+      "line": 306,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration/scripts.py",
+      "line": 182,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration/scripts.py",
+      "line": 278,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration/scripts.py",
+      "line": 331,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "migration/scripts.py",
+      "line": 357,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "workflow/client.py",
+      "line": 42,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "workflow/client.py",
+      "line": 78,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "workflow/client.py",
+      "line": 224,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 16,
+      "severity": "nit",
+      "file": "workflow/client.py",
+      "line": 386,
+      "description": "循环内可能有 SQL 查询 — N+1 风险",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "event_log.py",
+      "line": 111,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "migrate_v11_collab.py",
+      "line": 92,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "p0_exemption.py",
+      "line": 84,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "p0_exemption.py",
+      "line": 189,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "template_registry.py",
+      "line": 343,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 33,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 81,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 88,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 113,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 191,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "workflow/gateway.py",
+      "line": 169,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "routing/router.py",
+      "line": 188,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "routing/router.py",
+      "line": 207,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "lifecycle/engine.py",
+      "line": 423,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 106,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 17,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 288,
+      "description": "INSERT 无 OR REPLACE/ON CONFLICT — 非幂等",
+      "detail": ""
+    },
+    {
+      "dimension": 18,
+      "severity": "important",
+      "file": "tmux_ops.py",
+      "line": 0,
+      "description": "全局变量无锁保护",
+      "detail": ""
+    },
+    {
+      "dimension": 18,
+      "severity": "important",
+      "file": "routing/roles.py",
+      "line": 0,
+      "description": "全局变量无锁保护",
+      "detail": ""
+    },
+    {
+      "dimension": 19,
+      "severity": "important",
+      "file": "pool_cli.py",
+      "line": 0,
+      "description": "表 tasks 被 11 个模块写 (pool_cli.py, p0_exemption.py, migration_scripts.py)",
+      "detail": ""
+    },
+    {
+      "dimension": 19,
+      "severity": "important",
+      "file": "migrate_v11_collab.py",
+      "line": 0,
+      "description": "表 workflow_templates 被 10 个模块写 (migrate_v11_collab.py, migration_scripts.py, template_registry.py)",
+      "detail": ""
+    },
+    {
+      "dimension": 19,
+      "severity": "important",
+      "file": "p0_exemption.py",
+      "line": 0,
+      "description": "表 workflow_logs 被 9 个模块写 (p0_exemption.py, migration_scripts.py, migration/scripts.py)",
+      "detail": ""
+    },
+    {
+      "dimension": 19,
+      "severity": "important",
+      "file": "migration_scripts.py",
+      "line": 0,
+      "description": "表 workflow_instances 被 10 个模块写 (migration_scripts.py, migration/scripts.py, workflow/db.py)",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "workflow/client.py",
+      "line": 129,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 77,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 80,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 84,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 88,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    },
+    {
+      "dimension": 20,
+      "severity": "important",
+      "file": "lifecycle/manager.py",
+      "line": 93,
+      "description": "函数有时返回 None 有时返回 dict",
+      "detail": ""
+    }
+  ]
+}

@@ -21,9 +21,12 @@ _BUS_PROTOCOL = _SCRIPTS_DIR / "bus_protocol.py"
 if _BUS_PROTOCOL.exists():
     _BP_DIR = str(_SCRIPTS_DIR)
     if _BP_DIR not in sys.path:
-        sys.path.insert(0, _BP_DIR)
+        sys.path.insert(0, str(_BP_DIR))
 
 from bus_protocol import Blackboard, Fact
+
+from paths import ensure_paths as _ensure_paths
+_ensure_paths()
 
 
 class LessonInjector:
@@ -39,8 +42,8 @@ class LessonInjector:
             {
                 "id": f.id,
                 "src": f.src,
-                "title": f.t or f.title or "",
-                "evidence": f.e or f.evidence or "",
+                "title": f.t or "",
+                "evidence": f.e or "",
                 "ts": getattr(f, "ts", 0),
             }
             for f in facts
@@ -109,8 +112,14 @@ class LessonInjector:
 
         content = path.read_text(encoding="utf-8")
 
-        # 构建注入块
-        inject_block = f"\n{formatted}\n"
+        # 幂等性检查：跳过已存在的教训
+        from hashlib import md5
+        lesson_hash = md5(formatted.encode()).hexdigest()
+        if f"<!-- LESSON:{lesson_hash} -->" in content:
+            return False  # 已注入过
+
+        # 构建注入块（含去重标记）
+        inject_block = f"\n<!-- LESSON:{lesson_hash} -->\n{formatted}\n"
 
         if "<!-- KNOWLEDGE:START -->" in content:
             # 已有 KNOWLEDGE 块，在块末尾追加

@@ -18,14 +18,14 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sentinel import (
+from ops.sentinel import (
     CcsSentinel, read_sentinel, write_sentinel, delete_sentinel,
     update_health, SENTINEL_DIR,
 )
 # 延迟导入，避免 watchdog → launcher 循环依赖
 # 实际导入在 _restart_partner() 内部
 
-TMUX_PREFIX = "ccs-"
+
 
 
 def _is_alive(tmux_name: str) -> bool:
@@ -41,6 +41,16 @@ def _is_alive(tmux_name: str) -> bool:
 
 def _log(tag: str, msg: str):
     print(f"[{tag}] {datetime.now():%H:%M:%S} {msg}", flush=True)
+
+
+def _audit_monitor(decision: str, detail: str, src: str = ""):
+    """审计日志：watchdog 决策写入 bus monitor_audit。"""
+    try:
+        from bus_protocol import Blackboard
+        Blackboard().write("monitor_audit",
+            f"决策: {decision} → {detail}", src=src or "watchdog")
+    except Exception:
+        pass
 
 
 def _restart_partner(partner_role: str):
@@ -68,7 +78,7 @@ def _restart_partner(partner_role: str):
 def _run(this_role: str, partner_role: str, auto_restart: bool,
          interval: int, restart_delay: int):
     """守护线程主循环。异常不退出，记录后继续。"""
-    partner_tmux = f"{TMUX_PREFIX}{partner_role}"
+    partner_tmux = f"ccs-{partner_role}"
     tag = f"watchdog:{this_role}"
 
     while True:
@@ -88,9 +98,14 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
             _log(tag, f"partner {partner_role} 已死")
 
             if not auto_restart:
+                _audit_monitor("伙伴死亡-不重启",
+                    f"{this_role} 检测到 {partner_role} 死亡，auto_restart=False 跳过")
                 _log(tag, "未配置 auto-restart，跳过")
                 continue
 
+            _audit_monitor("伙伴死亡-自动重启",
+                f"{this_role} 检测到 {partner_role} 死亡，正在自动重启",
+                src=this_role)
             _log(tag, f"正在重启 {partner_role}...")
             delete_sentinel(partner_role)
             time.sleep(restart_delay)
@@ -118,7 +133,6 @@ _AUTO_CONTINUE_SENT: dict[str, float] = {}  # role -> last_sent_ts
 def check_auto_continue(role: str) -> bool:
     """检查是否需要 auto-continue。返回 True 如果发送了 continue。"""
     from core import _is_alive, _tmux_send
-    
     now = __import__("time").time()
     last_sent = _AUTO_CONTINUE_SENT.get(role, 0)
     if now - last_sent < AUTO_CONTINUE_THRESHOLD:
@@ -131,6 +145,9 @@ def check_auto_continue(role: str) -> bool:
     try:
         _tmux_send(tmux_name, "/continue")
         _AUTO_CONTINUE_SENT[role] = now
+        _audit_monitor("auto-continue",
+            f"{role} 无响应超过 {AUTO_CONTINUE_THRESHOLD}s，已发送 /continue",
+            src=role)
         print(f"[auto-continue:{role}] 发送 /continue 唤醒", flush=True)
         return True
     except Exception as e:

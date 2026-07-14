@@ -1,0 +1,39 @@
+{
+  "timestamp": 1784065510.7021716,
+  "checks": [
+    {
+      "name": "所有 .py 文件编译通过",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "核心模块全部可导入",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "薄包装器正确委派",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "workflows.db 表完整",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "角色文件 24 个",
+      "ok": true,
+      "detail": "有效/总数: 24/24"
+    },
+    {
+      "name": "测试集全部通过",
+      "ok": true,
+      "detail": "358 passed, 1 skipped, 7 warnings in 41.48s"
+    }
+  ],
+  "passed": 6,
+  "failed": 0,
+  "test_output": "358 passed, 1 skipped, 7 warnings in 41.48s",
+  "status": "✅ 健康"
+}

@@ -14,15 +14,24 @@ _PIPELINE_SRC = Path.home() / "session-pipeline" / "src"
 _ROLES_SRC = Path.home() / "hermes-session-roles" / "src"
 _HERMES_SCRIPTS = Path.home() / ".hermes" / "scripts"
 
-for p in [_LAUNCHER_SRC, _PIPELINE_SRC, _ROLES_SRC, _HERMES_SCRIPTS]:
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+# launcher's routing must come BEFORE pipeline's routing
+# Insert in REVERSE order so launcher is FIRST
+for p in [_HERMES_SCRIPTS, _ROLES_SRC, _PIPELINE_SRC, _LAUNCHER_SRC]:
+    p_str = str(p)
+    if p_str in sys.path:
+        sys.path.remove(p_str)
+    sys.path.insert(0, p_str)
+
+# Ensure cwd '' is at the end
+if '' in sys.path:
+    sys.path.remove('')
+    sys.path.append('')
 
 
-def cmd_status():
+def cmd_status() -> dict:
     from core import status as ccs_status
     from role_relations import get_all_roles
-    from workflow_client import WorkflowClient
+    from workflow.client import WorkflowClient
 
     sessions = ccs_status()
     roles = get_all_roles()
@@ -55,7 +64,7 @@ def cmd_status():
     return report
 
 
-def cmd_relations():
+def cmd_relations() -> dict:
     from role_relations import get_data_flow, get_all_roles, get_data_categories
     roles = get_all_roles()
     cats = get_data_categories()
@@ -68,8 +77,8 @@ def cmd_relations():
         print(f"  {'':<25} <- [{c}]\n")
 
 
-def cmd_board():
-    from workflow_client import WorkflowClient
+def cmd_board() -> dict:
+    from workflow.client import WorkflowClient
     wc = WorkflowClient("ecosystem")
     try:
         board = wc.kanban_board()
@@ -85,9 +94,9 @@ def cmd_board():
     print()
 
 
-def cmd_fleet():
+def cmd_fleet() -> dict:
     """Fleet-deck 风格 session 控制面板。"""
-    from sentinel import list_sentinels, get_all_cross_session_memories
+    from ops.sentinel import list_sentinels, get_all_cross_session_memories
     from core import get_routing_policy, _is_alive
     sentinels = list_sentinels()
     memories = get_all_cross_session_memories()
@@ -105,7 +114,7 @@ def cmd_fleet():
         print(f"  {role:<20} {st:<10} {up_s:<12} {pol:<10} {act}")
 
 
-def main():
+def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="三项目生态 CLI")
     sub = parser.add_subparsers(dest="command")

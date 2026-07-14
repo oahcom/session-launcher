@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import subprocess
-import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -27,12 +27,10 @@ from tmux_ops import (
     _is_alive,
     _find_codex_pid,
     _active_codex_session_count,
-    _write_codex_sentinel,
     _wait_codex_ready,
     _tmux_output,
     TMUX_PREFIX,
     CODEX_TMUX_PREFIX,
-    CODEX_SENTINEL_DIR,
     CODEX_SESSION_MAX,
     CODEX_LOOP_DELAY,
     CODEX_OUTPUT_MAX,
@@ -41,30 +39,47 @@ from tmux_ops import (
     CODEX_READY_INTERVAL,
 )
 
+# 统一哨兵：Codex session 写入 /tmp/ccs-sentinels 而非独立目录
+# ponytail: 未来 engine 字段可扩展为 "codex-v2" 等版本标识
+from ops.sentinel import CcsSentinel, write_sentinel, list_sentinels, delete_sentinel
+
 
 __all__ = [
     'start_codex_session',
     '_build_codex_runner_script',
     'run_codex_task',
     'cdx_status',
+    '_active_codex_session_count',
+    '_wait_codex_ready',
+    'CODEX_SESSION_MAX',
+    'CODEX_TMUX_PREFIX',
+    'CODEX_LOOP_DELAY',
 ]
-from typing import Optional
 
+# P0-5: 角色级锁防并发放.ponytail: 简化版 per-role lock, 高并发场景升级为 connection pool
+_CODEX_LOCKS: dict[str, threading.Lock] = {}
+_CODEX_LOCKS_LOCK = threading.Lock()
+
+def _get_codex_lock(role_name: str) -> threading.Lock:
+    with _CODEX_LOCKS_LOCK:
+        if role_name not in _CODEX_LOCKS:
+            _CODEX_LOCKS[role_name] = threading.Lock()
+        return _CODEX_LOCKS[role_name]
 
 
 def start_codex_session(role_name: str) -> dict:
-    """启动持久 Codex session (exec mode)。
+    """启动持久 Codex session (exec mode).
 
     修复清单：
-      - role_name 白名单校验（P1-2）
-      - runner 脚本用 shlex.quote() 防注入（P1-1/3）
-      - 主动轮询 readiness 替代 sleep(3)（P1-4/6）
-      - 哨兵写入 try/except（P1-5）
-      - _find_codex_pid 搜索 codex 进程（P1-8）
-      - 权限由角色配置控制（P2-10）
-      - tmux has-session 加 timeout（P2-11）
-      - 直接写 CODEX_SENTINEL_DIR 哨兵（P2-16）
-      - 并发上限检查（P2-18）
+      - role_name 白名单校验(P1-2)
+      - runner 脚本用 shlex.quote() 防注入(P1-1/3)
+      - 主动轮询 readiness 替代 sleep(3)(P1-4/6)
+      - 哨兵写入 try/except(P1-5)
+      - _find_codex_pid 搜索 codex 进程(P1-8)
+      - 权限由角色配置控制(P2-10)
+      - tmux has-session 加 timeout(P2-11)
+      - 直接写 CODEX_SENTINEL_DIR 哨兵(P2-16)
+      - 并发上限检查(P2-18)
     """
     # P1-2: role_name 白名单校验
     if not _validate_role_name(role_name):
@@ -80,7 +95,7 @@ def start_codex_session(role_name: str) -> dict:
     active = _active_codex_session_count()
     if active >= CODEX_SESSION_MAX:
         return {"success": False,
-                "error": f"Codex session 已达上限 ({CODEX_SESSION_MAX})，当前活跃: {active}"}
+                "error": f"Codex session 已达上限 ({CODEX_SESSION_MAX}),当前活跃: {active}"}
 
     # P2-11: tmux has-session 加 timeout
     try:
@@ -93,20 +108,22 @@ def start_codex_session(role_name: str) -> dict:
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "检查 tmux 状态超时"}
 
-    # P1-1/3: 构建 runner 脚本并写入临时文件
+    # P1-1/3: 构建 runner 脚本并写入临时文件(使用 tempfile 防竞态 P0-3)
     runner_script = _build_codex_runner_script(role)
 
-    tmp_script = Path(f"/tmp/cdx-runner-{role_name}.sh")
+    import tempfile
     try:
-        tmp_script.write_text(runner_script)
-        tmp_script.chmod(0o755)
+        fd, tmp_script = tempfile.mkstemp(suffix='.sh', prefix=f'cdx-runner-{role_name}_', dir='/tmp')
+        os.write(fd, runner_script.encode())
+        os.close(fd)
+        os.chmod(tmp_script, 0o755)
     except OSError as e:
         return {"success": False, "error": f"无法写入 runner 脚本: {e}"}
 
     tmux_cmd = [
         "tmux", "new-session", "-d", "-s", tmux_name,
         "-e", "FORCE_PERSONA=0",
-        "bash", str(tmp_script),
+        "bash", tmp_script,
     ]
     try:
         result = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
@@ -118,16 +135,25 @@ def start_codex_session(role_name: str) -> dict:
     # P1-4/6: 主动轮询 readiness 替代 sleep(3)
     ready = _wait_codex_ready(tmux_name, timeout=15)
     if not ready:
+        # P0-2: 超时后必须清理孤儿 tmux session
         subprocess.run(["tmux", "kill-session", "-t", tmux_name],
                        capture_output=True, timeout=5)
-        return {"success": False, "error": f"Codex session {role_name} 启动超时（15s 内未就绪）"}
+        return {"success": False, "error": f"Codex session {role_name} 启动超时(15s 内未就绪),已清理"}
 
     pid = _find_codex_pid(tmux_name)
 
-    # P1-5: 哨兵写入 try/except + P2-16: 直接写 CODEX_SENTINEL_DIR
+    # P1-5: 哨兵写入 try/except(统一写入 /tmp/ccs-sentinels)
     try:
-        _write_codex_sentinel(role_name, role.get("title", ""),
-                              tmux_name, pid, role.get("lifecycle", "infinite"))
+        s = CcsSentinel(
+            role=role_name,
+            title=role.get("title", ""),
+            tmux_session=tmux_name,
+            pid=pid,
+            started_at=time.time(),
+            lifecycle=role.get("lifecycle", "infinite"),
+            engine="codex",
+        )
+        write_sentinel(s)
     except OSError as e:
         subprocess.run(["tmux", "kill-session", "-t", tmux_name],
                        capture_output=True, timeout=5)
@@ -139,7 +165,7 @@ def start_codex_session(role_name: str) -> dict:
 
 
 def _build_codex_runner_script(role: dict) -> str:
-    """生成 Codex 循环执行 shell 脚本（用 shlex.quote 防注入）。"""
+    """生成 Codex 循环执行 shell 脚本(用 shlex.quote 防注入)."""
     prompt = _build_role_prompt(role)
     drive = role.get("drive", "loop")
     idle_action = role.get("idle_action", "/loop")
@@ -166,31 +192,39 @@ def _build_codex_runner_script(role: dict) -> str:
 
 
 def run_codex_task(role_name: str, message: str, timeout: int = 300) -> dict:
-    """在运行中的 Codex session 上执行一次性任务。
+    """在运行中的 Codex session 上执行一次性任务.
+    使用角色级锁防并发(P0-5).
 
-    与 send() 不同（走 tmux send-keys 发往运行中的交互进程），
-    本函数每次用独立 codex exec 进程执行（P2-19: 已重命名以区分语义）。
+    与 send() 不同(走 tmux send-keys 发往运行中的交互进程),
+    本函数每次用独立 codex exec 进程执行(P2-19: 已重命名以区分语义).
     """
-    # P2-19: 先检查目标 session 是否存活（避免 5 分钟超时等死）
-    tmux_name = f"{CODEX_TMUX_PREFIX}{role_name}"
-    if not _is_alive(tmux_name):
-        return {"success": False,
-                "error": f"Codex session {role_name} 不在运行，无法执行任务",
-                "role": role_name, "exit_code": -1}
+    lock = _get_codex_lock(role_name)
+    with lock:
+        tmux_name = f"{CODEX_TMUX_PREFIX}{role_name}"
+        if not _is_alive(tmux_name):
+            return {"success": False,
+                    "error": f"Codex session {role_name} 不在运行,无法执行任务",
+                    "role": role_name, "exit_code": -1}
 
-    role = get_role(role_name)
-    title = role.get("title", role_name) if role else role_name
-    prompt = f"[session-launcher] {title}({role_name}) 任务: {message}"
+        role = get_role(role_name)
+        title = role.get("title", role_name) if role else role_name
+        prompt = f"[session-launcher] {title}({role_name}) 任务: {message}"
 
-    try:
-        result = subprocess.run(
-            ["codex", "exec", "--dangerously-skip-permissions",
-             "-m", "9router_hermes", prompt],
-            capture_output=True, text=True, timeout=timeout
-        )
+        try:
+            result = subprocess.run(
+                ["codex", "exec", "--dangerously-skip-permissions",
+                 "-m", "9router_hermes", prompt],
+                capture_output=True, text=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            return {"success": False, "role": role_name,
+                    "error": f"执行超时 ({timeout}s)", "exit_code": -1}
+        except Exception as e:
+            return {"success": False, "role": role_name,
+                    "error": str(e), "exit_code": -1}
+
         stdout = result.stdout or ""
         stderr = result.stderr or ""
-        # 截断时标注丢失信息
         truncated = ""
         if len(stdout) > CODEX_OUTPUT_MAX:
             truncated = f" (截断, 共 {len(stdout)} 字符)"
@@ -202,28 +236,15 @@ def run_codex_task(role_name: str, message: str, timeout: int = 300) -> dict:
             "exit_code": result.returncode,
             "truncated": truncated,
         }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "role": role_name,
-                "error": f"执行超时 ({timeout}s)", "exit_code": -1}
-    except Exception as e:
-        return {"success": False, "role": role_name,
-                "error": str(e), "exit_code": -1}
 
 
 def cdx_status() -> list[dict]:
-    """列出所有运行中的 Codex sessions，与 status() 返回结构对齐。"""
-    if not CODEX_SENTINEL_DIR.exists():
-        return []
+    """列出所有运行中的 Codex sessions(从统一哨兵 /tmp/ccs-sentinels 读取)."""
     stats = []
-    for f in sorted(CODEX_SENTINEL_DIR.glob("*.json")):
-        try:
-            data = json.loads(f.read_text())
-        except (json.JSONDecodeError, OSError):
-            import logging
-            logging.warning("cdx_status: 损坏哨兵文件 %s", f.name)
+    for s in list_sentinels():
+        if s.engine != "codex":
             continue
-        role_name = data.get("role", "")
-        tmux_name = f"{CODEX_TMUX_PREFIX}{role_name}"
+        tmux_name = f"{CODEX_TMUX_PREFIX}{s.role}"
         alive = False
         try:
             r = subprocess.run(
@@ -234,20 +255,18 @@ def cdx_status() -> list[dict]:
         except Exception:
             alive = False
         pid = _find_codex_pid(tmux_name) if alive else None
-        started_at = data.get("started_at", 0)
-        uptime_sec = int(time.time() - started_at) if started_at else 0
+        uptime_sec = int(time.time() - s.started_at) if s.started_at else 0
         last_output = ""
         if alive:
             last_output = _tmux_output(tmux_name, tail=1).strip()
-        lifecycle = data.get("lifecycle", "unknown")
-        workspace_path = Path(f"~/ccs-workspaces/{role_name}").expanduser()
+        workspace_path = Path(f"~/ccs-workspaces/{s.role}").expanduser()
         stats.append({
-            "role": role_name,
-            "title": data.get("title", ""),
+            "role": s.role,
+            "title": s.title,
             "alive": alive,
             "pid": pid,
             "uptime_sec": uptime_sec,
-            "lifecycle": lifecycle,
+            "lifecycle": s.lifecycle,
             "engine": "codex",
             "last_output": last_output[-80:] if last_output else "",
             "workspace": str(workspace_path) if workspace_path.exists() else None,

@@ -16,9 +16,9 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sentinel import update_health
+from ops.sentinel import update_health
 
-TMUX_PREFIX = "ccs-"
+
 
 
 def _log(tag: str, msg: str):
@@ -43,6 +43,11 @@ def _bus_write(cat: str, text: str, src: str = ""):
         bb.write(cat, text, src=src)
     except Exception:
         pass
+
+
+def _audit_monitor(decision: str, detail: str, src: str = ""):
+    """审计日志：所有 CCS 决策写入 bus monitor_audit。"""
+    _bus_write("monitor_audit", f"决策: {decision} → {detail}", src=src or "tracker")
 
 
 def _run(this_role: str, bus_cat: str, timeout_sec: int,
@@ -84,6 +89,7 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
                 p_alive = False
                 try:
                     import subprocess
+                    from core import TMUX_PREFIX  # noqa: F811
                     r = subprocess.run(
                         ["tmux", "has-session", "-t", f"{TMUX_PREFIX}{p}"],
                         capture_output=True, timeout=5
@@ -99,8 +105,14 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
                 _bus_write(bus_cat,
                            f"[{this_role}] 死锁检测: {bus_cat} 最后消息 {int(age)}s 前 (by {src})，请继续",
                            src=this_role)
+                _audit_monitor("死锁检测",
+                    f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 存活，已发提醒",
+                    src=this_role)
                 _log(tag, f"死锁提醒: {bus_cat} 超时 {int(age)}s，已通知 {src}")
             else:
+                _audit_monitor("死锁-伙伴死亡",
+                    f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 已死",
+                    src=this_role)
                 _log(tag, f"死锁: {bus_cat} 超时 {int(age)}s，但伙伴已死（watchdog 负责重启）")
 
             last_reminder = now

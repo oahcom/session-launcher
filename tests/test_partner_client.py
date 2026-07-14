@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-test_partner_client.py — 跨角色协作核心模块测试。
+test_routing.partner.py — 跨角色协作核心模块测试。
 
-运行: python3 -m pytest tests/test_partner_client.py -v
+运行: python3 -m pytest tests/test_routing.partner.py -v
 """
 
 import json
@@ -22,13 +22,13 @@ if _SRC not in sys.path:
 # ── Layer 2: Status (resolve) ──────────────────────────────
 
 
-@patch("partner_client.read_sentinel")
-@patch("partner_client.is_ccs_running")
-@patch("partner_client._find_claude_pid")
+@patch("routing.partner.read_sentinel")
+@patch("routing.partner.is_ccs_running")
+@patch("routing.partner._find_pid")
 def test_resolve_alive(mock_find_pid, mock_is_running, mock_read_sentinel):
     """角色在线时 resolve 返回 alive=True。"""
-    from partner_client import PartnerClient
-    from sentinel import CcsSentinel, CcsHealth
+    from routing.partner import PartnerClient
+    from ops.sentinel import CcsSentinel, CcsHealth
     sentinel = CcsSentinel(
         role="pg", title="PG", pid=12345,
         lifecycle="infinite",
@@ -45,12 +45,12 @@ def test_resolve_alive(mock_find_pid, mock_is_running, mock_read_sentinel):
     assert status["lifecycle"] == "infinite"
 
 
-@patch("partner_client.read_sentinel")
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner.read_sentinel")
+@patch("routing.partner.is_ccs_running")
 def test_resolve_dead(mock_is_running, mock_read_sentinel):
     """角色离线时 resolve 返回 alive=False。"""
-    from partner_client import PartnerClient
-    from sentinel import CcsSentinel, CcsHealth
+    from routing.partner import PartnerClient
+    from ops.sentinel import CcsSentinel, CcsHealth
     sentinel = CcsSentinel(
         role="pg", title="PG", pid=0,
         lifecycle="ondemand",
@@ -65,11 +65,11 @@ def test_resolve_dead(mock_is_running, mock_read_sentinel):
     assert status["lifecycle"] == "ondemand"
 
 
-@patch("partner_client.read_sentinel")
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner.read_sentinel")
+@patch("routing.partner.is_ccs_running")
 def test_resolve_no_sentinel(mock_is_running, mock_read_sentinel):
     """无哨兵文件时 resolve 返回基础信息。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     mock_read_sentinel.return_value = None
     mock_is_running.return_value = False
 
@@ -84,21 +84,21 @@ def test_resolve_no_sentinel(mock_is_running, mock_read_sentinel):
 
 def test_check_wake_permission_qa_to_pg():
     """QA 可以唤醒 PG。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("qa")
     assert pc.check_wake_permission("pg") is True
 
 
 def test_check_wake_permission_pg_to_qa():
     """PG 不可以唤醒 QA。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("pg")
     assert pc.check_wake_permission("qa") is False
 
 
 def test_check_wake_permission_lr_to_all():
     """LR 全局唤醒权限。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("lr")
     assert pc.check_wake_permission("pg") is True
     assert pc.check_wake_permission("qa") is True
@@ -108,7 +108,7 @@ def test_check_wake_permission_lr_to_all():
 
 def test_check_wake_permission_coordinator_to_all():
     """Coordinator 全局唤醒权限。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("coordinator")
     assert pc.check_wake_permission("pg") is True
     assert pc.check_wake_permission("qa") is True
@@ -116,14 +116,14 @@ def test_check_wake_permission_coordinator_to_all():
 
 def test_check_wake_permission_reviewer_to_qa():
     """Reviewer 可以唤醒 QA。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("reviewer")
     assert pc.check_wake_permission("qa") is True
 
 
 def test_check_wake_permission_reviewer_to_pm():
     """Reviewer 不可以唤醒 PM（不在矩阵中）。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     pc = PartnerClient("reviewer")
     assert pc.check_wake_permission("pm") is False
 
@@ -131,11 +131,11 @@ def test_check_wake_permission_reviewer_to_pm():
 # ── wake() 权限检查 ─────────────────────────────────────────
 
 
-@patch("partner_client.check_wake_permission")
-@patch("partner_client.wake_ccs")
+@patch("routing.partner._check_wake")
+@patch("routing.partner._wake_ccs")
 def test_wake_with_permission(mock_wake_ccs, mock_check_perm):
     """有权限时 wake 调用 wake_ccs。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     mock_check_perm.return_value = True
     mock_wake_ccs.return_value = {"success": True, "role": "pg"}
 
@@ -145,11 +145,11 @@ def test_wake_with_permission(mock_wake_ccs, mock_check_perm):
     mock_wake_ccs.assert_called_once_with("pg", context="bug #123", by_role="qa")
 
 
-@patch("partner_client.check_wake_permission")
-@patch("partner_client.wake_ccs")
+@patch("routing.partner._check_wake")
+@patch("routing.partner._wake_ccs")
 def test_wake_without_permission(mock_wake_ccs, mock_check_perm):
     """无权限时 wake 返回错误。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     mock_check_perm.return_value = False
 
     pc = PartnerClient("pg")
@@ -162,8 +162,8 @@ def test_wake_without_permission(mock_wake_ccs, mock_check_perm):
 # ── force_start_ccs 内部权限检查 ────────────────────────────
 
 
-@patch("partner_client.check_wake_permission")
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner._check_wake")
+@patch("routing.partner.is_ccs_running")
 def test_force_start_ccs_permission_denied(mock_is_running, mock_check_perm):
     """force_start_ccs 内部权限检查拦截 PG 启动 QA。"""
     from launcher import force_start_ccs
@@ -177,7 +177,7 @@ def test_force_start_ccs_permission_denied(mock_is_running, mock_check_perm):
         assert "权限不足" in result["error"]
 
 
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner.is_ccs_running")
 def test_force_start_ccs_authz_internal_check(mock_is_running):
     """force_start_ccs 内部独立检查权限，不依赖调用方前置检查。"""
     from launcher import force_start_ccs, check_wake_permission
@@ -228,11 +228,11 @@ def test_forbidden_list_display():
 # ── confirm_delivery 双信号 ────────────────────────────────
 
 
-@patch("partner_client.PartnerClient._get_task")
-@patch("partner_client.PartnerClient._check_bus_notification")
+@patch("routing.partner.PartnerClient._get_task")
+@patch("routing.partner.PartnerClient._check_bus_notification")
 def test_confirm_delivery_task_not_created(mock_bus, mock_get_task):
     """信号①：task.status != 'created' → 确认成功。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     mock_get_task.return_value = {
         "task_id": "task_001",
         "status": "in_progress",
@@ -248,7 +248,7 @@ def test_confirm_delivery_task_not_created(mock_bus, mock_get_task):
 
 def test_confirm_delivery_skip_start():
     """反例：created → completed 跳过 in_progress，仍确认。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
 
     with patch.object(PartnerClient, "_get_task") as mock_get_task:
         mock_get_task.return_value = {
@@ -264,14 +264,14 @@ def test_confirm_delivery_skip_start():
 # ── force_send 权限检查 ────────────────────────────────────
 
 
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner.is_ccs_running")
 def test_force_send_alive(mock_is_running):
     """force_send 目标在线时直接发消息。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
 
     mock_is_running.return_value = True
 
-    with patch("partner_client.send") as mock_send:
+    with patch("routing.partner._send") as mock_send:
         mock_send.return_value = {"success": True}
         pc = PartnerClient("qa")
         result = pc.force_send("pg", "hello", auto_wake=True)
@@ -279,10 +279,10 @@ def test_force_send_alive(mock_is_running):
         mock_send.assert_called_once_with("pg", "hello")
 
 
-@patch("partner_client.is_ccs_running")
+@patch("routing.partner.is_ccs_running")
 def test_force_send_dead_no_auto_wake(mock_is_running):
     """force_send 目标离线 + auto_wake=False → 报错。"""
-    from partner_client import PartnerClient
+    from routing.partner import PartnerClient
     mock_is_running.return_value = False
 
     pc = PartnerClient("qa")
@@ -296,7 +296,7 @@ def test_force_send_dead_no_auto_wake(mock_is_running):
 
 def test_render_step_handoff():
     """render_step(handoff) 输出只有摘要，不含 CLI 命令。"""
-    from task_utils import render_step
+    from workflow.utils import render_step
     step = {
         "id": "s1",
         "type": "handoff",
@@ -312,7 +312,7 @@ def test_render_step_handoff():
 
 def test_render_step_single():
     """render_step(single) 输出 prompt_template。"""
-    from task_utils import render_step
+    from workflow.utils import render_step
     step = {
         "id": "s1",
         "type": "single",
@@ -327,7 +327,7 @@ def test_render_step_single():
 
 def test_step_types():
     """STEP_TYPES 包含三种类型。"""
-    from task_utils import STEP_TYPES
+    from workflow.utils import STEP_TYPES
     assert "single" in STEP_TYPES
     assert "handoff" in STEP_TYPES
     assert "review" in STEP_TYPES
@@ -336,7 +336,7 @@ def test_step_types():
 # ── 唤醒 ondemand 角色（不区分退出类型） ───────────────────
 
 
-@patch("partner_client.check_wake_permission")
+@patch("routing.partner._check_wake")
 def test_wake_ondemand_role(mock_check_perm):
     """wake_ccs 唤醒 ondemand 角色走标准 force_start_ccs。"""
     from launcher import force_start_ccs, is_ccs_running

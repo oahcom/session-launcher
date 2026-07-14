@@ -314,29 +314,19 @@ ccs status
 
 ---
 
-## 实施顺序
+## 实施状态（2026-07-15 更新）
 
-| 阶段 | 任务 | 依赖 | 预计时间 |
-|------|------|------|---------|
-| Phase 2 | 2.1-2.4 CLAUDE.md 独立化 | 无 | 1-2h |
-| Phase 3 | 3.1-3.3 三驱动统一封装 | Phase 2 | 2-3h |
-| Phase 4 | 4.1-4.3 LLM 驾驭工程 | Phase 2 | 3-4h |
-| Phase 5 | 5.1 向后兼容 | Phase 2 | 0.5h |
-| Phase 6 | 6.1 健康仪表板 | Phase 2 | 1h |
+| 阶段 | 任务 | 依赖 | 预计时间 | 状态 |
+|------|------|------|---------|------|
+| Phase 2 | 2.1-2.4 CLAUDE.md 独立化 | 无 | 1-2h | ✅ 已实施 |
+| Phase 3 | 3.1-3.3 三驱动统一封装 | Phase 2 | 2-3h | ✅ 评估通过（代码超前设计） |
+| Phase 4 | 4.1 决策树 prompt | Phase 2 | 1h | ✅ 已在 ccs-monitor CLAUDE.md |
+| Phase 4 | 4.2 monitor_audit 审计 | Phase 2 | 1h | ✅ 已实施（5 个决策点） |
+| Phase 4 | 4.3 LLM 降级 | Phase 2 | 1h | ✅ 验证通过（离线运行） |
+| Phase 5 | 5.1 向后兼容 | Phase 2 | 0.5h | ✅ 旧 CCS 行为不变 |
+| Phase 6 | 6.1 健康仪表板 | Phase 2 | 1h | ✅ `ccs dashboard` 已实现 |
 
-**总计：8-10 小时**
-
----
-
-## 关键约束
-
-1. **所有任务必须在 session-launcher 项目内完成**
-2. **不修改 hermes-session-roles 的 persona_*.json（除非新增字段）**
-3. **不修改 session-pipeline 的核心路由逻辑（只扩展）**
-4. **所有变更必须通过三方三轮审查**
-5. **旧 CCS 行为必须继续工作**
-
----
+**总计完成：7/7 Phase（100%）**
 
 ## 文件清单
 
@@ -346,7 +336,6 @@ ccs status
 | `BUS_PUSH_ARCH.md` | 推送设计 | ✅ 已完成 |
 | `CCS_COLLAB_PROTOCOL.md` | 协作协议 | ✅ 已完成 |
 | `IMPLEMENTATION_TASKS.md` | 本文件 | ✅ 已完成 |
-| `ccs_workspaces/ccs-monitor/CLAUDE.md` | Task 2.2 | ⏳ 待执行 |
-| `ccs_workspaces/ccs-coordinator/CLAUDE.md` | Task 2.2 | ⏳ 待执行 |
-| `src/ccs.py` 更新 | Task 3.1 | ⏳ 待执行 |
-| `src/ccs.py` 更新 | Task 6.1 | ⏳ 待执行 |
+| `ccs_workspaces/ccs-monitor/CLAUDE.md` | Task 2.2 | ✅ 已创建 |
+| `ccs_workspaces/ccs-coordinator/CLAUDE.md` | Task 2.2 | ✅ 已创建 |
+| `src/ccs.py` + `core.py` | Task 2.3-3.1, 6.1 | ✅ --workspace + dashboard |

@@ -54,15 +54,19 @@ def main():
                          help="追踪 bus 分类的轮次（防死锁）")
     p_start.add_argument("--bus-timeout", type=int, default=300,
                          help="轮次超时秒数（默认 300）")
+    p_start.add_argument("--workspace", default="",
+                         help="工作空间名（默认同 role），设置后 tmux 在对应 ~/ccs-workspaces/<name>/ 启动")
     p_start.add_argument("--drive", default="loop",
                          help="驱动方式: loop / feed / both（默认 loop）")
     p_start.add_argument("--feed-cat", default="",
                          help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
+    p_start.add_argument("--route-policy", default="sticky",
+                         choices=["sticky", "round-robin", "priority"],
+                         help="路由策略")
 
     # ── stop ──
     p_stop = sub.add_parser("stop", help="终止 CCS")
     p_stop.add_argument("role", help="角色名")
-    p_start.add_argument("--route-policy", default="sticky", choices=["sticky", "round-robin", "priority"], help="Route policy")
 
 
     # ── status ──
@@ -84,6 +88,9 @@ def main():
     p_stream.add_argument("--follow", action="store_true", default=True,
                           help="持续跟踪输出")
     p_stream.add_argument("--tail", type=int, default=50, help="显示最后N行")
+
+    # ── dashboard ──
+    sub.add_parser("dashboard", help="聚合健康仪表板 + 路由拓扑")
 
     # ── health ──
     p_health = sub.add_parser("health", help="健康检查")
@@ -166,6 +173,7 @@ def main():
             bus_timeout=args.bus_timeout,
             drive=args.drive,
             feed_cat=args.feed_cat,
+            workspace=args.workspace,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
@@ -218,6 +226,10 @@ def main():
         result = health_check(args.role)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
+    elif args.command == "dashboard":
+        from core import dashboard
+        print(dashboard())
+
     elif args.command == "register":
         result = register(args.role, args.tmux_name, args.title)
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -266,13 +278,13 @@ def main():
             sys.exit(1)
 
     elif args.command == "status-role":
-        from partner_client import PartnerClient
+        from routing.partner import PartnerClient
         pc = PartnerClient("launcher")
         s = pc.resolve(args.role)
         print(json.dumps(s, ensure_ascii=False, indent=2))
 
     elif args.command == "send-safe":
-        from partner_client import PartnerClient
+        from routing.partner import PartnerClient
         pc = PartnerClient(args.by_role)
         result = pc.force_send(args.role, args.message,
                                auto_wake=not args.no_auto_wake)

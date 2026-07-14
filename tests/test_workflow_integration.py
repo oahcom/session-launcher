@@ -20,8 +20,8 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 import pytest
-from workflow_client import WorkflowClient
-from lifecycle_manager import LifecycleManager
+from workflow.client import WorkflowClient
+from lifecycle.manager import LifecycleManager
 from template_registry import TemplateRegistry
 
 
@@ -48,7 +48,7 @@ def wf(db_path):
 def _seed_templates(client: WorkflowClient, dbp: str):
     """注册 WL-01~05 到共享 DB 并执行迁移。"""
     # 先执行 schema 迁移（确保 tasks.template_id 等列存在）
-    from migration_scripts import run_migration
+    from migration.scripts import run_migration
     run_migration(db_path=dbp, dry_run=False)
     # 注册模板
     reg = TemplateRegistry(db_path=dbp)
@@ -434,7 +434,7 @@ def test_step_done_ready_in_sync(wf, db_path):
 
 def test_step_engine_types(wf, db_path):
     """StepEngine 5 种类型不报错。"""
-    from step_engine import StepEngine
+    from lifecycle.engine import StepEngine
     se = StepEngine("pg", db_path=db_path)
 
     # single (WL-99 s3)

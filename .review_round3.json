@@ -1,0 +1,61 @@
+{
+  "round": 3,
+  "issues": [
+    {
+      "dim": 17,
+      "sev": "important",
+      "file": "workflow/client.py",
+      "line": 113,
+      "desc": "INSERT 无冲突处理: INSERT INTO workflow_instances (instance_id, template_id, ta"
+    },
+    {
+      "dim": 17,
+      "sev": "important",
+      "file": "workflow/client.py",
+      "line": 191,
+      "desc": "INSERT 无冲突处理: INSERT INTO workflow_instances (instance_id, task_id, assign"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "core.py",
+      "line": 0,
+      "desc": "455行 计划拆分"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "migration_scripts.py",
+      "line": 0,
+      "desc": "415行 计划拆分"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "template_registry.py",
+      "line": 0,
+      "desc": "528行 计划拆分"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "routing/partner.py",
+      "line": 0,
+      "desc": "430行 计划拆分"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "lifecycle/engine.py",
+      "line": 0,
+      "desc": "445行 计划拆分"
+    },
+    {
+      "dim": 7,
+      "sev": "important",
+      "file": "lifecycle/manager.py",
+      "line": 0,
+      "desc": "441行 计划拆分"
+    }
+  ]
+}

@@ -26,6 +26,7 @@ __all__ = [
     'inject_role_knowledge_into_workspace',
     '_invalidate_role_cache',
     'load_roles',
+    'dashboard',
     '_forbidden_list',
     'check_wake_permission',
     '_build_role_prompt',
@@ -98,11 +99,16 @@ def route_target(role: str, candidates: list[str]) -> str:
         idx = hash(role + str(int(__import__("time").time() / 60))) % max(len(candidates), 1)
         return candidates[idx] if candidates else role
     return candidates[0] if candidates else role
-from tmux_ops import _check_memory_before_launch, _find_claude_pid, _find_claude_session_id, _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid, _active_codex_session_count, _write_codex_sentinel, _wait_codex_ready, TMUX_PREFIX, CODEX_TMUX_PREFIX, CODEX_SENTINEL_DIR, CODEX_LOOP_DELAY, CODEX_OUTPUT_MAX, CODEX_ERROR_MAX, CODEX_SESSION_MAX, CODEX_READY_RETRIES, CODEX_READY_INTERVAL, _MEM_FREE_MIN_MB, _CCS_LAUNCH_INTERVAL
+from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claude_session_id,
+    _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid,
+    _active_codex_session_count, _wait_codex_ready,
+    TMUX_PREFIX, CODEX_TMUX_PREFIX,
+    CODEX_LOOP_DELAY, CODEX_OUTPUT_MAX, CODEX_ERROR_MAX, CODEX_SESSION_MAX,
+    CODEX_READY_RETRIES, CODEX_READY_INTERVAL, _MEM_FREE_MIN_MB, _CCS_LAUNCH_INTERVAL)
 
 from role_manager import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, inject_prompt_into_claudemd, clear_injected_prompt, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
 
-from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status
+from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status, _active_codex_session_count, _wait_codex_ready, CODEX_SESSION_MAX, CODEX_TMUX_PREFIX, CODEX_LOOP_DELAY
 
 import json
 import logging
@@ -118,11 +124,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-from sentinel import CcsSentinel, CcsHealth, write_sentinel, read_sentinel, delete_sentinel, list_sentinels, SENTINEL_DIR
+from ops.sentinel import CcsSentinel, CcsHealth, write_sentinel, read_sentinel, delete_sentinel, list_sentinels, SENTINEL_DIR
 
-from watchdog import start_watchdog
-from tracker import start_tracker
-from signals import check_signal
+from ops.watchdog import start_watchdog
+from ops.tracker import start_tracker
+from events.signals import check_signal
 
 from paths import BUS_CLIENT
 FEED_LISTENER = Path(__file__).resolve().parent.parent / "feed_listener.py"
@@ -132,16 +138,21 @@ def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
-          drive: str = "loop", feed_cat: str = "") -> dict:
+          drive: str = "loop", feed_cat: str = "",
+          workspace: str = "") -> dict:
     """创建一个 CCS 并写入哨兵。
 
     自动从 hermes-session-roles 加载角色定义（如存在），
     构建 system prompt 并注入专业知识到 workspace CLAUDE.md。
+
+    若 workspace 指定，tmux 在该工作空间目录启动（系统级 CCS）；
+    若未指定，使用 ~/ccs-workspaces/<role>（兼容旧行为）。
     """
     if not _validate_role_name(role):
         return {"success": False, "error": f"非法角色名: {role}"}
     tmux_name = f"{TMUX_PREFIX}{role}"
     partners = partners or []
+    ws_name = workspace or role  # 指定 workspace 则用自定义工作空间
 
     # 0. ondemand 模式：只写 workspace + 哨兵，不启动 tmux
     if drive == "ondemand":
@@ -171,8 +182,8 @@ def start(role: str, title: str = "", detach: bool = False,
         return {"success": False, "error": err}
 
     # 3. 确保工作空间存在并更新系统 CLAUDE.md
-    ws_path = Path(f"~/ccs-workspaces/{role}").expanduser()
-    result = workspace_create(role)
+    ws_path = Path(f"~/ccs-workspaces/{ws_name}").expanduser()
+    result = workspace_create(ws_name)
     if result.get("success"):
         action = result.get("action", "")
         print(f"📁 {'已创建' if action == 'created' else '已更新'} 工作空间: {ws_path}")
@@ -188,11 +199,12 @@ def start(role: str, title: str = "", detach: bool = False,
         print(f"⚠ 未找到 {role} 角色定义（{SESSION_ROLES_ROOT}），使用空 prompt 启动")
 
     # 5. 启动 tmux + claude
+    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS",
+        " --allow-dangerously-skip-permissions --dangerously-skip-permissions --permission-mode bypassPermissions")
     cmd = (
-        "claude --model 9router_hermes"
-        " --dangerously-skip-permissions"
+        "claude --bare --model 9router_hermes"
+        f"{_PERM_FLAGS}"
         " --effort max"
-        " --permission-mode bypassPermissions"
     )
     r = subprocess.run([
         "tmux", "new-session", "-d", "-s", tmux_name,
@@ -310,13 +322,16 @@ def send(role: str, message: str, source: str = "") -> dict:
     """向 CCS 发送消息。"""
     if not _validate_role_name(role):
         return {"success": False, "error": f"非法角色名: {role}"}
-    # 跨角色路由拦截（存根：当前仅记录日志，始终放行）
-    if role != "self":
+    # 跨角色路由拦截（三源验证：bus/src / DB assigner / sentinel）
+    if role != "self" and source != "cli":
         try:
-            from cross_role_router import CrossRoleRouter
-            CrossRoleRouter().intercept(source or "cli", role, message)
+            from routing.router import CrossRoleRouter
+            allowed = CrossRoleRouter().intercept(source or "unknown", role, message)
+            if not allowed:
+                return {"success": False,
+                        "error": f"三源验证拒绝: {source}→{role}，消息前缀非可靠来源"}
         except Exception:
-            pass  # 存根降级：DB 不可用等场景不阻塞消息发送
+            pass  # 降级：DB/总线不可用时放行
 
     tmux_name = f"{TMUX_PREFIX}{role}"
     if not _is_alive(tmux_name):
@@ -438,127 +453,8 @@ def cleanup_stale_sentinels() -> list[str]:
             f.unlink()
     return cleaned
 
-def _start_feed_listener(role: str, feed_cat: str) -> None:
-    """启动 feed listener 线程，监听指定 bus 分类的新消息。"""
-    import socket as _socket
-    import json as _json
-    import threading
 
-    def _run():
-        tag = f"feed:{role}"
-        s = None
-        while True:
-            try:
-                s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-                s.settimeout(30)
-                s.connect("/tmp/sister_bus_feed.sock")
-                s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
-                print(f"[{tag}] ✅ 已连接 feed socket，监听 {feed_cat}", flush=True)
-                buf = b""
-                while True:
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        print(f"[{tag}] 连接断开，5秒后重试...", flush=True)
-                        time.sleep(5)
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        if line:
-                            event = _json.loads(line).get("msg", {})
-                            cat = event.get("cat", "")
-                            if cat == feed_cat:
-                                title = event.get("title", "")[:100]
-                                src = event.get("src", "")
-                                print(f"[{tag}] 收到 {cat}: {title} (src={src})", flush=True)
-                                subprocess.run(
-                                    ["python3", str(BUS_CLIENT), "write", "notice",
-                                     f"[{role}] 收到 {cat} 消息: {title}", "--src", role],
-                                    capture_output=True, timeout=15
-                                )
+from ops.runner import dashboard, _start_feed_listener
 
-            except Exception as e:
-                print(f"[{tag}] 异常: {e}，5秒后重试...", flush=True)
-                time.sleep(5)
-            finally:
-                if s is not None:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
-
-    t = threading.Thread(target=_run, daemon=True, name=f"feed:{role}")
-    t.start()
-
-def register(role: str, tmux_name: str, title: str = "") -> dict:
-    """将手动创建的 tmux session 注册为 CCS。"""
-    if not _is_alive(tmux_name):
-        return {"success": False, "error": f"tmux session '{tmux_name}' 不存在"}
-    pid = _find_claude_pid(tmux_name)
-    s = CcsSentinel(
-        role=role, title=title or role, tmux_session=tmux_name,
-        pid=pid, started_at=time.time(),
-    )
-    write_sentinel(s)
-    return {"success": True, "role": role, "tmux_session": tmux_name, "pid": pid}
-
-def workspace_create(name: str) -> dict:
-    """创建或更新系统级 CCS 工作空间的 CLAUDE.MD。
-
-    更新策略：只替换 marker 标记的系统区域（角色身份 + WORKFLOW_GUIDE），
-    保留用户在 marker 外手动添加的内容。
-    """
-    path = Path(f"~/ccs-workspaces/{name}").expanduser()
-    path.mkdir(parents=True, exist_ok=True)
-    claude_md = path / "CLAUDE.md"
-
-    guide_path = Path.home() / ".hermes" / "templates" / "WORKFLOW_GUIDE.md"
-    guide_content = ""
-    if guide_path.exists():
-        guide_content = guide_path.read_text().replace("{role_name}", name)
-
-    sys_block = (
-        f"{_WS_MARKER_START}\n"
-        f"# {name}\n\n"
-        f"## 身份\n\n"
-        f"你是 {name}，系统级 CCS。你通过以下方式接收指令：\n"
-        f"| 驱动方式 | 触发源 | 说明 |\n"
-        f"|---------|--------|------|\n"
-        f"| ① /loop | 自循环 | 定时自动巡检 |\n"
-        f"| ② ccs-send | 其他 CCS 发消息 | 按需分析 |\n"
-        f"| ③ feed push | bus 新消息实时推送 | 即时检测 |\n\n"
-        f"---\n\n"
-        f"{guide_content}\n"
-        f"{_WS_MARKER_END}\n"
-    )
-
-    if not claude_md.exists():
-        claude_md.write_text(sys_block)
-        return {"success": True, "workspace": str(path), "action": "created"}
-
-    content = claude_md.read_text(encoding="utf-8")
-    if _WS_MARKER_START in content and _WS_MARKER_END in content:
-        start_idx = content.rindex(_WS_MARKER_START)
-        end_idx = content.rindex(_WS_MARKER_END) + len(_WS_MARKER_END)
-        new_content = content[:start_idx] + sys_block + content[end_idx:]
-    else:
-        new_content = content.rstrip() + "\n\n" + sys_block
-
-    claude_md.write_text(new_content, encoding="utf-8")
-    return {"success": True, "workspace": str(path), "action": "updated"}
-
-def workspace_list() -> list[dict]:
-    """列出所有系统级 CCS 工作空间。"""
-    root = Path("~/ccs-workspaces").expanduser()
-    if not root.exists():
-        return []
-    result = []
-    for d in sorted(root.iterdir()):
-        if d.is_dir() and (d / "CLAUDE.md").exists():
-            result.append({
-                "name": d.name,
-                "path": str(d),
-                "claude_md": str(d / "CLAUDE.md"),
-            })
-    return result
+from ops.workspace import register, workspace_create, workspace_list
 

@@ -340,7 +340,7 @@ class TemplateRegistry:
         now = time.time()
 
         self._conn.execute("""
-            INSERT INTO workflow_templates
+            INSERT OR REPLACE INTO workflow_templates
                 (template_id, name, description, steps_json,
                  trigger_scene, allowed_initiators, allowed_executors,
                  max_duration_hours, quality_standards, created_at, is_active)
