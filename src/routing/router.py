@@ -51,7 +51,7 @@ class CrossRoleRouter:
         self._log_cross_role_send(source, target, message)
 
         # 同角色消息直接放行
-        if source == target or source in ("cli", "loop"):
+        if source == target or source in ("cli", "loop", "pipeline"):
             return True
 
         # 三源验证

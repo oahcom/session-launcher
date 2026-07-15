@@ -374,6 +374,8 @@ def validate_ccs_execution(role: str, action: str) -> None:
     - CCS-RULE-001: ccs send 接收门禁
     - CCS-RULE-002: 任务执行前验证
 
+    在 start/send 前调用，验证角色/动作合法性。
+
     ponytail: rules v1.1 prompt_layer only, 方案B增量.
     add when: 需要 socket listener 动态门禁时扩展此函数。
     """

@@ -335,6 +335,14 @@ def send(role: str, message: str, source: str = "") -> dict:
     tmux_name = f"{TMUX_PREFIX}{role}"
     if not _is_alive(tmux_name):
         return {"success": False, "error": f"CCS {role} 未运行"}
+
+    # CCS-RULE: send 前校验
+    try:
+        from role_manager import validate_ccs_execution
+        validate_ccs_execution(role, "send")
+    except Exception:
+        pass  # 降级：校验不可用时不阻塞
+
     _tmux_send(tmux_name, message)
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
     _trigger_hooks("after_send", role=role, message=message, source=source)
