@@ -44,16 +44,13 @@ def main():
                     actions.append(f"[noreg] {role}->{cat} (bus_client.consumers not available)")
                 else:
                     actions.append(f"[DRY] {role}->{cat}")
-    if not quiet or actions:
-        print(f"  {len(actions)} activations needed" if not quiet else f"{len(actions)}")
+    if not quiet and actions:
+        print(f"  {len(actions)} activations needed")
         for a in actions[:5]: print(f"    + {a}")
         if len(actions) > 5: print(f"    ... ({len(actions)-5} more)")
-    if not dry and actions:
-        try:
-            subprocess.run([sys.executable, str(BUS_CLIENT), "write", "architecture",
-                f"[bus-balance] activated {len(actions)} consumers", "--src", "bus-balance-optimizer"],
-                capture_output=True, timeout=10)
-        except: pass
+    # bus-write removed: zero downstream consumers read [bus-balance] messages.
+    # Real consumer tracking is in bus_protocol.mark_consumed()/unconsumed().
+    # ponytail: if a consumer subscription API is added to bus_client, wire it here.
 
 if __name__ == "__main__":
     main()
