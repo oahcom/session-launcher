@@ -139,7 +139,7 @@ def check_wake_permission(actor: str, target: str) -> bool:
     return actor in _WAKE_PERMISSION_MAP.get(target, [])
 
 def _action_templates(role: dict) -> str:
-    """生成角色对应的动作填空模板。"""
+    """生成角色对应的动作填空模板，含跨角色协作示例。"""
     name = role.get("name", "")
     output_targets = role.get("output_targets", [])
     input_signals = role.get("input_signals", [])
@@ -167,6 +167,28 @@ def _action_templates(role: dict) -> str:
         lines.append(f"\n读消息")
         for cat in consume_targets:
             lines.append(f"  bus_read {cat} 5")
+
+    # ── 跨角色协作示例（仅拥有唤醒权限的角色） ──
+    # 构建拥有唤醒权限的角色列表
+    _wake_roles = set()
+    for _target, _actors in _WAKE_PERMISSION_MAP.items():
+        if _target == "*":
+            _wake_roles.update(_actors)
+        else:
+            for _a in _actors:
+                _wake_roles.add(_a)
+    if name in _wake_roles:
+        lines.append("""
+## 跨角色协作（PartnerClient）
+# 检查其他角色是否存活
+  python3 ~/session-launcher/src/routing/partner.py resolve <role>
+# 等待对方确认接单（超时自动唤醒）
+  python3 ~/session-launcher/src/routing/partner.py confirm <task_id> <role> --as <my_role>
+# 唤醒离线角色
+  python3 ~/session-launcher/src/routing/partner.py wake <role> --as <my_role> --context "任务描述"
+# 安全发送消息（自动唤醒离线接收方）
+  python3 ~/session-launcher/src/routing/partner.py send-safe <role> <消息> --as <my_role>""")
+
     lines.append(f"\n禁区：{_forbidden_list(name)}")
     return "\n".join(lines)
 

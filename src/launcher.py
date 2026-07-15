@@ -17,7 +17,6 @@ if str(_THIS_DIR) not in sys.path:
 # 函数
 from core import (
     load_roles, get_role, _invalidate_role_cache,
-    check_signal,
     _forbidden_list, check_wake_permission,
     _build_role_prompt, _action_templates,
     inject_role_knowledge_into_workspace, inject_prompt_into_claudemd,
@@ -59,6 +58,7 @@ from ops.sentinel import SENTINEL_DIR as CCS_SENTINEL_DIR
 
 # 旧名兼容
 exec_codex = run_codex_task
+from events.signals import check_signal  # 兼容层 re-export
 
 
 def ccs_capture_output_raw(tmux_name: str, tail: int = 10) -> str:

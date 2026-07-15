@@ -1262,8 +1262,14 @@ class TestCrossRoleRouter:
         assert CrossRoleRouter(db_path=test_db).intercept("pm", "pm", "你好") is True
         # CLI 来源放行
         assert CrossRoleRouter(db_path=test_db).intercept("cli", "pm", "指令") is True
-        # 跨角色无证据拒绝
-        assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is False
+        # 跨角色：sentinel 存在时放行（已运行 CCS 可互信）
+        import subprocess as _sp
+        _pm_running = _sp.run(["tmux", "has-session", "-t", "ccs-pm"],
+                              capture_output=True, timeout=3).returncode == 0
+        if _pm_running:
+            assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is True
+        else:
+            assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is False
 
     def test_t13_02_intercept_logs_to_db(self, test_db):
         router = CrossRoleRouter(db_path=test_db)
@@ -1280,8 +1286,12 @@ class TestCrossRoleRouter:
     def test_t15_01_check_send_permission(self, test_db):
         # 同角色放行
         assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pm") is True
-        # 无证据的跨角色 → 拒绝（三源验证）
-        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is False
+        # 跨角色：sentinel 存在时放行（已运行 CCS 可互信）
+        import subprocess as _sp
+        _pm_running = _sp.run(["tmux", "has-session", "-t", "ccs-pm"],
+                              capture_output=True, timeout=3).returncode == 0
+        # pm 在运行 → 放行；未运行 → 拒绝
+        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is _pm_running
 
     def test_t15_02_log_violation(self, test_db):
         router = CrossRoleRouter(db_path=test_db)

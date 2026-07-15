@@ -331,7 +331,7 @@ class PartnerClient:
                     break
                 time.sleep(1)
 
-        return _send(role, message)
+        return _send(role, message, source=self.role)
 
     # ── 辅助 ────────────────────────────────────────────────
 
@@ -446,36 +446,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     main()
-
-
-def check_send_permission(source_role: str, target_role: str) -> bool:
-    """WL-P0-03: ccs send routing gate - validate inter-CCS messaging.
-    Only roles with wake permission can send to each other.
-    """
-    from ops.sentinel import read_sentinel
-    wm = {
-        "*": ["coordinator", "lr"],
-        "pg": ["qa", "pm", "reviewer", "product_architect"],
-        "qa": ["pm", "reviewer"],
-    }
-    if source_role in wm:
-        return target_role in wm[source_role]
-    if "*" in wm:
-        return source_role in wm["*"]
-    return False
-
-
-# Module-level aliases for test compatibility
-
-def check_wake_permission(source_role: str, target_role: str) -> bool:
-    """Module-level check: can source_role wake target_role?"""
-    from role_manager import _WAKE_PERMISSION_MAP
-    if source_role in _WAKE_PERMISSION_MAP:
-        return target_role in _WAKE_PERMISSION_MAP[source_role]
-    if "*" in _WAKE_PERMISSION_MAP:
-        return source_role in _WAKE_PERMISSION_MAP["*"]
-    return False
-
-def check_send_permission(source_role: str, target_role: str) -> bool:
-    """WL-P0-03: ccs send routing gate"""
-    return check_wake_permission(source_role, target_role)

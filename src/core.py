@@ -32,7 +32,6 @@ __all__ = [
     '_build_role_prompt',
     'inject_prompt_into_claudemd',
     'clear_injected_prompt',
-    'check_signal',
     'write_lifecycle_sentinel',
     'check_ondemand_timeout',
     'cleanup_stale_sentinels',
@@ -128,7 +127,7 @@ from ops.sentinel import CcsSentinel, CcsHealth, write_sentinel, read_sentinel, 
 
 from ops.watchdog import start_watchdog
 from ops.tracker import start_tracker
-from events.signals import check_signal
+# check_signal available via events.signals if needed
 
 from paths import BUS_CLIENT
 FEED_LISTENER = Path(__file__).resolve().parent.parent / "feed_listener.py"
@@ -337,6 +336,8 @@ def send(role: str, message: str, source: str = "") -> dict:
     if not _is_alive(tmux_name):
         return {"success": False, "error": f"CCS {role} 未运行"}
     _tmux_send(tmux_name, message)
+    # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
+    _trigger_hooks("after_send", role=role, message=message, source=source)
     return {"success": True, "sent_chars": len(message)}
 
 def output(role: str, tail: int = 20) -> str:

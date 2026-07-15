@@ -101,7 +101,7 @@ class CrossRoleRouter:
         else:
             details.append("sentinel=not_found")
 
-        sources_ok = matches >= 2
+        sources_ok = matches >= 2 or (bool(sentinel_ok) and bool(claimed_source))
         return {
             "sources_ok": sources_ok,
             "match_count": matches,

@@ -276,7 +276,7 @@ class TestPartnerClientChain:
 
     def test_t3_wake_permission_check(self):
         """wake 执行权限矩阵检查。"""
-        from routing.partner import PartnerClient, check_wake_permission
+        from role_manager import check_wake_permission
 
         # coordinator 可唤醒任何角色
         assert check_wake_permission("coordinator", "pg")

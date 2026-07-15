@@ -13,7 +13,6 @@ _SESSION_ROLES_ROOT = Path.home() / "hermes-session-roles"
 _WS_ROOT = Path.home() / "ccs-workspaces"
 _TMUX_PREFIX = "ccs-"
 
-
 def register(role: str, tmux_name: str, title: str = "") -> dict:
     """注册已运行的 CCS 进程（用于恢复未注册的 session）"""
     tmux_name = tmux_name if tmux_name else f"{_TMUX_PREFIX}{role}"
@@ -25,38 +24,61 @@ def register(role: str, tmux_name: str, title: str = "") -> dict:
     write_sentinel(s)
     return {"success": True, "role": role, "tmux_session": tmux_name, "pid": pid}
 
+def _make_sys_block(name: str) -> str:
+    """生成 <name> 对应的 WORKSPACE_SYS marker 内容块。"""
+    return (
+        f"{_WS_MARKER_START}\n"
+        f"> 本 workspace 属于 {name}，由 CCS Launcher 自动管理。\n"
+        "> 非必要请不要修改目录结构。\n"
+        "\n"
+        "## 工作流提示\n"
+        "- 每个任务完成后更新 CLAUDE.md\n"
+        "- 使用 bus 跨角色通信（cat=task / cat=code_fix …）\n"
+        "- 用 `ccs send <角色> 消息` 调用其他角色\n"
+        f"{_WS_MARKER_END}\n"
+    )
 
 def workspace_create(name: str) -> dict:
-    """为角色创建工作空间（目录 + CLAUDE.md + 指南）。"""
+    """为角色创建工作空间（目录 + CLAUDE.md + 指南）。
+
+    若 CLAUDE.md 已存在，会替换最后一组 WORKSPACE_SYS marker 内容，
+    避免多次调用产生重复 block（T-C1 修复）。
+    """
     ws_path = _WS_ROOT / name
     created = not ws_path.exists()
     ws_path.mkdir(parents=True, exist_ok=True)
-    # 目录被外部删除后重建 -> 重置 created 标记
     if created and ws_path.exists():
         created = True
 
     claude_md = ws_path / "CLAUDE.md"
     guide_path = ws_path / "WORKSPACE_GUIDE.md"
+    sys_block = _make_sys_block(name)
 
     if not claude_md.exists():
-        sys_block = f"""{_WS_MARKER_START}
-> 本 workspace 属于 {name}，由 CCS Launcher 自动管理。
-> 非必要请不要修改目录结构。
-
-## 工作流提示
-- 每个任务完成后更新 CLAUDE.md
-- 使用 bus 跨角色通信（cat=task / cat=code_fix …）
-- 用 `ccs send <角色> 消息` 调用其他角色
-{_WS_MARKER_END}
-"""
         claude_md.write_text(sys_block, encoding="utf-8")
+    else:
+        # T-C1: 替换最后一组 marker，避免重复 block
+        content = claude_md.read_text(encoding="utf-8")
+        if _WS_MARKER_START in content and _WS_MARKER_END in content:
+            start = content.rindex(_WS_MARKER_START)
+            try:
+                end = content.index(_WS_MARKER_END, start) + len(_WS_MARKER_END)
+            except ValueError:
+                end = len(content)
+            new_content = content[:start] + sys_block + content[end:]
+        elif _WS_MARKER_START in content:
+            start = content.rindex(_WS_MARKER_START)
+            new_content = content[:start] + sys_block
+        else:
+            new_content = content.rstrip() + "\n\n" + sys_block
+        claude_md.write_text(new_content, encoding="utf-8")
+        created = False  # 更新而非新建
 
     if not guide_path.exists():
         guide_path.write_text(f"# {name} — 工作空间指南\n\n", encoding="utf-8")
 
     return {"success": True, "action": "created" if created else "updated",
             "path": str(ws_path)}
-
 
 def workspace_list() -> list[dict]:
     """列出所有工作空间及其活动状态。"""

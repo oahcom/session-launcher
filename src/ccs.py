@@ -76,6 +76,8 @@ def main():
     p_send = sub.add_parser("send", help="向 CCS 发消息")
     p_send.add_argument("role", help="角色名")
     p_send.add_argument("message", help="消息内容")
+    p_send.add_argument("--from", dest="from_role", default="",
+                        help="来源角色名（三源验证用）")
 
     # ── output ──
     p_out = sub.add_parser("output", help="查看 CCS 输出")
@@ -202,7 +204,7 @@ def main():
                       f"bus_age={health['bus_msg_age']}s restarts={health['restart_count']}")
 
     elif args.command == "send":
-        result = send(args.role, args.message)
+        result = send(args.role, args.message, source=args.from_role)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
             sys.exit(1)

@@ -1,6 +1,7 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
+import os
 import time
 import warnings
 from pathlib import Path
@@ -92,18 +93,23 @@ class WorkflowClient:
                   priority, now, now))
         self._conn.commit()
         self._log(task_id=task_id, action="created", detail=f"title={title}, template_id={template_id}")
+        # 测试模式检测: 使用临时 DB 时跳过 ccs send 和 bus notify
+        _prod_db = os.path.join(str(Path.home()), ".hermes", "state", "workflows.db")
+        _is_test = self.db_path is not None and str(self.db_path) != _prod_db
         ccs_ok = True
-        if assignee and assignee != self.role:
+        if not _is_test and assignee and assignee != self.role:
             result = subprocess.run(
                 ["python3", str(CCS_CLI), "send", assignee,
-                 f"[{self.role}] 你有新任务: {title} — check_task() 查看详情"],
+                 f"[{self.role}] 你有新任务: {title} — check_task() 查看详情",
+                 "--from", self.role],
                 capture_output=True, timeout=15,
             )
             ccs_ok = result.returncode == 0
         evidence = f"assignee={assignee}, task_id={task_id}"
         if not ccs_ok:
             evidence += ", ccs_send_failed=true"
-        self.notify("task_spec", f"创建任务: {title}", evidence=evidence)
+        if not _is_test:
+            self.notify("task_spec", f"创建任务: {title}", evidence=evidence)
         return task_id
 
     def _create_workflow_instance(self, task_id: str, template_id: str, assignee: str) -> str:

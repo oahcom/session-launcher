@@ -276,7 +276,7 @@ def test_force_send_alive(mock_is_running):
         pc = PartnerClient("qa")
         result = pc.force_send("pg", "hello", auto_wake=True)
         assert result["success"] is True
-        mock_send.assert_called_once_with("pg", "hello")
+        mock_send.assert_called_once_with("pg", "hello", source="qa")
 
 
 @patch("routing.partner.is_ccs_running")

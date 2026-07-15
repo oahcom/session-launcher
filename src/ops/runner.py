@@ -76,6 +76,12 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
             s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
             return True
         except Exception:
+            if s:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                s = None
             return False
 
     def _run():
