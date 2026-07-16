@@ -46,7 +46,6 @@ class P0Exemption:
                 ts REAL NOT NULL
             );
         """)
-        self._conn.commit()
         # 延迟导入确保 tasks 表由 workflow_db 统一管理
         try:
             from workflow.client import WorkflowClient
@@ -54,6 +53,13 @@ class P0Exemption:
             wc.close()
         except Exception:
             pass
+        # 确保 P0 列存在 — DESIGN.md WL-P1-01 DDL 迁移
+        existing = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        for col, coltype in {"p0_state": "TEXT DEFAULT NULL", "p0_reason": "TEXT DEFAULT ''",
+                              "p0_marked_at": "REAL DEFAULT NULL", "p0_marked_by": "TEXT DEFAULT ''"}.items():
+            if col not in existing:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {coltype}")
+        self._conn.commit()
 
     def can_mark_p0(self) -> bool:
         """检查当前角色是否有权标记 P0。"""
