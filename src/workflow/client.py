@@ -52,10 +52,8 @@ class WorkflowClient:
                     assignee: str = None, priority: int = 0,
                     template_id: str = None) -> str:
         if template_id is None:
-            warnings.warn(
-                "create_task without template_id is deprecated. "
-                "Use create_task_v2(title, assignee, template_id, initiator_role).",
-                DeprecationWarning, stacklevel=2
+            raise ValueError(
+                "template_id is required. Use create_task_v2(title, assignee, template_id, initiator_role)."
             )
         return self._create_task_impl(title, description, assignee, priority, template_id)
 
@@ -63,10 +61,11 @@ class WorkflowClient:
                        template_id: str, initiator_role: str,
                        description: str = "") -> tuple:
         from workflow.gateway import Gate
-        Gate(str(self.db_path) if hasattr(self, 'db_path') and self.db_path else None).validate_create_task(
-            template_id, initiator_role, assignee)
+        gate = Gate(str(self.db_path) if hasattr(self, 'db_path') and self.db_path else None)
+        gate.validate_create_task(template_id, initiator_role, assignee)
         task_id = self._create_task_impl(title, description, assignee, 0, template_id)
         wf_id = self._create_workflow_instance(task_id, template_id, assignee)
+        gate.route_task(task_id, initiator_role, assignee)
         return (task_id, wf_id)
 
     def _create_task_impl(self, title: str, description: str,

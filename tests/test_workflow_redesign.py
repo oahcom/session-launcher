@@ -662,7 +662,7 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        lm2 = LifecycleManager("product_architect", db_path=self.db)
+        lm2 = LifecycleManager("pm", db_path=self.db)  # assigner chain: initiator confirms step1
         lm2.confirm_step(self.wf_id, "s1")
         assert lm2.get_wf(self.wf_id)["current_step_id"] == "s2"
         lm.close(); lm2.close()
@@ -671,7 +671,7 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        LifecycleManager("product_architect", db_path=self.db).confirm_step(self.wf_id, "s1")
+        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")  # initiator confirms
         lm_pg = LifecycleManager("pg", db_path=self.db)
         assert lm_pg.complete_step(self.wf_id, "s2") == "step_done_ready"
         lm.close(); lm_pg.close()
@@ -680,9 +680,9 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        LifecycleManager("product_architect", db_path=self.db).confirm_step(self.wf_id, "s1")
+        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
         LifecycleManager("pg", db_path=self.db).complete_step(self.wf_id, "s2")
-        LifecycleManager("pg", db_path=self.db).confirm_step(self.wf_id, "s2")
+        LifecycleManager("product_architect", db_path=self.db).confirm_step(self.wf_id, "s2")  # s1's target_role confirms s2
         LifecycleManager("reviewer", db_path=self.db).complete_step(self.wf_id, "s3")
         LifecycleManager("reviewer", db_path=self.db).confirm_step(self.wf_id, "s3")
         assert lm.get_wf(self.wf_id)["status"] == "completed"
@@ -699,7 +699,7 @@ class TestLifecycleManager:
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
         with pytest.raises((PermissionError, ValueError)):
-            LifecycleManager("pg", db_path=self.db).confirm_step(self.wf_id, "s1")
+            LifecycleManager("pg", db_path=self.db).confirm_step(self.wf_id, "s1")  # pg not in assigner chain for s1
         lm.close()
 
     def test_t3_08_confirm_non_step_done_ready(self):
@@ -720,11 +720,11 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        lm_pa = LifecycleManager("product_architect", db_path=self.db)
-        lm_pa.confirm_step(self.wf_id, "s1")
+        lm_init = LifecycleManager("pm", db_path=self.db)  # initiator confirms
+        lm_init.confirm_step(self.wf_id, "s1")
         with pytest.raises((ValueError, PermissionError)):
-            lm_pa.confirm_step(self.wf_id, "s1")
-        lm.close(); lm_pa.close()
+            lm_init.confirm_step(self.wf_id, "s1")
+        lm.close(); lm_init.close()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1106,9 +1106,9 @@ class TestIntegration:
 
         LifecycleManager("product_architect", db_path=self.db).start_wf(wf_id)
         LifecycleManager("product_architect", db_path=self.db).complete_step(wf_id, "s1")
-        LifecycleManager("product_architect", db_path=self.db).confirm_step(wf_id, "s1")
+        LifecycleManager("pm", db_path=self.db).confirm_step(wf_id, "s1")  # initiator confirms s1
         LifecycleManager("pg", db_path=self.db).complete_step(wf_id, "s2")
-        LifecycleManager("pg", db_path=self.db).confirm_step(wf_id, "s2")
+        LifecycleManager("product_architect", db_path=self.db).confirm_step(wf_id, "s2")  # previous step's target_role confirms s2
         LifecycleManager("reviewer", db_path=self.db).complete_step(wf_id, "s3")
         LifecycleManager("reviewer", db_path=self.db).confirm_step(wf_id, "s3")
 
@@ -1144,9 +1144,7 @@ class TestIntegration:
 
     def test_t9_05_v1_backward_compatible(self):
         wc = WorkflowClient("pm", db_path=self.db)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            tid = wc.create_task("V1兼容", assignee="pg")
+        tid = wc.create_task_v2("V1兼容", assignee="pg", template_id="WL-01", initiator_role="pm")[0]
         assert wc.get_task(tid) is not None
         wc.close()
 
@@ -1234,16 +1232,20 @@ class TestExecuteHandoff:
         lm = LifecycleManager("product_architect", db_path=self.db)
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        lm.confirm_step(self.wf_id, "s1")
-        assert lm.get_wf(self.wf_id)["current_step_id"] == "s2"
         lm.close()
+        lm_init = LifecycleManager("pm", db_path=self.db)  # initiator confirms
+        lm_init.confirm_step(self.wf_id, "s1")
+        assert lm_init.get_wf(self.wf_id)["current_step_id"] == "s2"
+        lm_init.close()
 
     def test_t12_02_pg_complete_s2(self):
         lm = LifecycleManager("product_architect", db_path=self.db)
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        lm.confirm_step(self.wf_id, "s1")
         lm.close()
+        lm_init = LifecycleManager("pm", db_path=self.db)
+        lm_init.confirm_step(self.wf_id, "s1")
+        lm_init.close()
         lm_pg = LifecycleManager("pg", db_path=self.db)
         lm_pg.complete_step(self.wf_id, "s2")
         assert lm_pg.get_wf(self.wf_id)["current_step_id"] == "s2"
@@ -1430,7 +1432,7 @@ class TestConcurrency:
         results = []
         def try_confirm():
             try:
-                lmx = LifecycleManager("product_architect", db_path=self.db)
+                lmx = LifecycleManager("pm", db_path=self.db)  # initiator can confirm s1
                 lmx.confirm_step(self.wf_id, "s1")
                 results.append("success")
                 lmx.close()
@@ -1478,11 +1480,124 @@ class TestConcurrency:
 
     def test_sc_05_v1_bypass(self, test_db):
         wc = WorkflowClient("pm", db_path=test_db)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            tid = wc.create_task("V1绕过", assignee="pg")
+        tid = wc.create_task_v2("V1绕过", assignee="pg", template_id="WL-01", initiator_role="pm")[0]
         assert tid is not None
         wc.close()
+
+
+# ══════════════════════════════════════════════════════════════
+# WL-P1-01 — P0阶梯式认定 专项测试
+# ══════════════════════════════════════════════════════════════
+
+class TestP0Ladder:
+    """WL-P1-01: P0 阶梯式认定。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, test_db):
+        self.db = test_db
+        _ensure_tables(test_db)
+        run_migration(db_path=test_db, dry_run=False)
+        reg = TemplateRegistry(db_path=test_db)
+        _seed_templates(reg)
+        reg.close()
+        wc = WorkflowClient("pm", db_path=test_db)
+        self.tid = wc.create_task_v2("P0阶梯测试", "pg", "WL-02", "pm")[0]
+        wc.close()
+
+    def test_p0ladder_01_any_role_can_mark_draft(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        r = p0.mark_p0_draft(self.tid, "这是一个超过15字的P0标记理由字段", "engineer")
+        assert r["p0_state"] == "draft"
+        p0.close()
+
+    def test_p0ladder_02_reason_too_short(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        with pytest.raises(ValueError, match="≥15"):
+            p0.mark_p0_draft(self.tid, "太短", "engineer")
+        p0.close()
+
+    def test_p0ladder_03_confirm_p0(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        p0.mark_p0_draft(self.tid, "这是一个超过15字的P0标记理由字段", "engineer")
+        p0.close()
+        p0_lr = P0Exemption("lr", db_path=self.db)
+        r = p0_lr.confirm_p0(self.tid, "lr")
+        assert r["p0_state"] == "confirmed"
+        p0_lr.close()
+
+    def test_p0ladder_04_non_coordinator_cannot_confirm(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        p0.mark_p0_draft(self.tid, "这是一个超过15字的P0标记理由字段", "engineer")
+        p0.close()
+        p0_pm = P0Exemption("pm", db_path=self.db)
+        with pytest.raises(PermissionError, match="only coordinator/lr"):
+            p0_pm.confirm_p0(self.tid, "pm")
+        p0_pm.close()
+
+    def test_p0ladder_05_downgrade_p0(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        p0.mark_p0_draft(self.tid, "这是一个超过15字的P0标记理由字段", "engineer")
+        p0.close()
+        p0_coord = P0Exemption("coordinator", db_path=self.db)
+        r = p0_coord.downgrade_p0(self.tid, "非紧急", "coordinator")
+        assert r["p0_state"] == "downgraded"
+        p0_coord.close()
+
+    def test_p0ladder_06_audit_scan(self):
+        p0 = P0Exemption("engineer", db_path=self.db)
+        p0.mark_p0_draft(self.tid, "这是一个超过15字的P0标记理由字段", "engineer")
+        # 直接设置标记时间为5小时前
+        p0._conn.execute("UPDATE tasks SET p0_marked_at=? WHERE task_id=?",
+                         (time.time() - 5 * 3600, self.tid))
+        p0._conn.commit()
+        p0.close()
+        p0_sys = P0Exemption("lr", db_path=self.db)
+        results = p0_sys.p0_audit_scan()
+        p0_sys.close()
+        assert any(r["task_id"] == self.tid for r in results)
+
+
+# ══════════════════════════════════════════════════════════════
+# WL-P0-01 — 分配者链 + rollback_step 专项测试
+# ══════════════════════════════════════════════════════════════
+
+class TestAssignerChainEnforcement:
+    """WL-P0-01: 分配者链强制 + rollback_step。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, test_db):
+        self.db = test_db
+        _ensure_tables(test_db)
+        run_migration(db_path=test_db, dry_run=False)
+        reg = TemplateRegistry(db_path=test_db)
+        _seed_templates(reg)
+        reg.close()
+        wc = WorkflowClient("pm", db_path=test_db)
+        self.wf_id = wc.create_task_v2("分配者链测试", "product_architect", "WL-01", "pm")[1]
+        wc.close()
+
+    def test_assigner_01_executor_cannot_confirm_own_handoff(self):
+        lm = LifecycleManager("product_architect", db_path=self.db)
+        lm.start_wf(self.wf_id)
+        lm.complete_step(self.wf_id, "s1")
+        with pytest.raises(PermissionError, match="only assigner"):
+            lm.confirm_step(self.wf_id, "s1")
+        lm.close()
+
+    def test_assigner_02_initiator_confirms_step1(self):
+        lm = LifecycleManager("product_architect", db_path=self.db)
+        lm.start_wf(self.wf_id)
+        lm.complete_step(self.wf_id, "s1")
+        lm.close()
+        assert LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
+
+    def test_assigner_03_rollback_step(self):
+        lm = LifecycleManager("product_architect", db_path=self.db)
+        lm.start_wf(self.wf_id)
+        lm.complete_step(self.wf_id, "s1")
+        lm.close()
+        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
+        assert LifecycleManager("pm", db_path=self.db).rollback_step(self.wf_id, "s1")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1493,10 +1608,13 @@ class TestRegression:
     """REG: 回归测试。"""
 
     def test_reg_01_auto_schedule_not_affected(self, test_db):
+        _ensure_tables(test_db)
+        reg = TemplateRegistry(db_path=test_db)
+        _seed_templates(reg)
+        reg.close()
         wc = WorkflowClient("pm", db_path=test_db)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            assert wc.get_task(wc.create_task("auto_schedule", assignee="pg")) is not None
+        tid = wc.create_task_v2("auto_schedule", assignee="pg", template_id="WL-01", initiator_role="pm")[0]
+        assert wc.get_task(tid) is not None
         wc.close()
 
     def test_reg_02_execute_handoff_compatible(self, test_db):
@@ -1519,11 +1637,11 @@ class TestRegression:
         lm.close()
 
     def test_reg_04_v1_deprecation_warning(self, test_db):
+        """V1 create_task 已移除（改为硬错误），使用 create_task_v2 替代。"""
         wc = WorkflowClient("pm", db_path=test_db)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        import re
+        with pytest.raises(ValueError, match="template_id is required"):
             wc.create_task("V1弃用", assignee="pg")
-            assert any(issubclass(x.category, DeprecationWarning) for x in w)
         wc.close()
 
 

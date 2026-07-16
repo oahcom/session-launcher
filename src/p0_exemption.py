@@ -18,6 +18,8 @@ from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT
 ALLOWED_P0_ROLES = {"coordinator", "lr"}
 # 超时阈值（小时）
 P0_TIMEOUT_HOURS = 4
+# P0_draft 确认窗口（小时）
+P0_DRAFT_CONFIRM_WINDOW = 1
 
 
 class P0Exemption:
@@ -155,6 +157,85 @@ class P0Exemption:
                     "elapsed_hours": round(elapsed, 1),
                 })
         return violations
+
+    # ── WL-P1-01: P0阶梯式认定函数 ────────────────
+
+    def mark_p0_draft(self, task_id: str, reason: str, role: str) -> dict:
+        """任何角色标记 P0_draft。
+
+        reason ≥15字符, task 存在且未 completed。
+        """
+        if len(reason) < 15:
+            raise ValueError(f"理由需≥15字符, 当前{len(reason)}")
+        existing = self._conn.execute(
+            "SELECT task_id, status FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not existing:
+            raise ValueError(f"task 不存在: {task_id}")
+        if dict(existing)["status"] == "completed":
+            raise ValueError("task 已 completed, 不可标记 P0")
+        now = time.time()
+        self._conn.execute(
+            "UPDATE tasks SET p0_state='draft', p0_reason=?, p0_marked_at=?, p0_marked_by=? "
+            "WHERE task_id=?", (reason, now, role, task_id)
+        )
+        self._conn.commit()
+        self._log_audit(task_id, role, f"p0_draft: {reason}")
+        self._notify_bus("architecture",
+            f"P0_draft: {task_id}",
+            evidence=f"reason={reason}, role={role}")
+        self._notify_bus("blocker",
+            f"P0_draft 需确认: {task_id}",
+            evidence=f"role={role}, window={P0_DRAFT_CONFIRM_WINDOW}h")
+        return {"p0_state": "draft", "task_id": task_id}
+
+    def confirm_p0(self, task_id: str, role: str) -> dict:
+        """coordinator/lr 确认 P0_draft → P0_confirmed。"""
+        if role not in ALLOWED_P0_ROLES:
+            raise PermissionError(f"only coordinator/lr can confirm P0, got: {role}")
+        row = self._conn.execute(
+            "SELECT p0_state FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not row or dict(row)["p0_state"] != "draft":
+            raise ValueError(f"task {task_id} 非 P0_draft 状态")
+        self._conn.execute(
+            "UPDATE tasks SET p0_state='confirmed' WHERE task_id=?", (task_id,)
+        )
+        self._conn.commit()
+        self._log_audit(task_id, role, "p0_confirmed")
+        self._notify_bus("architecture", f"P0 confirmed: {task_id}")
+        return {"p0_state": "confirmed", "task_id": task_id}
+
+    def downgrade_p0(self, task_id: str, reason: str, role: str) -> dict:
+        """降级 P0_draft → P1。role 须为 coordinator/lr/system。"""
+        allowed = ALLOWED_P0_ROLES | {"system"}
+        if role not in allowed:
+            raise PermissionError(f"cannot downgrade: {role}")
+        self._conn.execute(
+            "UPDATE tasks SET p0_state='downgraded', priority=1 WHERE task_id=?",
+            (task_id,)
+        )
+        self._conn.commit()
+        self._log_audit(task_id, role, f"p0_downgraded: {reason}")
+        self._notify_bus("architecture", f"P0 downgraded: {task_id}",
+                         evidence=f"reason={reason}, by={role}")
+        return {"p0_state": "downgraded", "task_id": task_id}
+
+    def p0_audit_scan(self) -> list[dict]:
+        """扫描超过4h的 P0_draft, 自动降级。"""
+        now = time.time()
+        rows = self._conn.execute(
+            "SELECT task_id, p0_marked_at FROM tasks "
+            "WHERE p0_state='draft' AND p0_marked_at IS NOT NULL "
+            "AND (? - p0_marked_at) > ?",
+            (now, P0_TIMEOUT_HOURS * 3600)
+        ).fetchall()
+        results = []
+        for row in rows:
+            tid = dict(row)["task_id"]
+            if self.downgrade_p0(tid, "自动超时降级", "system")["p0_state"] == "downgraded":
+                results.append({"task_id": tid, "action": "auto_downgraded"})
+        return results
 
     def _violation_action(self, task: dict):
         """超时检测后记录 violation 并通知 coordinator。"""

@@ -19,6 +19,89 @@ from pathlib import Path
 from paths import WORKFLOWS_DB as DB_PATH
 from paths import BUS_CLIENT
 
+# ── 敏感操作分类 ─────────────────────────────────
+# 按影响范围分级：info / operation / admin
+SENSITIVE_CMDS: dict[str, list[str]] = {
+    "admin": ["stop", "kill", "force_start_ccs", "register_hook"],
+    "operation": ["start", "wake_ccs", "send-safe", "send-direct", "codex start"],
+    "info": ["send", "send-safe", "output", "status", "health", "workspace"],
+}
+# 允许执行 admin/operation 级别的角色
+ADMIN_ROLES: set = {"coordinator", "maintainer", "closer"}
+OPERATION_ROLES: set = {"coordinator", "maintainer", "engineer", "pg", "devops", "closer"}
+# 类别对应的允许执行者
+SENSITIVE_PERMISSIONS: dict[str, set] = {
+    "admin": ADMIN_ROLES,
+    "operation": OPERATION_ROLES,
+}
+
+def classify_ccs_command(message: str) -> str:
+    """对 ccs 命令分类：admin / operation / info / unknown。
+
+    ponytail: 基于前缀匹配，后续可改为 intent-NLP 分类。"""
+    msg = message.strip().lower()
+    if not msg:
+        return "unknown"
+    cmds = msg.split()
+    for cat, patterns in SENSITIVE_CMDS.items():
+        for p in patterns:
+            if msg.startswith(p.lower()):
+                return cat
+    return "unknown"
+
+def check_ccs_command_permission(source_role: str, message: str) -> tuple[bool, str]:
+    """检查来源角色是否有权限执行某 ccs 命令。
+
+    返回 (allowed: bool, reason: str)。
+    """
+    cat = classify_ccs_command(message)
+    if cat == "unknown" or cat == "info":
+        return True, ""
+    allowed_roles = SENSITIVE_PERMISSIONS.get(cat, set())
+    if source_role in allowed_roles:
+        return True, ""
+    return False, f"{source_role} 无 {cat} 级权限（需要 {allowed_roles}）"
+
+# ── WL-P0-03: 消息内容敏感度分类 ──────────────────
+# 🔴 禁止绕过（必须走 workflow 步骤）
+SENSITIVE_KEYWORDS_RED = {"分配", "审批", "决策", "approve", "assign", "decide",
+                           "确认完成", "通过审查", "定稿"}
+# 🟡 允许但记录
+SENSITIVE_KEYWORDS_YELLOW = {"咨询", "状态查询", "通知", "ask", "status", "notify"}
+
+def classify_message_content(text: str) -> str:
+    """对 bus 消息内容做敏感度分类: 🔴/🟡/🟢
+
+    ponytail: 基于关键词匹配, 后续可改为 intent 分类。"""
+    for kw in SENSITIVE_KEYWORDS_RED:
+        if kw in text:
+            return "red"
+    for kw in SENSITIVE_KEYWORDS_YELLOW:
+        if kw in text:
+            return "yellow"
+    return "green"
+
+# ── WL-P0-03: 工作群组矩阵 ──────────────────────
+# 决定哪些角色之间可以进行敏感通信
+# ponytail: 硬编码, 后续从 persona JSON 动态加载
+WORKGROUP_MATRIX: dict[str, set[str]] = {
+    "coordinator": {"*"},  # coordinator 可联系所有人
+    "lr": {"*"},
+    "pm": {"coordinator", "lr", "product_architect", "pg", "qa", "writer"},
+    "product_architect": {"coordinator", "lr", "pm", "pg", "reviewer", "qa"},
+    "pg": {"coordinator", "lr", "pm", "product_architect", "reviewer", "qa", "devops"},
+    "engineer": {"coordinator", "lr", "pm", "pg", "reviewer"},
+    "reviewer": {"coordinator", "lr", "pm", "product_architect", "pg", "qa"},
+    "qa": {"coordinator", "lr", "pm", "pg", "reviewer", "devops"},
+    "devops": {"coordinator", "lr", "pg", "qa"},
+    "writer": {"coordinator", "pm", "lr"},
+    "maintainer": {"coordinator", "lr", "pm", "pg", "devops"},
+    "scout": {"coordinator", "lr", "pm"},
+    "closer": {"coordinator", "lr"},
+}
+# 审计上限: 每角色每小时可发送的敏感操作次数
+SENSITIVE_RATE_LIMIT = 5  # 次/小时
+
 
 class CrossRoleRouter:
     """跨角色路由拦截器 — 三源消息溯源。"""
@@ -53,6 +136,33 @@ class CrossRoleRouter:
         # 同角色消息直接放行
         if source == target or source in ("cli", "loop", "pipeline"):
             return True
+
+        # WL-P0-03: 工作群组校验 — 非矩阵角色发🔴消息(分配/审批/决策)被拦截
+        msg_sensitivity = classify_message_content(message)
+        allowed_targets = WORKGROUP_MATRIX.get(source, set())
+        if "*" not in allowed_targets and target not in allowed_targets:
+            if msg_sensitivity == "red":
+                self._log_violation(source, target, message,
+                                    f"not in workgroup matrix, red message blocked")
+                return False
+
+        # WL-P0-03: 审计上限 — 🔴消息超过5次/小时强制拦截
+        if msg_sensitivity == "red":
+            conn = self._get_conn()
+            try:
+                hour_ago = time.time() - 3600
+                count = conn.execute(
+                    "SELECT COUNT(*) as c FROM workflow_logs "
+                    "WHERE actor=? AND action='cross_role_send' AND ts>?",
+                    (source, hour_ago)
+                ).fetchone()["c"]
+                if count > SENSITIVE_RATE_LIMIT:
+                    self._log_violation(source, target, message,
+                                        f"rate limit: {count} red msgs in last hour")
+                    conn.close()
+                    return False
+            finally:
+                conn.close()
 
         # 三源验证
         evidence = self._source_triple_check(source, message)

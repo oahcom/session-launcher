@@ -174,5 +174,17 @@ class Gate:
         )
         target.commit()
 
+    # ── 分配者链 ──────────────────────────────────
+
+    def route_task(self, task_id: str, from_role: str, to_role: str) -> None:
+        """Route task through the chain (3-level: coordinator→dispatcher→executor)."""
+        self._conn.execute(
+            "INSERT INTO workflow_logs (workflow_instance_id, task_id, "
+            "action, actor, detail, ts) VALUES (?, ?, ?, ?, ?, ?)",
+            (None, task_id, "routed", from_role,
+             json.dumps({"chain": f"{from_role}→{to_role}"}, ensure_ascii=False), time.time())
+        )
+        self._conn.commit()
+
     def close(self):
         self._conn.close()

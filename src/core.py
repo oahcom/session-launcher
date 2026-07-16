@@ -321,14 +321,19 @@ def send(role: str, message: str, source: str = "") -> dict:
     """向 CCS 发送消息。"""
     if not _validate_role_name(role):
         return {"success": False, "error": f"非法角色名: {role}"}
-    # 跨角色路由拦截（三源验证：bus/src / DB assigner / sentinel）
+    # 跨角色路由拦截（三源验证 + 敏感命令门禁）
     if role != "self" and source != "cli":
         try:
-            from routing.router import CrossRoleRouter
+            from routing.router import CrossRoleRouter, check_ccs_command_permission
+            # 三源验证
             allowed = CrossRoleRouter().intercept(source or "unknown", role, message)
             if not allowed:
                 return {"success": False,
                         "error": f"三源验证拒绝: {source}→{role}，消息前缀非可靠来源"}
+            # 敏感命令门禁
+            cmd_ok, reason = check_ccs_command_permission(source or "unknown", message)
+            if not cmd_ok:
+                return {"success": False, "error": f"敏感操作门禁拒绝: {reason}"}
         except Exception:
             pass  # 降级：DB/总线不可用时放行
 

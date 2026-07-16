@@ -327,7 +327,7 @@ def run_migration(db_path: str = None,
         else:
             results.append(f"已存在: {col_name}")
 
-    # 2. tasks 新增 template_id 列
+    # 2. tasks 新增 template_id 列 + P0 字段
     existing2 = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
     if "template_id" not in existing2:
         if not dry_run:
@@ -335,6 +335,16 @@ def run_migration(db_path: str = None,
             results.append("已 ADD: tasks.template_id")
     else:
         results.append("已存在: tasks.template_id")
+    for col_name, col_def in [("p0_state", "TEXT DEFAULT NULL"),
+                               ("p0_reason", "TEXT DEFAULT ''"),
+                               ("p0_marked_at", "REAL DEFAULT NULL"),
+                               ("p0_marked_by", "TEXT DEFAULT ''")]:
+        if col_name not in existing2:
+            if not dry_run:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_def}")
+                results.append(f"已 ADD: tasks.{col_name}")
+        else:
+            results.append(f"已存在: tasks.{col_name}")
 
     # 3. 索引
     existing_idx = {r[1] for r in conn.execute(

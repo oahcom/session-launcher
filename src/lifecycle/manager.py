@@ -171,6 +171,28 @@ class LifecycleManager:
                 self._conn.rollback()
                 raise
 
+    def _get_assigner_for_step(self, wf: dict, step: dict, step_id: str) -> str:
+        """返回应确认此步骤的角色（分配者链）。
+
+        handoff: 第1步→发起者, 第N步→第N-1步的target_role
+        review: target_role
+        single/gate/notify: 无需确认, 返回空
+        """
+        st = step.get("type", "")
+        if st == "review":
+            return step.get("target_role", "")
+        if st == "handoff":
+            template = self._get_template(wf.get("template_id"))
+            if not template:
+                return ""
+            steps = template.get("steps", [])
+            for i, s in enumerate(steps):
+                if s.get("step_id") == step_id:
+                    if i == 0:
+                        return wf.get("assigner", "")
+                    return steps[i - 1].get("target_role", "")
+        return ""
+
     def confirm_step(self, wf_id: str, step_id: str) -> bool:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -181,10 +203,10 @@ class LifecycleManager:
 
                 step = self.get_step(wf_id, step_id)
                 if step:
-                    target_role = step.get("target_role", "")
-                    if target_role and self.role != target_role:
+                    assigner = self._get_assigner_for_step(wf, step, step_id)
+                    if assigner and self.role != assigner:
                         raise PermissionError(
-                            f"not the assignee: {self.role} != {target_role}")
+                            f"only assigner can confirm: {self.role} != {assigner}")
 
                 results = self._parse_results(wf)
                 current = results.get(step_id, {})
@@ -244,6 +266,49 @@ class LifecycleManager:
                     self._log_unsafe(wf_id, task_id, "wf_failed", detail=f"step {step_id}: {reason}")
                     self._conn.commit()
                     return False
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def rollback_step(self, wf_id: str, step_id: str) -> bool:
+        """回滚已完成步骤到 running。
+
+        仅分配者或 coordinator 可调用。
+        将指定步骤状态重置为 running，后续步骤状态重置为 pending。
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                wf = self._get_wf_unsafe(wf_id)
+                if not wf:
+                    raise ValueError(f"workflow 不存在: {wf_id}")
+                if self.role not in (wf.get("assigner", ""), "coordinator"):
+                    raise PermissionError(
+                        f"only assigner/coordinator can rollback: {self.role}")
+                step_def = self.get_step(wf_id, step_id)
+                if not step_def:
+                    raise ValueError(f"步骤不存在: {step_id}")
+                results = self._parse_results(wf)
+                if results.get(step_id, {}).get("status") not in ("completed", "step_done_ready"):
+                    raise ValueError(f"步骤 {step_id} 未完成，不可回滚")
+                results[step_id] = {"status": "running", "rolled_back": True,
+                                    "rolled_back_at": time.time(), "rolled_back_by": self.role}
+                # 删除后续所有步骤状态
+                steps = self._get_all_steps_unsafe(wf.get("template_id"))
+                found = False
+                for s in steps:
+                    if s.get("step_id") == step_id:
+                        found = True
+                    elif found:
+                        results.pop(s.get("step_id"), None)
+                self._conn.execute(
+                    "UPDATE workflow_instances SET current_step_id=?, step_results=?, status='running' "
+                    "WHERE instance_id=?", (step_id, json.dumps(results, ensure_ascii=False), wf_id)
+                )
+                self._log_unsafe(wf.get("task_id"), wf.get("task_id"), "step_rolled_back",
+                                 detail=f"{step_id} rolled back by {self.role}")
+                self._conn.commit()
+                return True
             except Exception:
                 self._conn.rollback()
                 raise

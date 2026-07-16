@@ -120,7 +120,8 @@ def execute_handoff(wf, wf_id: str, step: dict) -> dict:
 
     # 优先已有 task_id，没有则创建
     if not task_id:
-        task_id = wf.create_task(step.get("title", ""), assignee=target)
+        task_id = wf.create_task(step.get("title", ""), assignee=target,
+                                 template_id=wf.find_template("WL-01").get("template_id", "WL-01") if wf.find_template("WL-01") else None)
         # 关联到当前 workflow 实例
         wf._conn.execute(
             "UPDATE workflow_instances SET task_id=? WHERE instance_id=?",

@@ -195,20 +195,22 @@ def _action_templates(role: dict) -> str:
 def _build_role_prompt(role: dict) -> str:
     """构建角色 system_prompt，优先调用 role_assembler，失败回退。"""
     BUS_LOOP_SUFFIX = """
-## 工作循环（自动执行，不要退出）
+/loop 5m /## 工作循环（自动执行，不要退出）
 
 你是持久运行的 CCS（Claude Code Session），不要退出。
-执行完本职工作后，进入循环等待模式：
+执行完本职工作后，必须通过cornCreate或者loop进入循环等待模式：
 
 ### 每轮循环
-   → 检查是否有分配给本角色的新任务
+→ 检查是否有分配给本角色的新任务(最重要的)
 2. python3 ~/.hermes/scripts/bus_client.py search "interjection:{name}" --limit 3 2>/dev/null
-   → 检查是否有外部插入的指令（由 coordinator 或其他角色写入）
+→ 检查是否有外部插入的指令（由 coordinator 或其他角色写入）
 3. 如果有新指令或任务 → 先执行
-4. 如果没有任何事做 → sleep 30 → 回到第 1 步
-
-/loop
-"""
+4. 检查是否有其他 session 给你的任务（标题含你角色名或"everyone"）
+5. 如果有 -> 优先处理：写结果回 bus，标题用 '@{name} '
+6. 读 code_fix 看看有没有需要你验证的修复
+7. 如果发现其他角色有任务未完成你需要推动它
+8. 如果没有任何事做 → sleep 30 → 回到第 1 步
+    """
     # 优先通过 role_assembler 组装（含 skills/constraints/goal 注入）
     assembler = Path(os.environ.get('SESSION_ROLES_ROOT', str(Path.home() / 'hermes-session-roles'))) / 'src' / 'role_assembler.py'
     if assembler.exists():
@@ -219,14 +221,14 @@ def _build_role_prompt(role: dict) -> str:
             )
             if r.returncode == 0 and r.stdout.strip():
                 base = r.stdout.strip()
-                return base + BUS_LOOP_SUFFIX.format(name=role["name"])
+                return BUS_LOOP_SUFFIX.format(name=role["name"]) +base
         except Exception:
             pass  # assembler 不可用，回退
 
     base = (role.get("system_prompt", "")
             .replace("{persona_name}", role["name"])
             .replace("{persona_title}", role["title"]))
-    return base + BUS_LOOP_SUFFIX.format(name=role["name"])
+    return BUS_LOOP_SUFFIX.format(name=role["name"]) + base
 
 def _resolve_ws_paths(name: str) -> list[Path]:
     """解析角色的 workspace CLAUDE.md 路径列表（可能多个）。"""
