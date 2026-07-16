@@ -7,6 +7,7 @@ p0_exemption.py — P0 豁免通道 + 审计轨迹
 """
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -435,6 +436,10 @@ class P0Exemption:
         self._conn.commit()
 
     def _notify_bus(self, category: str, title: str, evidence: str = ""):
+        # test-mode detection — skip bus writes when using non-prod DB
+        _prod = os.path.join(str(Path.home()), ".hermes", "state", "workflows.db")
+        if str(self.db_path) != _prod:
+            return
         import subprocess
         try:
             cmd = ["python3", str(BUS_CLIENT), "write", category,
