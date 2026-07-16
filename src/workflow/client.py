@@ -64,7 +64,7 @@ class WorkflowClient:
         gate = Gate(str(self.db_path) if hasattr(self, 'db_path') and self.db_path else None)
         gate.validate_create_task(template_id, initiator_role, assignee)
         task_id = self._create_task_impl(title, description, assignee, 0, template_id)
-        wf_id = self._create_workflow_instance(task_id, template_id, assignee)
+        wf_id = self._create_workflow_instance(task_id, template_id, assignee, initiator_role)
         gate.route_task(task_id, initiator_role, assignee)
         return (task_id, wf_id)
 
@@ -111,7 +111,13 @@ class WorkflowClient:
             self.notify("task_spec", f"创建任务: {title}", evidence=evidence)
         return task_id
 
-    def _create_workflow_instance(self, task_id: str, template_id: str, assignee: str) -> str:
+    def _create_workflow_instance(self, task_id: str, template_id: str, assignee: str,
+                                   initiator_role: str = None) -> str:
+        # ponytail: anti-bypass secondary guard — validates even if called outside create_task_v2
+        from workflow.gateway import Gate
+        gate = Gate(str(self.db_path) if hasattr(self, 'db_path') and self.db_path else None)
+        gate.validate_create_task(template_id, initiator_role or self.role, assignee)
+
         wf_id = f"wf_{int(time.time()*1000) % 100000000}"
         now = time.time()
         self._conn.execute("""

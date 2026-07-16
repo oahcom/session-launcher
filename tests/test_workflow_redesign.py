@@ -919,10 +919,10 @@ class TestP0Exemption:
         assert p0.can_mark_p0()
         p0.close()
 
-    def test_t6_03_pm_cannot_mark_p0(self):
+    def test_t6_03_engineer_cannot_mark_p0(self):
         with pytest.raises(PermissionError, match="only coordinator/lr"):
-            P0Exemption("pm", db_path=self.db).create_p0_task(
-                "测试", "desc", "pg", "pm",
+            P0Exemption("engineer", db_path=self.db).create_p0_task(
+                "测试", "desc", "pg", "engineer",
                 "这是一个足够长的理由字段要求超过15字")
 
     def test_t6_04_p0_reason_too_short(self):
@@ -1264,14 +1264,10 @@ class TestCrossRoleRouter:
         assert CrossRoleRouter(db_path=test_db).intercept("pm", "pm", "你好") is True
         # CLI 来源放行
         assert CrossRoleRouter(db_path=test_db).intercept("cli", "pm", "指令") is True
-        # 跨角色：sentinel 存在时放行（已运行 CCS 可互信）
-        import subprocess as _sp
-        _pm_running = _sp.run(["tmux", "has-session", "-t", "ccs-pm"],
-                              capture_output=True, timeout=3).returncode == 0
-        if _pm_running:
-            assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is True
-        else:
-            assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "跨角色") is False
+        # 🟢 绿消息(无敏感词) → 始终放行
+        assert CrossRoleRouter(db_path=test_db).intercept("pm", "pg", "普通咨询消息") is True
+        # 不存在的来源 + 🔴 红消息 → 拒绝
+        assert CrossRoleRouter(db_path=test_db).intercept("i_do_not_exist_xyz", "pm", "分配任务") is False
 
     def test_t13_02_intercept_logs_to_db(self, test_db):
         router = CrossRoleRouter(db_path=test_db)
@@ -1288,17 +1284,15 @@ class TestCrossRoleRouter:
     def test_t15_01_check_send_permission(self, test_db):
         # 同角色放行
         assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pm") is True
-        # 跨角色：sentinel 存在时放行（已运行 CCS 可互信）
-        import subprocess as _sp
-        _pm_running = _sp.run(["tmux", "has-session", "-t", "ccs-pm"],
-                              capture_output=True, timeout=3).returncode == 0
-        # pm 在运行 → 放行；未运行 → 拒绝
-        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is _pm_running
+        # 🟢 内容 → 放行
+        assert CrossRoleRouter(db_path=test_db).check_send_permission("pm", "pg") is True
+        # 不存在的来源 + 🔴 内容 → 拒绝
+        assert CrossRoleRouter(db_path=test_db).check_send_permission("i_do_not_exist_xyz", "pg", "分配任务") is False
 
     def test_t15_02_log_violation(self, test_db):
         router = CrossRoleRouter(db_path=test_db)
-        # 使用不存在的源触发验证拒绝
-        result = router.intercept("i_do_not_exist_xyz", "pm", "越权消息")
+        # 使用不存在的源 + 🔴 红消息触发验证拒绝
+        result = router.intercept("i_do_not_exist_xyz", "pm", "分配任务紧急处理")
         assert result is False, "不应通过三源验证"
         conn = sqlite3.connect(test_db); conn.row_factory = sqlite3.Row
         rows = conn.execute(

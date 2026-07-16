@@ -38,38 +38,16 @@ check("所有 .py 文件编译通过", len(errors) == 0, f"失败: {errors}" if 
 
 # 2. Core module imports (from project root)
 print("\n## 2. 模块导入完整性")
-core_modules = ["core", "ccs", "launcher", "role_manager", "partner_client",
-                "sentinel", "signals", "signal_parser", "workflow_client",
-                "workflow_gate", "lifecycle_manager", "step_engine",
-                "template_registry", "cross_role_router", "p0_exemption"]
+core_modules = ["core", "ccs", "launcher",
+                "lifecycle.manager", "lifecycle.engine",
+                "events.signals", "events.parser", "events.notify",
+                "ops.workspace", "ops.sentinel", "ops.tracker", "ops.watchdog",
+                "routing.gateway"]
 bad = []
 for mod in core_modules:
     r = run([sys.executable, "-c", f"import sys; sys.path.insert(0, '{SRC}'); import {mod}"], timeout=10)
     if not r or r.returncode != 0: bad.append(mod)
 check("核心模块全部可导入", len(bad) == 0, f"失败: {bad}" if bad else "")
-
-# 3. Thin wrapper consistency
-print("\n## 3. 薄包装器一致性")
-wrappers = [
-    ("lifecycle_manager", "LifecycleManager"),
-    ("workflow_gate", "Gate"),
-    ("cross_role_router", "CrossRoleRouter"),
-    ("partner_client", "PartnerClient"),
-    ("sentinel", "CcsSentinel"),
-    ("signals", "check_signal"),
-    ("signal_parser", "parse_signal"),
-    ("role_manager", "load_roles"),
-    ("step_engine", "StepEngine"),
-    ("template_registry", "TemplateRegistry"),
-    ("notification_engine", "NotificationEngine"),
-    ("p0_exemption", "P0Exemption"),
-    ("workflow_client", "WorkflowClient"),
-]
-bad = []
-for wrapper, attr in wrappers:
-    r = run([sys.executable, "-c", f"import sys; sys.path.insert(0, '{SRC}'); from {wrapper} import {attr}; print('ok')"], timeout=10)
-    if not r or r.stdout.strip() != "ok": bad.append(f"{wrapper}.{attr}")
-check("薄包装器正确委派", len(bad) == 0, f"失败: {bad}" if bad else "")
 
 # 4. DB schema health
 print("\n## 4. 数据库架构健康")

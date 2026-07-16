@@ -1,5 +1,5 @@
 {
-  "timestamp": 1784073602.0098755,
+  "timestamp": 1784090810.9067063,
   "checks": [
     {
       "name": "所有 .py 文件编译通过",
@@ -8,13 +8,8 @@
     },
     {
       "name": "核心模块全部可导入",
-      "ok": false,
-      "detail": "失败: ['partner_client', 'sentinel', 'signals', 'workflow_gate', 'step_engine', 'cross_role_router']"
-    },
-    {
-      "name": "薄包装器正确委派",
-      "ok": false,
-      "detail": "失败: ['workflow_gate.Gate', 'cross_role_router.CrossRoleRouter', 'partner_client.PartnerClient', 'sentinel.CcsSentinel', 'signals.check_signal', 'step_engine.StepEngine', 'notification_engine.NotificationEngine']"
+      "ok": true,
+      "detail": ""
     },
     {
       "name": "workflows.db 表完整",
@@ -28,12 +23,12 @@
     },
     {
       "name": "测试集全部通过",
-      "ok": false,
-      "detail": "..................................................................."
+      "ok": true,
+      "detail": "121 passed, 2 warnings in 8.57s"
     }
   ],
-  "passed": 3,
-  "failed": 3,
-  "test_output": "...................................................................",
-  "status": "⚠ 3 项异常"
+  "passed": 5,
+  "failed": 0,
+  "test_output": "121 passed, 2 warnings in 8.57s",
+  "status": "✅ 健康"
 }

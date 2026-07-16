@@ -22,14 +22,14 @@ echo " 生产健康检查 — $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
 echo ""
 
-check "角色定义验证" python3 /home/administrator/hermes-session-roles/src/validate_roles.py
+check "角色定义验证" python3 "$HOME/hermes-session-roles/src/validate_roles.py"
 
-check "系统自愈检查" python3 /home/administrator/session-launcher/scripts/ecosystem_self_heal.py --quiet
+check "系统自愈检查" python3 "$HOME/session-launcher/scripts/ecosystem_health_daemon.py" --check
 
-check "Bus 读写" python3 /home/administrator/.hermes/scripts/bus_client.py stats
+check "Bus 读写" python3 "$HOME/.hermes/scripts/bus_client.py" stats
 
 check "路由完整性" python3 -c "
-import sys; sys.path.insert(0, '/home/administrator/session-pipeline/src')
+import sys; sys.path.insert(0, '$HOME/session-pipeline/src')
 from router import get_router; r = get_router()
 for cat in ['bug_report','code_fix','task_spec','security']:
     c = r.get_consumers(cat)
@@ -40,7 +40,7 @@ print('all categories >= 2 consumers')
 check "Python 编译" python3 -c "
 import ast
 from pathlib import Path
-src = Path('/home/administrator/session-launcher/src')
+src = Path('$HOME/session-launcher/src')
 errors = [(str(p.relative_to(Path.home())), p.read_text()) for p in src.rglob('*.py') if not p.name.startswith('__')]
 for path, code in errors:
     try: ast.parse(code)
@@ -63,8 +63,8 @@ print(f'{len(real_ws)} workspaces OK')
 
 check "核心文件" python3 -c "
 from pathlib import Path
-src = Path('/home/administrator/session-launcher/src')
-required = ['core.py', 'launcher.py', 'ccs.py', 'ops/workspace.py', 'routing/roles.py', 'routing/partner.py']
+src = Path('$HOME/session-launcher/src')
+required = ['core.py', 'launcher.py', 'ccs.py', 'ops/workspace.py', 'routing/gateway.py', 'lifecycle/manager.py']
 missing = [f for f in required if not (src / f).exists()]
 assert not missing, f'missing: {missing}'
 print(f'{len(required)} core files present')

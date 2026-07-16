@@ -137,40 +137,46 @@ class CrossRoleRouter:
         if source == target or source in ("cli", "loop", "pipeline"):
             return True
 
-        # WL-P0-03: 工作群组校验 — 非矩阵角色发🔴消息(分配/审批/决策)被拦截
+        # WL-P0-01: 消息内容敏感度分类
         msg_sensitivity = classify_message_content(message)
         allowed_targets = WORKGROUP_MATRIX.get(source, set())
+
+        # 🟢 绿消息（自由）→ 直接放行, 不检查来源
+        if msg_sensitivity == "green":
+            return True
+
+        # 🟡 黄消息（允许但记录）→ 已由 _log_cross_role_send 记录, 放行
+        if msg_sensitivity == "yellow":
+            return True
+
+        # 🔴 红消息（决策/分配/审批）→ 全套门禁校验
+        # 1. 工作群组校验: 非矩阵角色发 🔴 消息被拦截
         if "*" not in allowed_targets and target not in allowed_targets:
-            if msg_sensitivity == "red":
-                self._log_violation(source, target, message,
-                                    f"not in workgroup matrix, red message blocked")
+            self._log_violation(source, target, message,
+                                f"not in workgroup matrix, red message blocked")
+            return False
+
+        # 2. 审计上限: 每小时超过5条 🔴 消息 → 强制拦截, 提示创建task
+        conn = self._get_conn()
+        try:
+            hour_ago = time.time() - 3600
+            count = conn.execute(
+                "SELECT COUNT(*) as c FROM workflow_logs "
+                "WHERE actor=? AND action='cross_role_send' AND ts>?",
+                (source, hour_ago)
+            ).fetchone()["c"]
+            if count > SENSITIVE_RATE_LIMIT:
+                msg = (f"rate limit: {count} red msgs in last hour — "
+                       f"请使用 create_task() 创建任务后发送 🔴 消息")
+                self._log_violation(source, target, message, msg)
                 return False
+        finally:
+            conn.close()
 
-        # WL-P0-03: 审计上限 — 🔴消息超过5次/小时强制拦截
-        if msg_sensitivity == "red":
-            conn = self._get_conn()
-            try:
-                hour_ago = time.time() - 3600
-                count = conn.execute(
-                    "SELECT COUNT(*) as c FROM workflow_logs "
-                    "WHERE actor=? AND action='cross_role_send' AND ts>?",
-                    (source, hour_ago)
-                ).fetchone()["c"]
-                if count > SENSITIVE_RATE_LIMIT:
-                    self._log_violation(source, target, message,
-                                        f"rate limit: {count} red msgs in last hour")
-                    conn.close()
-                    return False
-            finally:
-                conn.close()
-
-        # 三源验证
+        # 3. 三源验证: 验证消息来源真实性
         evidence = self._source_triple_check(source, message)
-        source_ok = evidence["sources_ok"]
-        detail = evidence["detail"]
-
-        if not source_ok:
-            self._log_violation(source, target, message, detail)
+        if not evidence["sources_ok"]:
+            self._log_violation(source, target, message, evidence["detail"])
             return False
 
         return True

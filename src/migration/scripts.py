@@ -378,4 +378,37 @@ def run_migration(db_path: str = None,
     }
 
 
+# ── 存量数据扫描 (P1-03-c) ────────────────────────
+
+def stale_task_scan(db_path: str = None, dry_run: bool = False) -> dict:
+    """扫描 current_workflow_id IS NULL 的存量 task。
+
+    干运行 → 输出评估报告 (count + 详情)。
+    写模式 → 逐条标记 (未来回滚用，当前仅扫描)。
+    """
+    path = Path(db_path) if db_path else DB_PATH
+    if not path.exists():
+        return {"error": f"DB 不存在: {path}"}
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    count = conn.execute(
+        "SELECT COUNT(*) as c FROM tasks WHERE current_workflow_id IS NULL"
+    ).fetchone()["c"]
+    try:
+        rows = conn.execute(
+            "SELECT task_id, title, assignee, status FROM tasks WHERE current_workflow_id IS NULL LIMIT 100"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            "SELECT task_id, current_workflow_id FROM tasks WHERE current_workflow_id IS NULL LIMIT 100"
+        ).fetchall()
+    conn.close()
+    return {
+        "dry_run": dry_run,
+        "stale_count": count,
+        "sample": [dict(r) for r in rows],
+        "recommendation": "NO_ACTION" if count == 0 else "REVIEW_EACH",
+    }
+
+
 # ── CLI ─────────────────────────────────────────
