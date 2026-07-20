@@ -16,8 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from paths import WORKFLOWS_DB as DB_PATH
-from paths import BUS_CLIENT
+from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS
 
 # ── 敏感操作分类 ─────────────────────────────────
 # 按影响范围分级：info / operation / admin
@@ -83,9 +82,32 @@ def classify_message_content(text: str) -> str:
 
 # ── WL-P0-03: 工作群组矩阵 ──────────────────────
 # 决定哪些角色之间可以进行敏感通信
-# ponytail: 硬编码, 后续从 persona JSON 动态加载
-WORKGROUP_MATRIX: dict[str, set[str]] = {
-    "coordinator": {"*"},  # coordinator 可联系所有人
+# 动态从 persona JSON 加载 workgroup 字段
+# 兼容旧行为: 无 workgroup 字段时回退为硬编码矩阵
+def _load_workgroup_from_personas() -> dict[str, set[str]]:
+    """从 persona JSON 动态加载工作群组矩阵。
+
+    返回: {role: set(allowed_target_roles)}
+    """
+    matrix = {"coordinator": {"*"}}  # coordinator 兜底可联系所有人
+
+    try:
+        for f in SESSION_ROLES_PERSONAS.glob("*.json"):
+            data = json.loads(f.read_text())
+            name = data.get("name")
+            workgroup = data.get("workgroup", [])
+            if name and workgroup:
+                matrix[name] = set(workgroup)
+    except Exception:
+        pass  # 静默回退到硬编码
+
+    return matrix
+
+
+# 兼容旧代码: 如果动态加载结果为空，使用硬编码矩阵
+_workgroup_dynamic = _load_workgroup_from_personas()
+WORKGROUP_MATRIX: dict[str, set[str]] = _workgroup_dynamic if _workgroup_dynamic else {
+    "coordinator": {"*"},
     "lr": {"*"},
     "pm": {"coordinator", "lr", "product_architect", "pg", "qa", "writer"},
     "product_architect": {"coordinator", "lr", "pm", "pg", "reviewer", "qa"},
@@ -99,6 +121,7 @@ WORKGROUP_MATRIX: dict[str, set[str]] = {
     "scout": {"coordinator", "lr", "pm"},
     "closer": {"coordinator", "lr"},
 }
+
 # 审计上限: 每角色每小时可发送的敏感操作次数
 SENSITIVE_RATE_LIMIT = 5  # 次/小时
 

@@ -167,6 +167,10 @@ def start_codex_session(role_name: str) -> dict:
 def _build_codex_runner_script(role: dict) -> str:
     """生成 Codex 循环执行 shell 脚本(用 shlex.quote 防注入)."""
     prompt = _build_role_prompt(role)
+    from routing.roles import _role_assembler_output
+    ctx = _role_assembler_output(role["name"], role)
+    if ctx:
+        prompt += "\n" + ctx
     drive = role.get("drive", "loop")
     idle_action = role.get("idle_action", "/loop")
 

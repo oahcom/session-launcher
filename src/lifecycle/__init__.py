@@ -2,6 +2,7 @@
 
 from lifecycle.manager import LifecycleManager, set_role_budget, get_role_budget, check_resource_constraints
 from lifecycle.engine import StepEngine
+from lifecycle.gate import LifecycleGate
 
 __all__ = [
     "LifecycleManager",
@@ -9,4 +10,5 @@ __all__ = [
     "get_role_budget",
     "check_resource_constraints",
     "StepEngine",
+    "LifecycleGate",
 ]

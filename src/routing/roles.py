@@ -192,8 +192,28 @@ def _action_templates(role: dict) -> str:
     lines.append(f"\n禁区：{_forbidden_list(name)}")
     return "\n".join(lines)
 
+def _role_assembler_output(name: str, role: dict | None = None) -> str:
+    """调用 role_assembler.py 获取角色定义文本（不含 BUS_LOOP_SUFFIX）。
+    失败时回退到 role.system_prompt。"""
+    assembler = Path(os.environ.get('SESSION_ROLES_ROOT', str(Path.home() / 'hermes-session-roles'))) / 'src' / 'role_assembler.py'
+    if assembler.exists():
+        try:
+            r = subprocess.run(
+                [sys.executable, str(assembler), name],
+                capture_output=True, text=True, timeout=10
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except Exception:
+            pass
+    if role:
+        return (role.get("system_prompt", "")
+                .replace("{persona_name}", role["name"])
+                .replace("{persona_title}", role["title"]))
+    return ""
+
 def _build_role_prompt(role: dict) -> str:
-    """构建角色 system_prompt，优先调用 role_assembler，失败回退。"""
+    """构建会话启动 prompt（仅 BUS_LOOP_SUFFIX）。角色定义由 CLAUDE.md KNOWLEDGE 块提供。"""
     BUS_LOOP_SUFFIX = """
 /loop 5m /## 工作循环（自动执行，不要退出）
 
@@ -211,24 +231,7 @@ def _build_role_prompt(role: dict) -> str:
 7. 如果发现其他角色有任务未完成你需要推动它
 8. 如果没有任何事做 → sleep 30 → 回到第 1 步
     """
-    # 优先通过 role_assembler 组装（含 skills/constraints/goal 注入）
-    assembler = Path(os.environ.get('SESSION_ROLES_ROOT', str(Path.home() / 'hermes-session-roles'))) / 'src' / 'role_assembler.py'
-    if assembler.exists():
-        try:
-            r = subprocess.run(
-                [sys.executable, str(assembler), role['name']],
-                capture_output=True, text=True, timeout=10
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                base = r.stdout.strip()
-                return BUS_LOOP_SUFFIX.format(name=role["name"]) +base
-        except Exception:
-            pass  # assembler 不可用，回退
-
-    base = (role.get("system_prompt", "")
-            .replace("{persona_name}", role["name"])
-            .replace("{persona_title}", role["title"]))
-    return BUS_LOOP_SUFFIX.format(name=role["name"]) + base
+    return BUS_LOOP_SUFFIX.format(name=role["name"])
 
 def _resolve_ws_paths(name: str) -> list[Path]:
     """解析角色的 workspace CLAUDE.md 路径列表（可能多个）。"""
@@ -246,6 +249,10 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
 
     总是重新生成 KNOWLEDGE 块并替换旧块，确保 base.md 等上游模板变更即时生效。
     自动处理 `{name}` 和 `ccs-{name}` 双路径，同时更新所有匹配的 workspace。
+
+    注：KNOWLEDGE 块仅包含 role_assembler 输出的角色定义，
+    不含 BUS_LOOP_SUFFIX（BUS_LOOP_SUFFIX 仅在 ccs start 时通过
+    tmux send 发送一次，由 Claude 写入对话历史而非 CLAUDE.md）。
     """
     name = role.get("name", "")
 
@@ -253,7 +260,7 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     if not ws_paths:
         return "skipped (no workspace)"
 
-    prompt = _build_role_prompt(role)
+    prompt = _role_assembler_output(name, role)
     templates = _action_templates(role)
 
     knowledge_block = (
@@ -323,6 +330,9 @@ def inject_prompt_into_claudemd(role: dict) -> str:
     """
     _ensure_bus_aliases_in_bashrc()
     prompt = _build_role_prompt(role)
+    ctx = _role_assembler_output(role["name"], role)
+    if ctx:
+        prompt += "\n" + ctx
     lifecycle = role.get("lifecycle", "infinite")
     drive = role.get("drive", "cron")
     templates = _action_templates(role)

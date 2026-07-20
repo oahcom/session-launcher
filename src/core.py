@@ -318,8 +318,9 @@ def status() -> list[dict]:
     return statuses
 
 def send(role: str, message: str, source: str = "") -> dict:
-    """向 CCS 发送消息。"""
+    """向 CCS 发送消息。失败通知写入 bus [ccs_send_fallback]。"""
     if not _validate_role_name(role):
+        _write_bus_notice(role, message, source, "非法角色名")
         return {"success": False, "error": f"非法角色名: {role}"}
     # 跨角色路由拦截（三源验证 + 敏感命令门禁）
     if role != "self" and source != "cli":
@@ -328,17 +329,20 @@ def send(role: str, message: str, source: str = "") -> dict:
             # 三源验证
             allowed = CrossRoleRouter().intercept(source or "unknown", role, message)
             if not allowed:
+                _write_bus_notice(role, message, source, "三源验证拒绝")
                 return {"success": False,
                         "error": f"三源验证拒绝: {source}→{role}，消息前缀非可靠来源"}
             # 敏感命令门禁
             cmd_ok, reason = check_ccs_command_permission(source or "unknown", message)
             if not cmd_ok:
+                _write_bus_notice(role, message, source, f"敏感操作门禁拒绝: {reason}")
                 return {"success": False, "error": f"敏感操作门禁拒绝: {reason}"}
-        except Exception:
-            pass  # 降级：DB/总线不可用时放行
+        except Exception as e:
+            _write_bus_notice(role, message, source, f"门禁降级: {e}")
 
     tmux_name = f"{TMUX_PREFIX}{role}"
     if not _is_alive(tmux_name):
+        _write_bus_notice(role, message, source, "CCS未运行")
         return {"success": False, "error": f"CCS {role} 未运行"}
 
     # CCS-RULE: send 前校验
@@ -352,6 +356,18 @@ def send(role: str, message: str, source: str = "") -> dict:
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
     _trigger_hooks("after_send", role=role, message=message, source=source)
     return {"success": True, "sent_chars": len(message)}
+
+def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
+    """降级时写一条 [ccs_send_fallback] 通知到 bus。"""
+    try:
+        subprocess.run(
+            [str(BUS_CLIENT), "write", "architecture",
+             f"[ccs_send_fallback] {source}→{role} 失败: {reason}",
+             "--evidence", f"message='{message[:200]}' reason={reason}",
+             "--src", "core.send"],
+            capture_output=True, timeout=5)
+    except Exception:
+        pass  # 写 bus 失败不阻塞
 
 def output(role: str, tail: int = 20) -> str:
     """截取 CCS tmux pane 的最新输出。"""

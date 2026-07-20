@@ -1,5 +1,5 @@
 {
-  "timestamp": 1784090810.9067063,
+  "timestamp": 1784401201.8053954,
   "checks": [
     {
       "name": "所有 .py 文件编译通过",
@@ -23,12 +23,12 @@
     },
     {
       "name": "测试集全部通过",
-      "ok": true,
-      "detail": "121 passed, 2 warnings in 8.57s"
+      "ok": false,
+      "detail": "no tests ran in 0.02s"
     }
   ],
-  "passed": 5,
-  "failed": 0,
-  "test_output": "121 passed, 2 warnings in 8.57s",
-  "status": "✅ 健康"
+  "passed": 4,
+  "failed": 1,
+  "test_output": "no tests ran in 0.02s",
+  "status": "⚠ 1 项异常"
 }

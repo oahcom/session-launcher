@@ -53,6 +53,15 @@ class NotificationEngine:
                              escalation_role: str, elapsed_hours: float,
                              timeout_hours: float):
         """gate 超时：通知升级角色。"""
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM workflow_instances WHERE instance_id=? AND status='running'",
+                (wf_id,)
+            ).fetchone()
+            if not row:
+                return
+        except Exception:
+            return  # 无表或查询失败时静默跳过
         msg = (f"【门禁超时】工作流 {wf_id} 步骤 {step_id} "
                f"已超时 {elapsed_hours:.1f}h/{timeout_hours}h")
         self._ccs_send(escalation_role, msg)
