@@ -34,6 +34,15 @@ from migration.scripts import (
     truncate_tables, restore_from_backup, run_migration,
 )
 
+
+def _confirm_with_token(lm, wf_id: str, step_id: str):
+    """辅助函数：自动提取 token 并调用 confirm_step。兼容 LifecycleManager 和 StepEngine。"""
+    if hasattr(lm, 'get_approval_token'):
+        token = lm.get_approval_token(wf_id, step_id) or ""
+        return lm.confirm_step(wf_id, step_id, token=token)
+    else:
+        return lm.confirm_step(wf_id, step_id)
+
 # ══════════════════════════════════════════════════════════════
 # 测试夹具
 # ══════════════════════════════════════════════════════════════
@@ -663,7 +672,7 @@ class TestLifecycleManager:
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
         lm2 = LifecycleManager("pm", db_path=self.db)  # assigner chain: initiator confirms step1
-        lm2.confirm_step(self.wf_id, "s1")
+        _confirm_with_token(lm2, self.wf_id, "s1")
         assert lm2.get_wf(self.wf_id)["current_step_id"] == "s2"
         lm.close(); lm2.close()
 
@@ -671,7 +680,7 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")  # initiator confirms
+        _confirm_with_token(LifecycleManager("pm", db_path=self.db), self.wf_id, "s1")  # initiator confirms
         lm_pg = LifecycleManager("pg", db_path=self.db)
         assert lm_pg.complete_step(self.wf_id, "s2") == "step_done_ready"
         lm.close(); lm_pg.close()
@@ -680,11 +689,11 @@ class TestLifecycleManager:
         lm = self._lm()
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
+        _confirm_with_token(LifecycleManager("pm", db_path=self.db), self.wf_id, "s1")
         LifecycleManager("pg", db_path=self.db).complete_step(self.wf_id, "s2")
-        LifecycleManager("product_architect", db_path=self.db).confirm_step(self.wf_id, "s2")  # s1's target_role confirms s2
+        _confirm_with_token(LifecycleManager("product_architect", db_path=self.db), self.wf_id, "s2")  # s1's target_role confirms s2
         LifecycleManager("reviewer", db_path=self.db).complete_step(self.wf_id, "s3")
-        LifecycleManager("reviewer", db_path=self.db).confirm_step(self.wf_id, "s3")
+        _confirm_with_token(LifecycleManager("reviewer", db_path=self.db), self.wf_id, "s3")
         assert lm.get_wf(self.wf_id)["status"] == "completed"
         lm.close()
 
@@ -721,9 +730,9 @@ class TestLifecycleManager:
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
         lm_init = LifecycleManager("pm", db_path=self.db)  # initiator confirms
-        lm_init.confirm_step(self.wf_id, "s1")
+        _confirm_with_token(lm_init, self.wf_id, "s1")
         with pytest.raises((ValueError, PermissionError)):
-            lm_init.confirm_step(self.wf_id, "s1")
+            _confirm_with_token(lm_init, self.wf_id, "s1")
         lm.close(); lm_init.close()
 
 
@@ -763,7 +772,7 @@ class TestStepEngine:
         se = self._se("product_architect")
         se._set_wf_status(self.wf_handoff, "running")
         se.complete_step(self.wf_handoff, "s1")
-        assert se.confirm_step(self.wf_handoff, "s1")["status"] == "completed"
+        assert _confirm_with_token(se, self.wf_handoff, "s1")["status"] == "completed"
         se.close()
 
     def test_t4_03_review_complete(self):
@@ -780,7 +789,7 @@ class TestStepEngine:
         se._conn.execute("UPDATE workflow_instances SET current_step_id='s2' WHERE instance_id=?", (self.wf_review,))
         se._conn.commit()
         se.complete_step(self.wf_review, "s2")
-        assert se.confirm_step(self.wf_review, "s2")["status"] == "completed"
+        assert _confirm_with_token(se, self.wf_review, "s2")["status"] == "completed"
         se.close()
 
     def test_t4_05_single_auto_complete(self):
@@ -837,7 +846,7 @@ class TestStepEngine:
         se = self._se("product_architect")
         se._set_wf_status(self.wf_handoff, "running")
         with pytest.raises(ValueError, match="step_done_ready"):
-            se.confirm_step(self.wf_handoff, "s1")
+            _confirm_with_token(se, self.wf_handoff, "s1")
         se.close()
 
     def test_t4_12_fail_nonexistent_wf(self):
@@ -1106,11 +1115,11 @@ class TestIntegration:
 
         LifecycleManager("product_architect", db_path=self.db).start_wf(wf_id)
         LifecycleManager("product_architect", db_path=self.db).complete_step(wf_id, "s1")
-        LifecycleManager("pm", db_path=self.db).confirm_step(wf_id, "s1")  # initiator confirms s1
+        _confirm_with_token(LifecycleManager("pm", db_path=self.db), wf_id, "s1")  # initiator confirms s1
         LifecycleManager("pg", db_path=self.db).complete_step(wf_id, "s2")
-        LifecycleManager("product_architect", db_path=self.db).confirm_step(wf_id, "s2")  # previous step's target_role confirms s2
+        _confirm_with_token(LifecycleManager("product_architect", db_path=self.db), wf_id, "s2")  # previous step's target_role confirms s2
         LifecycleManager("reviewer", db_path=self.db).complete_step(wf_id, "s3")
-        LifecycleManager("reviewer", db_path=self.db).confirm_step(wf_id, "s3")
+        _confirm_with_token(LifecycleManager("reviewer", db_path=self.db), wf_id, "s3")
 
         assert LifecycleManager("reviewer", db_path=self.db).get_wf(wf_id)["status"] == "completed"
 
@@ -1234,7 +1243,7 @@ class TestExecuteHandoff:
         lm.complete_step(self.wf_id, "s1")
         lm.close()
         lm_init = LifecycleManager("pm", db_path=self.db)  # initiator confirms
-        lm_init.confirm_step(self.wf_id, "s1")
+        _confirm_with_token(lm_init, self.wf_id, "s1")
         assert lm_init.get_wf(self.wf_id)["current_step_id"] == "s2"
         lm_init.close()
 
@@ -1244,7 +1253,7 @@ class TestExecuteHandoff:
         lm.complete_step(self.wf_id, "s1")
         lm.close()
         lm_init = LifecycleManager("pm", db_path=self.db)
-        lm_init.confirm_step(self.wf_id, "s1")
+        _confirm_with_token(lm_init, self.wf_id, "s1")
         lm_init.close()
         lm_pg = LifecycleManager("pg", db_path=self.db)
         lm_pg.complete_step(self.wf_id, "s2")
@@ -1427,7 +1436,7 @@ class TestConcurrency:
         def try_confirm():
             try:
                 lmx = LifecycleManager("pm", db_path=self.db)  # initiator can confirm s1
-                lmx.confirm_step(self.wf_id, "s1")
+                _confirm_with_token(lmx, self.wf_id, "s1")
                 results.append("success")
                 lmx.close()
             except (ValueError, PermissionError) as e:
@@ -1574,7 +1583,7 @@ class TestAssignerChainEnforcement:
         lm = LifecycleManager("product_architect", db_path=self.db)
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
-        with pytest.raises(PermissionError, match="only assigner"):
+        with pytest.raises(PermissionError, match="approval token required"):
             lm.confirm_step(self.wf_id, "s1")
         lm.close()
 
@@ -1583,14 +1592,14 @@ class TestAssignerChainEnforcement:
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
         lm.close()
-        assert LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
+        assert _confirm_with_token(LifecycleManager("pm", db_path=self.db), self.wf_id, "s1")
 
     def test_assigner_03_rollback_step(self):
         lm = LifecycleManager("product_architect", db_path=self.db)
         lm.start_wf(self.wf_id)
         lm.complete_step(self.wf_id, "s1")
         lm.close()
-        LifecycleManager("pm", db_path=self.db).confirm_step(self.wf_id, "s1")
+        _confirm_with_token(LifecycleManager("pm", db_path=self.db), self.wf_id, "s1")
         assert LifecycleManager("pm", db_path=self.db).rollback_step(self.wf_id, "s1")
 
 

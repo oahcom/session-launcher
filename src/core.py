@@ -51,6 +51,8 @@ __all__ = [
     '_validate_role_name',
     '_resolve_ws_paths',
     '_action_templates',
+    'list_roles',
+    'get_config_value',
 ]
 
 
@@ -105,7 +107,7 @@ from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claud
     CODEX_LOOP_DELAY, CODEX_OUTPUT_MAX, CODEX_ERROR_MAX, CODEX_SESSION_MAX,
     CODEX_READY_RETRIES, CODEX_READY_INTERVAL, _MEM_FREE_MIN_MB, _CCS_LAUNCH_INTERVAL)
 
-from role_manager import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, inject_prompt_into_claudemd, clear_injected_prompt, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
+from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, inject_prompt_into_claudemd, clear_injected_prompt, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
 
 from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status, _active_codex_session_count, _wait_codex_ready, CODEX_SESSION_MAX, CODEX_TMUX_PREFIX, CODEX_LOOP_DELAY
 
@@ -133,12 +135,18 @@ from paths import BUS_CLIENT
 FEED_LISTENER = Path(__file__).resolve().parent.parent / "feed_listener.py"
 from paths import LIFECYCLE_SENTINEL_DIR as _LIFECYCLE_SENTINEL_DIR
 
+from ops.ccs_config import (
+    get_auto_send_messages, is_auto_send_enabled, get_interval_sec,
+    get_value as _cfg_get_value,
+)
+
 def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
           drive: str = "loop", feed_cat: str = "",
-          workspace: str = "") -> dict:
+          workspace: str = "",
+          no_auto_send: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
 
     自动从 hermes-session-roles 加载角色定义（如存在），
@@ -233,6 +241,28 @@ def start(role: str, title: str = "", detach: bool = False,
         _tmux_send(tmux_name, init_prompt)
         time.sleep(2)
 
+    # 7.5 自动发送消息（auto_send）
+    if not no_auto_send and is_auto_send_enabled():
+        # 从 persona JSON 读取角色级 auto_send_messages
+        role_auto_msgs = (role_def or {}).get("auto_send_messages", [])
+        # 从 ccs_config.json 读取
+        config_auto_msgs = get_auto_send_messages(role)
+        # 合并且去重: persona 优先, 配置补充
+        seen = set()
+        auto_msgs = []
+        for m in role_auto_msgs + config_auto_msgs:
+            if m not in seen:
+                seen.add(m)
+                auto_msgs.append(m)
+        if auto_msgs:
+            interval = get_interval_sec()
+            print(f"📋 auto_send: {len(auto_msgs)} 条消息 (间隔 {interval}s)")
+            for i, msg in enumerate(auto_msgs, 1):
+                print(f"  [{i}/{len(auto_msgs)}] {msg}")
+                _tmux_send(tmux_name, msg)
+                if i < len(auto_msgs):
+                    time.sleep(interval)
+
     # 8. 写哨兵
     pid = _find_claude_pid(tmux_name)
     print(f"📋 pid: {pid}")
@@ -273,8 +303,11 @@ def start(role: str, title: str = "", detach: bool = False,
     }
 
     if not detach:
-        print(f"🎯 进入 {tmux_name} (Ctrl+B D 退出)")
-        os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
+        if sys.stdin and sys.stdin.isatty():
+            print(f"🎯 进入 {tmux_name} (Ctrl+B D 退出)")
+            os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
+        else:
+            print(f"🎯 非交互环境，后台运行 (tmux attach -t {tmux_name} 进入)")
     else:
         print(f"🎯 后台运行 (tmux attach -t {tmux_name} 进入)")
 
@@ -347,7 +380,7 @@ def send(role: str, message: str, source: str = "") -> dict:
 
     # CCS-RULE: send 前校验
     try:
-        from role_manager import validate_ccs_execution
+        from routing.roles import validate_ccs_execution
         validate_ccs_execution(role, "send")
     except Exception:
         pass  # 降级：校验不可用时不阻塞
@@ -482,6 +515,31 @@ def cleanup_stale_sentinels() -> list[str]:
         except (json.JSONDecodeError, OSError, ValueError):
             f.unlink()
     return cleaned
+
+
+def list_roles() -> list[dict]:
+    """列出所有可启动角色, 附带运行状态。"""
+    roles = load_roles()
+    result = []
+    for r in roles:
+        name = r.get("name", "?")
+        tmux_name = f"{TMUX_PREFIX}{name}"
+        alive = _is_alive(tmux_name)
+        result.append({
+            "name": name,
+            "title": r.get("title", ""),
+            "category": r.get("category", ""),
+            "description": r.get("description", ""),
+            "lifecycle": r.get("lifecycle", "infinite"),
+            "alive": alive,
+            "drive": r.get("drive", ""),
+        })
+    return result
+
+
+def get_config_value(key_path: str):
+    """查询 ccs_config.json 值（通过点号路径）。"""
+    return _cfg_get_value(key_path)
 
 
 from ops.runner import dashboard, _start_feed_listener

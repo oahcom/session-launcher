@@ -9,6 +9,7 @@ ccs.py — CCS 生命周期管理器（主入口）
 """
 import argparse
 import json
+import os
 import sys
 
 from core import (
@@ -16,6 +17,7 @@ from core import (
     workspace_create, workspace_list, force_start_ccs, wake_ccs,
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
+    list_roles, get_config_value,
 )
 
 
@@ -24,6 +26,11 @@ def main():
         description="CCS 生命周期管理器 — 内置协作基础设施",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+新增命令:
+  config get/set/edit    查看/修改 ccs_config.json（全局配置中心）
+  auto-send list/add/rm  管理角色的自动发送消息
+  roles [--available]    列出所有可启动角色
+
 协作模式示例:
   # 主从模式：verifier 守护 rebutter
   ccs.py start verifier --partner rebutter --auto-restart --no-attach
@@ -37,6 +44,10 @@ def main():
 
   # 仲裁模式：监控者守护两个 CCS
   ccs.py start monitor --partner verifier --partner rebutter --bus-track debate --no-attach
+
+启动优化:
+  ccs.py start <role>              启动 CCS 后自动发送 ccs_config.json 配置的消息
+  ccs.py start <role> --no-auto-send  跳过自动发送（只保留角色 prompt）
 """)
     sub = parser.add_subparsers(dest="command")
 
@@ -44,7 +55,8 @@ def main():
     p_start = sub.add_parser("start", help="创建并启动 CCS")
     p_start.add_argument("role", help="角色名（自动加 ccs- 前缀）")
     p_start.add_argument("title", nargs="?", default="", help="角色标题")
-    p_start.add_argument("--no-attach", action="store_true", help="后台运行，不 attach")
+    p_start.add_argument("--no-attach", action="store_true",
+                         help="后台运行，不 attach（非交互环境自动生效）")
     p_start.add_argument("--prompt", default="", help="初始 prompt（自动发送）")
     p_start.add_argument("--partner", default=None, action="append",
                          help="守护伙伴（可多次指定）")
@@ -63,6 +75,36 @@ def main():
     p_start.add_argument("--route-policy", default="sticky",
                          choices=["sticky", "round-robin", "priority"],
                          help="路由策略")
+    p_start.add_argument("--no-auto-send", action="store_true",
+                         help="跳过 ccs_config.json 的自动发送消息")
+
+    # ── config ──
+    p_cfg = sub.add_parser("config", help="查看/修改 ccs_config.json")
+    cfg_sub = p_cfg.add_subparsers(dest="config_command")
+    cfg_get = cfg_sub.add_parser("get", help="读取配置值")
+    cfg_get.add_argument("key", help="点号路径, 如 auto_send.interval_sec")
+    cfg_set = cfg_sub.add_parser("set", help="写入配置值")
+    cfg_set.add_argument("key", help="点号路径, 如 auto_send.interval_sec")
+    cfg_set.add_argument("value", help="JSON 值（数字/布尔/字符串）")
+    cfg_sub.add_parser("edit", help="用 $EDITOR 打开配置文件")
+
+    # ── auto-send ──
+    p_as = sub.add_parser("auto-send", help="管理 auto_send 消息")
+    as_sub = p_as.add_subparsers(dest="auto_send_command")
+    as_list = as_sub.add_parser("list", help="列出角色的 auto_send 消息")
+    as_list.add_argument("role", nargs="?", default="", help="角色名（空=全部）")
+    as_add = as_sub.add_parser("add", help="为角色添加 auto_send 消息")
+    as_add.add_argument("role", help="角色名")
+    as_add.add_argument("message", help="消息内容")
+    as_rm = as_sub.add_parser("rm", help="删除角色的 auto_send 消息（整角色或多条）")
+    as_rm.add_argument("role", help="角色名（或 default）")
+    as_rm.add_argument("--index", "-i", type=int, nargs="*", default=None,
+                       help="要删除的消息索引（不传则删除整个角色配置）")
+
+    # ── roles（列出可启动角色）──
+    p_roles = sub.add_parser("roles", help="列出所有可启动角色")
+    p_roles.add_argument("--available", action="store_true",
+                         help="只看未运行的角色")
 
     # ── stop ──
     p_stop = sub.add_parser("stop", help="终止 CCS")
@@ -176,6 +218,7 @@ def main():
             drive=args.drive,
             feed_cat=args.feed_cat,
             workspace=args.workspace,
+            no_auto_send=args.no_auto_send,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
@@ -340,6 +383,89 @@ def main():
                         print(f"  {d.name}: 角色定义未找到，跳过")
             else:
                 print("没有 workspace 目录")
+
+    # ═══════════ config 命令 ═══════════
+    elif args.command == "config":
+        from ops.ccs_config import load as _cfg_load, set_value as _cfg_set, _path as _cfg_path
+        if args.config_command == "get":
+            v = get_config_value(args.key)
+            if v is None:
+                print(f"未找到: {args.key}")
+                sys.exit(1)
+            print(json.dumps(v, ensure_ascii=False, indent=2) if isinstance(v, (dict, list)) else v)
+        elif args.config_command == "set":
+            try:
+                parsed = json.loads(args.value)
+            except (json.JSONDecodeError, TypeError):
+                parsed = args.value  # 字符串原值
+            result = _cfg_set(args.key, parsed)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
+        elif args.config_command == "edit":
+            editor = os.environ.get("EDITOR", "vim")
+            p = _cfg_path()
+            os.execvp(editor, [editor, str(p)])
+        else:
+            print("用法: ccs.py config {get|set|edit}")
+            sys.exit(1)
+
+    # ═══════════ auto-send 命令 ═══════════
+    elif args.command == "auto-send":
+        from ops.ccs_config import (
+            add_auto_send_message, remove_auto_send_message,
+            get_auto_send_messages, load as _cfg_load2,
+        )
+        if args.auto_send_command == "list":
+            cfg = _cfg_load2()
+            roles_map = cfg.get("auto_send", {}).get("messages", {}).get("roles", {})
+            default_msgs = cfg.get("auto_send", {}).get("messages", {}).get("default", [])
+            if args.role:
+                msgs = get_auto_send_messages(args.role)
+                if not msgs:
+                    print(f"角色 {args.role} 没有 auto_send 消息")
+                else:
+                    role_raw = roles_map.get(args.role, [])
+                    for i, m in enumerate(msgs):
+                        src = "default" if m in default_msgs and m not in role_raw else "role"
+                        print(f"  [{i}] {m} ({src})")
+            else:
+                print(f"default ({len(default_msgs)} 条):")
+                for i, m in enumerate(default_msgs):
+                    print(f"  [{i}] {m}")
+                for role, msgs in sorted(roles_map.items()):
+                    if role == "default":
+                        continue  # default 已在上面单独显示
+                    print(f"\n{role} ({len(msgs)} 条):")
+                    for i, m in enumerate(msgs):
+                        print(f"  [{i}] {m}")
+        elif args.auto_send_command == "add":
+            result = add_auto_send_message(args.role, args.message)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.auto_send_command == "rm":
+            result = remove_auto_send_message(args.role, args.index)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
+        else:
+            print("用法: ccs.py auto-send {list|add|rm}")
+            sys.exit(1)
+
+    # ═══════════ roles 命令 ═══════════
+    elif args.command == "roles":
+        roles = list_roles()
+        if not roles:
+            print("没有找到角色定义")
+            sys.exit(1)
+        if args.available:
+            roles = [r for r in roles if not r["alive"]]
+        print(f"共 {len(roles)} 个角色{'（仅未运行）' if args.available else ''}")
+        print(f"  {'名称':<20} {'标题':<18} {'分类':<8} {'状态':<8} {'生命周期':<10}")
+        print(f"  {'─'*68}")
+        for r in roles:
+            status_mark = "▶ 运行中" if r["alive"] else "○ 就绪"
+            print(f"  {r['name']:<20} {r['title']:<18} {r['category']:<8} "
+                  f"{status_mark:<8} {r['lifecycle']:<10}")
 
     else:
         parser.print_help()
