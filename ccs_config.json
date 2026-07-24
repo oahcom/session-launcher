@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "CCS 全局配置 — session-launcher 的中央配置中心",
+  "auto_send": {
+    "enabled": true,
+    "interval_sec": 2.0,
+    "messages": {
+      "default": [],
+      "roles": {
+        "dkk": [
+          "检查 feed listener 健康状态",
+          "加载待处理 task_spec"
+        ],
+        "pg": [
+          "读 project_manual.md 更新",
+          "检查队列里有没有 task_spec"
+        ],
+        "coordinator": [
+          "汇总各角色进度",
+          "检查是否有死锁探测器触发"
+        ],
+        "ssk": [
+          "审计当前所有 CCS 哨兵",
+          "检查 bus 轮次超时",
+          "写本周安全快照"
+        ]
+      }
+    }
+  },
+  "routing": {
+    "default_policy": "sticky",
+    "overrides": {}
+  },
+  "defaults": {
+    "drive": "ondemand",
+    "bus_timeout": 300,
+    "bus_track": "",
+    "feed_cat": ""
+  }
+}

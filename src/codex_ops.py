@@ -171,8 +171,8 @@ def _build_codex_runner_script(role: dict) -> str:
     ctx = _role_assembler_output(role["name"], role)
     if ctx:
         prompt += "\n" + ctx
-    drive = role.get("drive", "loop")
-    idle_action = role.get("idle_action", "/loop")
+    drive = role.get("drive", "ondemand")
+    idle_action = role.get("idle_action", "")
 
     if drive == "goal":
         return (

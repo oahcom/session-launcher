@@ -144,7 +144,7 @@ def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
-          drive: str = "loop", feed_cat: str = "",
+          drive: str = "ondemand", feed_cat: str = "",
           workspace: str = "",
           no_auto_send: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
