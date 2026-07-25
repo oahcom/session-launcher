@@ -76,7 +76,7 @@ def _trigger_hooks(event: str, **kwargs) -> None:
         try:
             fn(**kwargs)
         except Exception as e:
-            print(f"[hooks:{event}] {fn.__name__} error: {e}", flush=True)
+            _log.info("[hooks:%s] %s error: %s", event, fn.__name__, e)
 
 # ── 路由策略状态（MCP Gateway 模式）──
 # sticky: 同角色消息路由到同一 CCS session
@@ -124,6 +124,11 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+
+# ── 统一日志初始化（任何模块首次导入 core 时生效）──
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+_log = logging.getLogger("core")
 
 from ops.sentinel import CcsSentinel, CcsHealth, write_sentinel, read_sentinel, delete_sentinel, list_sentinels, SENTINEL_DIR
 
