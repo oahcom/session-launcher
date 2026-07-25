@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """P0 Audit Scan — 30min cron: escalates 1h+ drafts, downgrades 4h+ drafts."""
 import sys
-sys.path.insert(0, '/home/administrator/session-launcher/src')
+from pathlib import Path
+sys.path.insert(0, str(Path.home() / 'session-pipeline' / 'src'))
+sys.path.insert(0, str(Path.home() / 'session-launcher' / 'src'))
 from p0_exemption import P0Exemption
 p = P0Exemption('system')
 try:

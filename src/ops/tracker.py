@@ -11,6 +11,7 @@ __all__ = [
     'start_tracker',
 ]
 
+import logging
 import threading
 import time
 from datetime import datetime
@@ -18,11 +19,14 @@ from typing import Optional
 
 from ops.sentinel import update_health
 
+_log = logging.getLogger("tracker")
+# 当独立导入时（未走 core.py），确保日志能被看到
+if not _log.handlers and not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
-
-def _log(tag: str, msg: str):
-    print(f"[{tag}] {datetime.now():%H:%M:%S} {msg}", flush=True)
+def _log_info(tag: str, msg: str):
+    _log.info("[%s] %s", tag, msg)
 
 
 def _bus_read_latest(cat: str) -> Optional[dict]:
@@ -108,17 +112,17 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
                 _audit_monitor("死锁检测",
                     f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 存活，已发提醒",
                     src=this_role)
-                _log(tag, f"死锁提醒: {bus_cat} 超时 {int(age)}s，已通知 {src}")
+                _log_info(tag, f"死锁提醒: {bus_cat} 超时 {int(age)}s，已通知 {src}")
             else:
                 _audit_monitor("死锁-伙伴死亡",
                     f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 已死",
                     src=this_role)
-                _log(tag, f"死锁: {bus_cat} 超时 {int(age)}s，但伙伴已死（watchdog 负责重启）")
+                _log_info(tag, f"死锁: {bus_cat} 超时 {int(age)}s，但伙伴已死（watchdog 负责重启）")
 
             last_reminder = now
 
         except Exception as e:
-            _log(tag, f"异常: {e}，等待下一轮重试")
+            _log_info(tag, f"异常: {e}，等待下一轮重试")
             time.sleep(interval)
 
 

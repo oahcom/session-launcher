@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Workflow 僵死自动清理器 — 标记已完成任务的 stuck workflow 为 completed。"""
 import sys, time
-sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.parent / 'src'))
+_srcd = __import__('pathlib').Path(__file__).resolve().parent.parent / 'src'
+sys.path.insert(0, str(_srcd.parent.parent / 'session-pipeline' / 'src'))
+sys.path.insert(0, str(_srcd))
 from workflow.client import WorkflowClient
 from workflow.db import create_connection
 

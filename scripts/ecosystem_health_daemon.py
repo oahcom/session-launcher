@@ -4,7 +4,7 @@
 Consolidates 3 separate scripts into one efficient daemon:
 1. Signal checkers (from system_monitor.py → events/signals)
 2. Partner health (from partner_health.py → routing/partner)
-3. Gate timeout watch (from step_engine_watchdog.py → lifecycle/engine)
+3. Gate timeout watch (→ LifecycleManager.check_gate_timeouts)
 
 Runs at */15 and writes unified report to bus + workspace.
 More efficient than 3 separate cron jobs.
@@ -46,15 +46,36 @@ def check_partners() -> list:
     return results
 
 def check_gate_timeouts() -> list:
-    """Activate lifecycle/engine StepEngine — gate timeout detection."""
-    from lifecycle.engine import StepEngine
-    engine = StepEngine("monitor")
+    """扫描 gate 超时。直接用 SQL 查询（LifecycleManager 有同名方法，但此处出于隔离考量直接查询 DB）。"""
+    import json, time
+    _db = Path.home() / ".hermes" / "state" / "workflows.db"
+    if not _db.exists():
+        return []
     try:
-        timeouts = engine.check_gate_timeouts()
-        engine.close()
+        import sqlite3
+        conn = sqlite3.connect(str(_db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT instance_id, template_id, step_results, created_at FROM workflow_instances WHERE status='running'"
+        ).fetchall()
+        timeouts = []
+        now = time.time()
+        for r in rows:
+            sr = json.loads(r["step_results"] or "{}")
+            for step_id, sdata in sr.items():
+                if sdata.get("status") == "running":
+                    started = sdata.get("ts") or r["created_at"] or now
+                    elapsed_h = (now - started) / 3600
+                    if elapsed_h > 2:
+                        timeouts.append({
+                            "wf_id": r["instance_id"],
+                            "step_id": step_id,
+                            "elapsed_hours": round(elapsed_h, 1),
+                            "timeout_hours": 2,
+                        })
+        conn.close()
         return timeouts
     except Exception as e:
-        engine.close()
         return [{"error": str(e)}]
 
 

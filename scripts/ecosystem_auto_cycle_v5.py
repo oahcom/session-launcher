@@ -12,6 +12,10 @@ REPORTS = BASE / ".hermes" / "reports"
 BUS_CLIENT = BASE / ".hermes" / "scripts" / "bus_client.py"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 REPORTS.mkdir(parents=True, exist_ok=True)
+# Ensure pipeline's workflow package resolves (launcher's workflow/ being removed)
+_PIPELINE_SRC = str(BASE / "session-pipeline" / "src")
+if _PIPELINE_SRC not in sys.path:
+    sys.path.insert(0, _PIPELINE_SRC)
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)

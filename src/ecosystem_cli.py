@@ -30,11 +30,15 @@ if '' in sys.path:
 
 def cmd_status() -> dict:
     from core import status as ccs_status
-    from role_relations import get_all_roles
+    from registry import list_roles
+    import sys as _sys
+    _pp = str(Path.home() / "session-pipeline" / "src")
+    if _pp not in _sys.path:
+        _sys.path.insert(0, _pp)
     from workflow.client import WorkflowClient
 
     sessions = ccs_status()
-    roles = get_all_roles()
+    roles = [r.name for r in list_roles()]
     wc = WorkflowClient("ecosystem")
     try:
         stats = wc.workflow_stats()
@@ -65,16 +69,16 @@ def cmd_status() -> dict:
 
 
 def cmd_relations() -> dict:
-    from role_relations import get_data_flow, get_all_roles, get_data_categories
-    roles = get_all_roles()
-    cats = get_data_categories()
+    from registry import list_roles, list_categories
+    roles = list_roles()
+    cats = list_categories()
     print(f"🌐 {len(roles)} roles, {len(cats)} categories\n")
-    for role in sorted(roles):
-        flow = get_data_flow(role)
-        p = ", ".join(flow["produces_to"]) or "—"
-        c = ", ".join(flow["consumes_from"]) or "—"
-        print(f"  {role:<25} -> [{p}]")
-        print(f"  {'':<25} <- [{c}]\n")
+    for cat_name, count in sorted(cats.items()):
+        print(f"  {cat_name}: {count} roles")
+        for r in sorted(roles, key=lambda x: x.name):
+            if r.category == cat_name:
+                print(f"    - {r.name}")
+
 
 
 def cmd_board() -> dict:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Ensure launcher + pipeline src are on path (workflow.gateway 在 pipeline 中)
 _src = Path(__file__).resolve().parent.parent
-for _p in [_src, _src.parent / "session-pipeline" / "src"]:
+for _p in [_src, _src.parent.parent / "session-pipeline" / "src"]:
     _ps = str(_p.resolve())
     if _ps not in sys.path:
         sys.path.insert(0, _ps)

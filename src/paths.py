@@ -25,8 +25,6 @@ WORKFLOWS_DB = HERMES_STATE / "workflows.db"
 CURSOR_DB = HERMES_STATE / "pipeline_cursor.db"
 ROUTING_DB = HERMES_STATE / "routing.db"
 ACK_TRACKER_DB = HERMES_STATE / "ack_tracker.db"
-COMPOSITE_RUNS_DB = HERMES_STATE / "composite_runs.db"
-
 # ── 模板与配置 ──
 HERMES_TEMPLATES = _HOME / ".hermes" / "templates"
 HERMES_BACKUPS = _HOME / ".hermes" / "backups"
@@ -36,6 +34,9 @@ WORKFLOW_GUIDE = HERMES_TEMPLATES / "WORKFLOW_GUIDE.md"
 HERMES_SCRIPTS = Path(_HOME / ".hermes" / "scripts")
 SESSION_LAUNCHER_SRC = Path(__file__).resolve().parent
 SESSION_PIPELINE_SRC = Path(_SESSION_PIPELINE_SRC)
+
+# ── CCS CLI（供跨项目引用）──
+CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"
 
 # ── API Endpoints ──
 ROUTER_API_ENDPOINT = os.environ.get('ROUTER_API_ENDPOINT', 'http://localhost:20128/v1/chat/completions')
@@ -50,11 +51,16 @@ HERMES_WORKFLOW_CHAINS = HERMES_WORKFLOWS / "chains"
 
 
 def ensure_paths() -> None:
-    """统一注册跨项目 sys.path。"""
+    """统一注册跨项目 sys.path。launcher 自身模块优先于 pipeline，防遮蔽。"""
     _entries = [
+        SESSION_PIPELINE_SRC.resolve(),
         HERMES_SCRIPTS.resolve(),
     ]
-    for p in _entries:
+    for p in reversed(_entries):
         s = str(p)
         if s not in sys.path:
             sys.path.insert(0, s)
+    # launcher 自身路径最后插入（最优先）
+    _this = str(Path(__file__).resolve().parent)
+    if _this not in sys.path:
+        sys.path.insert(0, _this)

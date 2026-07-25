@@ -58,14 +58,62 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
     cmd = spec.get("command", "")
     if not cmd:
         return False
-    # 安全约束：只允许只读操作，禁止写入/删除/网络修改
-    readonly_block = ["rm ", "mkfs", "dd ", ">", "| tee", "chmod", "chown", "wget -O", "curl -o"]
-    # 增强检查：shell 变量间距绕过 ${IFS}rm 之类
-    _cmd_norm = cmd.replace("${", "").replace("$((", "").replace("$(", "").replace("`", "")
-    if any(block in _cmd_norm for block in readonly_block):
+    # 安全约束：只允许只读操作
+    # shlex.split 提取命令名做白名单检查，但允许 shell 管道/重定向
+    # 安全约束：所有检查在规范化后的字符串上执行
+    _normalized = cmd.replace("${", "").replace("$((", "").replace("$(", "").replace("`", "")
+    # 若原 cmd 含 shell 执行符($(`)但规范化后变了 → 拒绝
+    if _normalized != cmd:
         return False
+    _danger_words = ["rm ", "mkfs", "| tee", "chmod", "chown",
+                     "format", "fdisk", "mke2fs", "shred ", "wipefs",
+                     "sed -i", "sed --in-place", "awk -i inplace", "awk --in-place",
+                     "curl --output", "curl -o ", "curl -O ",
+                     "wget --output-document", "wget -O ",
+                     "wget -o ", "wget --output-file ", "-delete ", "-exec "]
+    if any(block in _normalized for block in _danger_words):
+        return False
+    # 单词边界检查 dd
+    if re.search(r'(?<!\w)dd(?!\w)', _normalized):
+        return False
+    # shell 重定向检查：允许 fd 重定向（如 2>&1 只读合并 stderr→stdout），块文件写入
+    _reduced = re.sub(r'\d+>&\d+', '', _normalized)
+    if re.search(r'(?<![=<>])>(?![=])', _reduced):
+        return False
+    # 禁 shell 控制运算符（; && ||），允许管道 |
+    if re.search(r'(?<![|&\\]);|&&|\|\|', _normalized):
+        return False
+    import shlex as _shlex
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        parts = _shlex.split(cmd)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    _safe_cmds = {"cat", "grep", "ls", "head", "tail", "wc", "sort", "uniq", "cut",
+                  "find", "test", "[", "echo", "printf", "date", "which", "whoami",
+                  "ps", "stat", "df", "du", "free", "id", "pgrep", "systemctl",
+                  "journalctl", "awk", "sed", "diff", "comm", "md5sum",
+                  "sha256sum", "curl", "wget"}
+    # 检查所有管道段命令均在白名单中（防止 cp | rm 等单段检查绕过）
+    pipeline_cmds = cmd.split("|")
+    for seg in pipeline_cmds:
+        try:
+            seg_parts = _shlex.split(seg.strip())
+        except ValueError:
+            return False
+        if not seg_parts:
+            continue
+        seg_name = os.path.basename(seg_parts[0])
+        if seg_name not in _safe_cmds:
+            return False
+        # 禁止白名单命令中使用 -o/--output/--in-place/inplace 等写参数
+        for arg in seg_parts[1:]:
+            if arg in ("-o", "--output", "-O", "--output-document",
+                       "-i", "--in-place", "inplace"):
+                return False
+    try:
+        r = subprocess.run(parts, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             return False
         if filter_str:

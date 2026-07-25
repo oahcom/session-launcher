@@ -39,7 +39,6 @@ check("所有 .py 文件编译通过", len(errors) == 0, f"失败: {errors}" if 
 # 2. Core module imports (from project root)
 print("\n## 2. 模块导入完整性")
 core_modules = ["core", "ccs", "launcher",
-                "lifecycle.manager", "lifecycle.engine",
                 "events.signals", "events.parser", "events.notify",
                 "ops.workspace", "ops.sentinel", "ops.tracker", "ops.watchdog",
                 "routing.gateway"]

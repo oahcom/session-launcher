@@ -60,27 +60,31 @@ def main():
 if __name__ == "__main__": main()
 
 def activate_step_engine():
-    """Activate StepEngine gate timeout checking (previously unused logic)."""
-    import subprocess
+    """检查 gate 超时（lifecycle 迁移后 LifecycleManager 无 check_gate_timeouts，直接 SQL 查询）。"""
+    import json, time, sqlite3
+    _db = Path.home() / ".hermes" / "state" / "workflows.db"
+    if not _db.exists():
+        return ""
     try:
-        r = subprocess.run(
-            [sys.executable, "-c", """
-import sys; sys.path.insert(0, '/home/administrator/session-launcher/src')
-from lifecycle.engine import StepEngine
-engine = StepEngine('coordinator')
-timeouts = engine.check_gate_timeouts()
-if timeouts:
-    for t in timeouts:
-        print(f'GATE_TIMEOUT: wf={t[\"wf_id\"]} step={t[\"step_id\"]} elapsed={t[\"elapsed_hours\"]}h timeout={t[\"timeout_hours\"]}h')
-else:
-    print('No gate timeouts')
-engine.close()
-"""],
-            capture_output=True, text=True, timeout=30)
-        return r.stdout.strip()
+        conn = sqlite3.connect(str(_db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT instance_id, step_results, created_at FROM workflow_instances WHERE status='running'"
+        ).fetchall()
+        now = time.time()
+        lines = []
+        for r in rows:
+            sr = json.loads(r["step_results"] or "{}")
+            for step_id, sdata in sr.items():
+                if sdata.get("status") == "running":
+                    started = sdata.get("ts") or r["created_at"] or now
+                    elapsed_h = (now - started) / 3600
+                    if elapsed_h > 2:
+                        lines.append(f'GATE_TIMEOUT: wf={r["instance_id"]} step={step_id} elapsed={elapsed_h:.1f}h timeout=2h')
+        conn.close()
+        return "\n".join(lines) if lines else "No gate timeouts"
     except Exception as e:
-        return f"StepEngine check failed: {e}"
-
+        return f"gate timeout check failed: {e}"
 if __name__ == "__main__":
     import sys
     if "--step-engine" in sys.argv:

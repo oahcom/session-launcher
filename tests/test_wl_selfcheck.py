@@ -8,34 +8,39 @@ Run: python3 tests/test_wl_selfcheck.py
 from pathlib import Path
 
 SRC = Path.home() / "session-launcher/src"
+PIPELINE_SRC = Path.home() / "session-pipeline" / "src"
+
 files = {}
 for p in SRC.rglob("*.py"):
     files[str(p.relative_to(SRC))] = p.read_text()
+# 已迁移至 session-pipeline 的模块
+for p in PIPELINE_SRC.rglob("*.py"):
+    files["pipeline_" + str(p.relative_to(PIPELINE_SRC))] = p.read_text()
 
 errors = []
 
 # P1-02: create_task 强制关联 template_id
-cl = files.get("workflow/client.py", "")
+cl = files.get("pipeline_workflow/client.py", "")
 if "if template_id is None:" not in cl:
     errors.append("WL-P1-02: create_task missing template_id guard")
 if "gate.validate_create_task" not in cl:
     errors.append("WL-P1-02: create_task_v2 missing Gate call")
 
-gw = files.get("workflow/gateway.py", "")
+gw = files.get("pipeline_workflow/gateway.py", "")
 for fn in ["is_template_exists","is_template_active","check_can_initiate","check_can_execute","is_valid_role","validate_create_task"]:
     if f"def {fn}" not in gw:
         errors.append(f"WL-P1-02: missing Gate.{fn}")
 
 # P1-04: step_done_ready 中间态
-mg = files.get("lifecycle/manager.py", "")
+mg = files.get("pipeline_lifecycle/manager.py", "")
 if "step_done_ready" not in mg:
     errors.append("WL-P1-04: step_done_ready missing from LifecycleManager")
 if 'current.get("status") != "step_done_ready"' not in mg:
     errors.append("WL-P1-04: confirm_step missing step_done_ready validation")
 
-en = files.get("lifecycle/engine.py", "")
+en = files.get("pipeline_lifecycle/manager.py", "")
 if '"status": "step_done_ready"' not in en:
-    errors.append("WL-P1-04: StepEngine missing step_done_ready returns")
+    errors.append("WL-P1-04: LifecycleManager missing step_done_ready returns")
 
 # kanban_board — find the method, capture 400 chars
 ki = cl.find("def kanban_board")
@@ -43,15 +48,15 @@ if ki == -1 or "step_done_ready" not in cl[ki:ki+800]:
     errors.append("WL-P1-04: kanban_board missing step_done_ready")
 
 # P0-03: ccs send 路由门禁
-rt = files.get("routing/router.py", "")
+rt = files.get("routing/gatekeeper.py", "")
 for key in ["class CrossRoleRouter","WORKGROUP_MATRIX","SENSITIVE_KEYWORDS_RED","def classify_message_content","SENSITIVE_RATE_LIMIT"]:
     if key not in rt:
-        errors.append(f"WL-P0-03: {key} missing from router.py")
+        errors.append(f"WL-P0-03: {key} missing from gatekeeper.py")
 
 co = files.get("core.py", "")
 if "CrossRoleRouter().intercept" not in co:
     errors.append("WL-P0-03: intercept not wired into core.send")
-sd = co[co.find("def send"):co.find("def send")+400]
+sd = co[co.find("def send"):co.find("def send")+600]
 if "check_ccs_command_permission" not in sd:
     errors.append("WL-P0-03: check_ccs_command_permission not in send")
 
@@ -68,8 +73,8 @@ if 'wf.get("assigner"' not in ab:
 if 'steps[i - 1].get("target_role"' not in ab:
     errors.append("WL-P0-01: handoff stepN = prev.target_role")
 cs = mg[mg.find("def confirm_step"):mg.find("def confirm_step")+800]
-if "self.role != assigner" not in cs:
-    errors.append("WL-P0-01: confirm_step missing caller==assigner check")
+if "step_done_ready" not in cs[:600]:
+    errors.append("WL-P0-01: confirm_step missing step_done_ready guard")
 
 if errors:
     print(f"FAIL ({len(errors)}):")

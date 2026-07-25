@@ -28,21 +28,40 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# ── 跨 Session 内存（omux 模式，进程内）──
-_CROSS_SESSION_MEMORY: dict[str, dict] = {}
+# ── 跨 Session 内存（omux 模式，持久化到哨兵文件）──
+_MEMORY_DIR = Path("/tmp/ccs-cross-session-memory")
+_MEMORY_LOCK = threading.Lock()
+
+def _ensure_memory_dir():
+    _MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
 def record_cross_session_action(role: str, action: str, summary: str = "") -> None:
-    _CROSS_SESSION_MEMORY[role] = {
-        "last_action": action,
-        "last_ts": time.time(),
-        "summary": summary,
-    }
+    _ensure_memory_dir()
+    data = {"last_action": action, "last_ts": time.time(), "summary": summary}
+    path = _MEMORY_DIR / f"{role}.json"
+    with _MEMORY_LOCK:
+        path.write_text(json.dumps(data))
 
 def get_cross_session_memory(role: str) -> dict:
-    return _CROSS_SESSION_MEMORY.get(role, {})
+    path = _MEMORY_DIR / f"{role}.json"
+    if not path.exists():
+        return {}
+    with _MEMORY_LOCK:
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
 
 def get_all_cross_session_memories() -> dict:
-    return dict(_CROSS_SESSION_MEMORY)
+    _ensure_memory_dir()
+    result = {}
+    with _MEMORY_LOCK:
+        for path in _MEMORY_DIR.glob("*.json"):
+            try:
+                result[path.stem] = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+    return result
 
 # ── 哨兵目录（对外暴露）──
 SENTINEL_DIR = Path("/tmp/ccs-sentinels")
@@ -255,7 +274,7 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                     try:
                         hd = json.loads(health_path.read_text())
                         sentinel.health = CcsHealth(**hd)
-                    except (json.JSONDecodeError, OSError):
+                    except (json.JSONDecodeError, OSError, TypeError):
                         pass
                 return sentinel
         except Exception:
