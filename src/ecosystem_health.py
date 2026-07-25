@@ -120,8 +120,7 @@ _IMPORT_MAP = {
     "sentinel": "ops.sentinel",
     "signals": "events.signals",
     "signal_parser": "signal_parser",
-    "template_registry": "template_registry",
-    "workflow_client": "workflow.client",
+    # template_registry & workflow_client: 已废弃，工作流统一至 session-pipeline
     "partner_client": "routing.partner",
 }
 
@@ -239,7 +238,7 @@ def check_all() -> HealthReport:
     core_modules = {
         "launcher": ["core", "tmux_ops", "role_manager", "codex_ops",
                      "sentinel", "signals", "signal_parser",
-                     "template_registry", "workflow_client", "partner_client"],
+                     "partner_client", "dispatch_pipeline"],
         "roles": ["registry", "search", "models", "validate_roles"],
         "pipeline": ["router", "reliability", "config_loader",
                      "workflow_engine", "composite_runner"],

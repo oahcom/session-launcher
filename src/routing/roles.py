@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from paths import ensure_paths as _ensure_paths
+from paths import BUS_CLIENT, ensure_paths as _ensure_paths
 _ensure_paths()
 
 _FORBIDDEN_MAP: dict[str, list[str]] = {
@@ -82,6 +82,33 @@ _CLAUDE_MD = Path(os.environ.get("CLAUDE_MD_PATH",
 
 _lock = threading.Lock()
 
+# ── 验证网关：加载角色前通过 shared_loader 验证 ──
+# hermes-session-roles 的 shared_loader 是 produce/consume 解析的单一权威来源。
+# 这里仍直接读取 JSON（需要 raw dict 注入 workspace），
+# 但启动时调用 shared_loader --validate 做完整性门禁。
+def _run_shared_loader_validate() -> bool:
+    """调用 shared_loader --validate 检查角色定义完整性。
+
+    验证失败打印警告（不阻塞启动，由 validate_roles.py 的预提交挂钩强制执行）。
+    """
+    sl_path = SESSION_ROLES_ROOT / "src" / "shared_loader.py"
+    if not sl_path.exists():
+        return False
+    try:
+        r = subprocess.run(
+            [sys.executable, str(sl_path), "--validate"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            print(f"  [roles] ⚠ shared_loader 验证发现 {r.stdout.count('FAIL')} 个问题",
+                  file=sys.stderr)
+            return True
+    except Exception as e:
+        print(f"  [roles] ⚠ shared_loader 调用失败: {e}", file=sys.stderr)
+    return True
+
+_SHARED_LOADER_CHECKED = False
+
 # 角色级缓存：每次从文件读取后缓存，_invalidate_role_cache() 手动刷新
 _ROLE_CACHE: dict[str, Optional[dict]] = {}
 
@@ -89,10 +116,19 @@ _LOADED_ALL_ROLES: list[dict] | None = None
 
 
 def load_roles() -> list[dict]:
-    """读取 hermes-session-roles 的角色 JSON 文件（带缓存）。"""
-    global _LOADED_ALL_ROLES
+    """读取角色 JSON 文件（验证网关 + 缓存）。
+
+    验证：首次加载时通过 shared_loader --validate 确认角色定义完整性。
+    数据源：仍直接读 JSON（需要 raw dict 注入 workspace），
+    但 produce/consume 解析已统一至 shared_loader 的 roles_export.json。
+    """
+    global _LOADED_ALL_ROLES, _SHARED_LOADER_CHECKED
     if _LOADED_ALL_ROLES is not None:
         return _LOADED_ALL_ROLES
+    # 首次加载时触发 shared_loader 验证
+    if not _SHARED_LOADER_CHECKED:
+        _run_shared_loader_validate()
+        _SHARED_LOADER_CHECKED = True
     roles = []
     for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
         try:
@@ -214,23 +250,9 @@ def _role_assembler_output(name: str, role: dict | None = None) -> str:
 
 def _build_role_prompt(role: dict) -> str:
     """构建会话启动 prompt（仅 BUS_LOOP_SUFFIX）。角色定义由 CLAUDE.md KNOWLEDGE 块提供。"""
-    BUS_LOOP_SUFFIX = """
-/loop 5m /## 工作循环（自动执行，不要退出）
-
-你是持久运行的 CCS（Claude Code Session），不要退出。
-执行完本职工作后，必须通过cornCreate或者loop进入循环等待模式：
-
-### 每轮循环
-→ 检查是否有分配给本角色的新任务(最重要的)
-2. python3 ~/.hermes/scripts/bus_client.py search "interjection:{name}" --limit 3 2>/dev/null
-→ 检查是否有外部插入的指令（由 coordinator 或其他角色写入）
-3. 如果有新指令或任务 → 先执行
-4. 检查是否有其他 session 给你的任务（标题含你角色名或"everyone"）
-5. 如果有 -> 优先处理：写结果回 bus，标题用 '@{name} '
-6. 读 code_fix 看看有没有需要你验证的修复
-7. 如果发现其他角色有任务未完成你需要推动它
-8. 如果没有任何事做 → sleep 30 → 回到第 1 步
-    """
+    BUS_LOOP_SUFFIX = """"""
+    if not BUS_LOOP_SUFFIX:
+        return ""
     return BUS_LOOP_SUFFIX.format(name=role["name"])
 
 def _resolve_ws_paths(name: str) -> list[Path]:

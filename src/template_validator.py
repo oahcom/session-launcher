@@ -1,4 +1,15 @@
-"""template_validator.py — 模板验证逻辑（从 template_registry.py 提取）。"""
+# =============================================================================
+# [DEPRECATED] template_validator.py — 废弃
+#
+# 此文件来自 session-launcher 已废弃的独立工作流引擎。
+# 工作流模板验证已统一至 session-pipeline：
+#   - pipeflow/db.py（模板加载 + 自动校验）
+#   - session-pipeline 的 MASTER_PRD.md §六（校验与治理）
+#
+# 保留此文件以兼容历史引用，不移除以保持向后兼容。
+# =============================================================================
+
+"""template_validator.py — 模板验证逻辑（已废弃，保留存根）。"""
 
 from dataclasses import dataclass
 from pathlib import Path

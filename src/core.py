@@ -358,7 +358,7 @@ def send(role: str, message: str, source: str = "") -> dict:
     # 跨角色路由拦截（三源验证 + 敏感命令门禁）
     if role != "self" and source != "cli":
         try:
-            from routing.router import CrossRoleRouter, check_ccs_command_permission
+            from routing.gatekeeper import CrossRoleRouter, check_ccs_command_permission
             # 三源验证
             allowed = CrossRoleRouter().intercept(source or "unknown", role, message)
             if not allowed:
