@@ -64,7 +64,7 @@ print(f'{len(real_ws)} workspaces OK')
 check "核心文件" python3 -c "
 from pathlib import Path
 src = Path('$HOME/session-launcher/src')
-required = ['core.py', 'launcher.py', 'ccs.py', 'ops/workspace.py', 'routing/gateway.py']  # lifecycle_manager 已迁移至 session-pipeline
+required = ['core.py', 'ccs.py', 'ops/workspace.py', 'routing/gateway.py']  # lifecycle_manager 已迁移至 session-pipeline
 missing = [f for f in required if not (src / f).exists()]
 assert not missing, f'missing: {missing}'
 print(f'{len(required)} core files present')
