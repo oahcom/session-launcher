@@ -259,7 +259,8 @@ def _contract_block(role: dict) -> str:
     lines.append(f"- 产出分类: {', '.join(produce) if produce else '无'}")
     lines.append(f"- 消费分类: {', '.join(consume) if consume else '无'}")
     if workgroup:
-        lines.append(f"- 协作组: {', '.join(workgroup)}")
+        wg_names = [w["role"] if isinstance(w, dict) else str(w) for w in workgroup]
+        lines.append(f"- 协作组: {', '.join(wg_names)}")
     if drive:
         lines.append(f"- 驱动方式: {drive}")
     if cron_schedule:

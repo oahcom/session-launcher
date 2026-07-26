@@ -37,7 +37,7 @@ TMUX_PREFIX = "ccs-"
 
 CODEX_TMUX_PREFIX = "cdx-"
 
-CODEX_SENTINEL_DIR = Path("/tmp/cdx-sentinels")
+CODEX_SENTINEL_DIR = Path.home() / ".hermes" / "run" / "cdx-sentinels"
 
 
 CODEX_LOOP_DELAY = 60

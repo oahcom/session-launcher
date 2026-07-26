@@ -290,7 +290,7 @@ def main():
                 print("没有工作空间")
             else:
                 for ws in result:
-                    print(f"  {ws['name']:20} {ws['path']}")
+                    print(f"  {ws['role']:20} {ws['path']}")
         else:
             print("用法: ccs.py workspace {create|list}")
             sys.exit(1)

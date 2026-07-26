@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 # ── 跨 Session 内存（omux 模式，持久化到哨兵文件）──
-_MEMORY_DIR = Path("/tmp/ccs-cross-session-memory")
+_MEMORY_DIR = Path.home() / ".hermes" / "run" / "ccs-cross-session-memory"
 _MEMORY_LOCK = threading.Lock()
 
 def _ensure_memory_dir():
@@ -64,11 +64,11 @@ def get_all_cross_session_memories() -> dict:
     return result
 
 # ── 哨兵目录（对外暴露）──
-SENTINEL_DIR = Path("/tmp/ccs-sentinels")
+SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"
 SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── watchdog 健康状态目录（仅内部，进程健康信息）──
-_HEALTH_DIR = Path("/tmp/ccs-health")
+_HEALTH_DIR = Path.home() / ".hermes" / "run" / "ccs-health"
 _HEALTH_DIR.mkdir(parents=True, exist_ok=True)
 _HEALTH_LOCK = threading.RLock()
 
@@ -279,7 +279,8 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                 if health_path.exists():
                     try:
                         hd = json.loads(health_path.read_text())
-                        sentinel.health = CcsHealth(**hd)
+                        sentinel.health = CcsHealth(**{k: v for k, v in hd.items()
+                                              if k in CcsHealth.__dataclass_fields__})
                     except (json.JSONDecodeError, OSError, TypeError):
                         pass
                 return sentinel
@@ -326,7 +327,8 @@ def list_sentinels() -> list[CcsSentinel]:
         if health_path.exists():
             try:
                 hd = json.loads(health_path.read_text())
-                sentinel.health = CcsHealth(**hd)
+                sentinel.health = CcsHealth(**{k: v for k, v in hd.items()
+                                              if k in CcsHealth.__dataclass_fields__})
             except (json.JSONDecodeError, OSError):
                 pass
         result[role] = sentinel
