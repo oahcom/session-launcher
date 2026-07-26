@@ -266,6 +266,8 @@ def _contract_block(role: dict) -> str:
         lines.append(f"- 定时调度: {cron_schedule} (由 cron-worker 触发)")
     else:
         lines.append(f"- 定时调度: 无 (事件驱动)")
+    if auto_msgs:
+        lines.append(f"- 自动发送: {', '.join(auto_msgs[:3])}{'...' if len(auto_msgs)>3 else ''}")
 
     eval_criteria = role.get("eval_criteria", [])[:3]
     if eval_criteria:
