@@ -259,13 +259,10 @@ def main():
         from ccs_socket import CCSStreamer
 
         client = CCSStreamer(args.role)
-        if client.start(lambda chunk: print(chunk, end="", flush=True)):
-            try:
-                import time
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                client.stop()
+        # ponytail: CCSStreamer.start() returns None; the if/while/True/sleep
+        # block was dead code.  The daemon (sister_agent_daemon.py) is the
+        # real runtime; stream is only used for on-demand tailing.
+        client.start(lambda chunk: print(chunk, end="", flush=True))
 
     elif args.command == "health":
         result = health_check(args.role)

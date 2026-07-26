@@ -123,12 +123,12 @@ def load_roles() -> list[dict]:
     但 produce/consume 解析已统一至 shared_loader 的 roles_export.json。
     """
     global _LOADED_ALL_ROLES, _SHARED_LOADER_CHECKED
-    if _LOADED_ALL_ROLES is not None:
-        return _LOADED_ALL_ROLES
-    # 首次加载时触发 shared_loader 验证
-    if not _SHARED_LOADER_CHECKED:
-        _run_shared_loader_validate()
-        _SHARED_LOADER_CHECKED = True
+    with _lock:
+        if _LOADED_ALL_ROLES is not None:
+            return _LOADED_ALL_ROLES
+        if not _SHARED_LOADER_CHECKED:
+            _run_shared_loader_validate()
+            _SHARED_LOADER_CHECKED = True
     roles = []
     for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
         try:
@@ -136,28 +136,34 @@ def load_roles() -> list[dict]:
                 roles.append(json.load(fp))
         except (json.JSONDecodeError, OSError):
             continue
-    _LOADED_ALL_ROLES = roles
+    with _lock:
+        _LOADED_ALL_ROLES = roles
     return roles
 
 def get_role(role_name: str) -> Optional[dict]:
     """按名称获取角色定义（带缓存，避免重复 I/O）。"""
-    if role_name in _ROLE_CACHE:
-        return _ROLE_CACHE[role_name]
+    with _lock:
+        if role_name in _ROLE_CACHE:
+            return _ROLE_CACHE[role_name]
     if not SESSION_ROLES_ROOT.exists():
-        _ROLE_CACHE[role_name] = None
+        with _lock:
+            _ROLE_CACHE[role_name] = None
         return None
     for r in load_roles():
         if r.get("name") == role_name:
-            _ROLE_CACHE[role_name] = r
+            with _lock:
+                _ROLE_CACHE[role_name] = r
             return r
-    _ROLE_CACHE[role_name] = None
+    with _lock:
+        _ROLE_CACHE[role_name] = None
     return None
 
 def _invalidate_role_cache() -> None:
     """清空角色缓存（用于角色文件修改后）。"""
     global _LOADED_ALL_ROLES
-    _ROLE_CACHE.clear()
-    _LOADED_ALL_ROLES = None
+    with _lock:
+        _ROLE_CACHE.clear()
+        _LOADED_ALL_ROLES = None
 
 def _forbidden_list(role_name: str) -> str:
     items = _FORBIDDEN_MAP.get(
@@ -228,6 +234,42 @@ def _action_templates(role: dict) -> str:
     lines.append(f"\n禁区：{_forbidden_list(name)}")
     return "\n".join(lines)
 
+def _contract_block(role: dict) -> str:
+    """从角色定义构建 ## 契约 区块（产出/消费分类、协作组、验证标准、驱动方式）。"""
+    produce = []
+    for t in role.get("output_targets", []):
+        m = re.search(r"bus cat=(\w+)", t)
+        if m:
+            produce.append(m.group(1))
+
+    consume = []
+    for s in role.get("input_signals", []):
+        if s.get("type") == "bus":
+            cat = s.get("spec", {}).get("category", "")
+            if cat and cat != "*":
+                consume.append(cat)
+
+    workgroup = role.get("workgroup", [])
+    drive = role.get("drive", "")
+
+    lines = ["\n## 契约"]
+    lines.append(f"- 产出分类: {', '.join(produce) if produce else '无'}")
+    lines.append(f"- 消费分类: {', '.join(consume) if consume else '无'}")
+    if workgroup:
+        lines.append(f"- 协作组: {', '.join(workgroup)}")
+    if drive:
+        lines.append(f"- 驱动方式: {drive}")
+
+    eval_criteria = role.get("eval_criteria", [])[:3]
+    if eval_criteria:
+        lines.append("")
+        lines.append("### 验证标准")
+        for i, c in enumerate(eval_criteria, 1):
+            short = c.split("| 验证:")[0].strip()
+            lines.append(f"{i}. {short}")
+
+    return "\n".join(lines)
+
 def _role_assembler_output(name: str, role: dict | None = None) -> str:
     """调用 role_assembler.py 获取角色定义文本（不含 BUS_LOOP_SUFFIX）。
     失败时回退到 role.system_prompt。"""
@@ -267,9 +309,12 @@ def _resolve_ws_paths(name: str) -> list[Path]:
     return paths
 
 def inject_role_knowledge_into_workspace(role: dict) -> str:
-    """将角色专业知识写入 workspace 级 CLAUDE.md（WORKSPACE_SYS marker 之后）。
+    """将角色契约写入 workspace 级 CLAUDE.md（WORKSPACE_SYS marker 之后）。
 
-    总是重新生成 KNOWLEDGE 块并替换旧块，确保 base.md 等上游模板变更即时生效。
+    收敛策略：CLAUDE.md 只放身份契约（产出/消费/协作组/验证标准/驱动方式）。
+    完整方法论 → Skill 文件（/skill load 按需加载）。
+    角色 prompt → ccs send 注入对话历史。
+
     自动处理 `{name}` 和 `ccs-{name}` 双路径，同时更新所有匹配的 workspace。
 
     注：KNOWLEDGE 块仅包含 role_assembler 输出的角色定义，
@@ -282,14 +327,17 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     if not ws_paths:
         return "skipped (no workspace)"
 
-    prompt = _role_assembler_output(name, role)
-    templates = _action_templates(role)
+    # ── 收敛：只写契约块（身份关系），不 dump 全文知识 ──
+    # 完整方法论 → Skill 文件（/skill load 按需加载）
+    # 角色 prompt → role_assembler 编译产物（ccs send 注入对话）
+    # CLAUDE.md 只保留 "我是谁、跟谁协作、验证标准"
+    contract = _contract_block(role)
 
     knowledge_block = (
         f"\n\n<!-- KNOWLEDGE:START -->\n"
-        f"# 专业知识 — {role.get('title', name)}\n\n"
-        f"{prompt}\n\n"
-        f"{templates}\n"
+        f"# 契约 — {role.get('title', name)}\n\n"
+        f"角色知识由 Skill 和 prompt 注入提供。CLAUDE.md 仅保留身份契约。\n"
+        f"{contract}\n"
         f"<!-- KNOWLEDGE:END -->\n"
     )
 
@@ -417,12 +465,9 @@ def validate_ccs_execution(role: str, action: str) -> None:
         raise ValueError("role and action required")
     # CCS-RULE-002: 含 task 操作时需要 task 状态合法
     if "task" in action.lower() or "workflow" in action.lower():
-        try:
-            from workflow.client import WorkflowClient
-            from workflow.gateway import Gate
-            gate = Gate()
-            if not gate.is_valid_role(role):
-                raise PermissionError(f"CCS-RULE: invalid role '{role}' — must register in persona JSON first")
-        except ImportError:
-            pass  # 无 workflow 模块时降级
+        # ponytail: Gate was YAGNI'd (deleted). Validation now relies on persona JSON existence.
+        if not SESSION_ROLES_ROOT.joinpath("personas/session-roles", f"persona_{role}.json").exists():
+            # fallback: check loaded role cache
+            if get_role(role) is None:
+                print(f"  [roles] ⚠ CCS-RULE: role '{role}' not found in persona JSON", file=sys.stderr)
     # CCS-RULE-001: 非标准格式的 ccs send 拒绝（由调用方提供格式校验）

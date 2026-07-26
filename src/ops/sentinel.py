@@ -217,34 +217,38 @@ def _get_started_at(tmux_session: str) -> float:
     return time.time()
 
 
-# ── 文件 API（外部脚本 + 内部调用）──
+# ── 哨兵文件级锁（防止多线程 read-modify-write 竞态）──
+_SENTINEL_LOCK = threading.Lock()
 
 def write_sentinel(s: CcsSentinel) -> Path:
-    """写入哨兵 /tmp/ccs-sentinels/{role}.json。"""
+    """写入哨兵 /tmp/ccs-sentinels/{role}.json（线程安全）。"""
     path = SENTINEL_DIR / f"{s.role}.json"
-    path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
+    with _SENTINEL_LOCK:
+        path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
     return path
 
 
 def delete_sentinel(role: str) -> bool:
-    """删除哨兵 + 健康文件。"""
+    """删除哨兵 + 健康文件（线程安全）。"""
     deleted = False
-    for d in (SENTINEL_DIR, _HEALTH_DIR):
-        path = d / f"{role}.json"
-        if path.exists():
-            path.unlink()
-            deleted = True
+    with _SENTINEL_LOCK:
+        for d in (SENTINEL_DIR, _HEALTH_DIR):
+            path = d / f"{role}.json"
+            if path.exists():
+                path.unlink()
+                deleted = True
     return deleted
 
 
 def read_sentinel(role: str) -> Optional[CcsSentinel]:
-    """读哨兵：文件优先 → tmux 回退。"""
+    """读哨兵：文件优先 → tmux 回退（线程安全）。"""
     path = SENTINEL_DIR / f"{role}.json"
-    if path.exists():
-        try:
-            return CcsSentinel.from_dict(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError):
-            pass
+    with _SENTINEL_LOCK:
+        if path.exists():
+            try:
+                return CcsSentinel.from_dict(json.loads(path.read_text()))
+            except (json.JSONDecodeError, OSError):
+                pass
 
     # 回退：tmux 实时派生（文件不存在时）
     for prefix in ("ccs", "cdx"):
@@ -324,7 +328,8 @@ def list_sentinels() -> list[CcsSentinel]:
                 pass
         result[role] = sentinel
 
-    return list(result.values())
+    # filter out zombie sentinels (pid=0/None + empty tmux)
+    return [s for s in result.values() if s.tmux_session or (s.pid or 0) > 0]
 
 
 def update_health(role: str, **kwargs) -> bool:

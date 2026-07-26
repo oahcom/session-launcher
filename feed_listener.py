@@ -68,8 +68,30 @@ def connect() -> socket.socket:
     return s
 
 
-def run(notify: bool = False, on_debate_end: bool = False):
-    """主循环：阻塞等待 feed socket 消息，断线自动重连。"""
+def _inject_to_tmux(tmux_target: str, event: dict):
+    """将 feed 消息注入到 tmux 会话。"""
+    msg = event.get("msg", event)
+    cat = msg.get("cat", "")
+    title = msg.get("title", "")
+    text = msg.get("text", "")
+    body = msg.get("evidence", "") or msg.get("body", "")
+    payload = f"/goal [{cat}] {title}"
+    if body:
+        payload += f"\n{body[:200]}"
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target, payload, "Enter"],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""):
+    """主循环：阻塞等待 feed socket 消息，断线自动重连。
+
+    tmux_target: 指定后自动将消息注入到对应 tmux 会话（如 "ccs-architect"）。
+    """
     print(f"正在连接 {FEED_SOCKET}...")
     s = None
 
@@ -78,6 +100,8 @@ def run(notify: bool = False, on_debate_end: bool = False):
             if s is None:
                 s = connect()
                 print(f"✅ 已连接 feed socket，监听中... (Ctrl+C 退出)")
+                if tmux_target:
+                    print(f"  消息将注入 tmux: {tmux_target}")
             chunk = s.recv(4096)
             if not chunk:
                 print("连接断开，5秒后重试...")
@@ -91,6 +115,8 @@ def run(notify: bool = False, on_debate_end: bool = False):
                     try:
                         event = json.loads(line)
                         _on_new_fact(event)
+                        if tmux_target:
+                            _inject_to_tmux(tmux_target, event)
                     except json.JSONDecodeError:
                         pass
         except KeyboardInterrupt:
@@ -118,5 +144,7 @@ if __name__ == "__main__":
                         help="检测到辩论结束时写 bus notice")
     parser.add_argument("--on-debate-end", action="store_true",
                         help="仅检测辩论结束关键词")
+    parser.add_argument("--tmux-target", default="",
+                        help="将消息注入到 tmux 会话（如 ccs-architect）")
     args = parser.parse_args()
-    run(notify=args.notify, on_debate_end=args.on_debate_end)
+    run(notify=args.notify, on_debate_end=args.on_debate_end, tmux_target=args.tmux_target)

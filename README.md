@@ -14,27 +14,32 @@ Session 生态的**执行层**——创建 CCS（Claude Code Session）进程、
 │  │  hermes-session-roles │  ← 角色定义层：JSON 模板 + prompt 蒸馏      │
 │  └───────────┬───────────┘                                             │
 │              │ 读取角色定义                                              │
-│              ▼                                                          │
-│  ┌──────────────────────────────────────────────────────────────┐      │
-│  │  session-launcher  ← 本项目（执行层）                         │      │
-│  │  - CCS 生命周期（tmux + Claude Code 进程）                    │      │
-│  │  - 哨兵文件管理 (/tmp/ccs-sentinels/)                        │      │
-│  │  - 伙伴存活守护 (watchdog)                                   │      │
-│  │  - 轮次追踪 + 死锁检测 (tracker)                             │      │
-│  │  - 直连通信 (<1ms Unix Socket)                               │      │
-│  │  - Bus Push 实时推送                                         │      │
-│  │  - 工作流模板注册与门禁                                       │      │
-│  │  - P0 豁免通道                                               │      │
-│  └───────────────────────┬──────────────────────────────────────┘      │
-│                          │                                              │
-│              ┌───────────┴───────────┐                                  │
-│              ▼                       ▼                                  │
-│  ┌──────────────────┐    ┌─────────────────────────────┐                │
-│  │ Sister Bus       │    │ session-pipeline            │                │
-│  │ SQLite + Socket  │    │ 路由层：消息分发/优先级      │                │
-│  └──────────────────┘    └─────────────────────────────┘                │
+│              ├────────────────────────────────────┐                      │
+│              ▼                                    ▼                      │
+│  ┌──────────────────────────────┐  ┌──────────────────────────────┐    │
+│  │  session-launcher  ← 本项目  │  │ session-pipeline             │    │
+│  │  执行层                      │  │ 路由层 + 工作流执行           │    │
+│  │  - CCS 生命周期(tmux+claude) │  │ - 路由表自动推导              │    │
+│  │  - 哨兵文件管理             │  │ - 消息分发+优先级              │    │
+│  │  - 伙伴存活守护(watchdog)    │  │ - 工作流引擎(pipeflow)        │    │
+│  │  - 轮次追踪+死锁检测        │  │ - 生命周期状态机              │    │
+│  │  - 直连通信 Unix Socket      │  │ - 可靠性(熔断/重试/TTL)       │    │
+│  │  - Bus Push 实时推送         │  │ - 路由表持久化(rdb)           │    │
+│  │  - P0 豁免通道              │  │                                │    │
+│  └──────┬───────────────────────┘  └──────────┬───────────────────┘    │
+│         │                                     │                         │
+│         │  pipeline → launcher 的唯一调用：    │                         │
+│         │  subprocess ccs.py send              │                         │
+│         │                                     │                         │
+│         ▼                                     ▼                         │
+│  ┌────────────────────────────────────────────────────────┐             │
+│  │                    Sister Bus                           │             │
+│  │           SQLite Blackboard + Unix Socket               │             │
+│  └────────────────────────────────────────────────────────┘             │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+注意：**实际关系不是三层流水线**。session-roles（定义层）同时被 launcher 和 pipeline 独立消费。pipeline 不直接调 launcher 的 API，而是通过 `subprocess` 执行 `ccs.py send`。pipeline 和 launcher 之间无直接通信。
 
 ---
 
@@ -81,46 +86,20 @@ src/
   ├── ccs_socket.py         CCS 直接通信客户端（<1ms Unix Socket）
   │
   # ── 基础设施 ──
-  ├── sentinel.py           哨兵文件读写（/tmp/ccs-sentinels/）
-  ├── watchdog.py           伙伴存活守护线程（自动重启）
-  ├── tracker.py            轮次追踪 + 死锁检测
-  ├── lesson_injector.py    经验教训注入（reflexion_lesson → CLAUDE.md）
+  ├── ops/sentinel.py       哨兵文件读写（/tmp/ccs-sentinels/）
+  ├── ops/watchdog.py       伙伴存活守护线程（自动重启）
+  ├── ops/tracker.py        轮次追踪 + 死锁检测
+  ├── ops/ccs_config.py     全局配置中心
   │
-  # ── 信号与执行 ──
-  ├── signals.py            8 种信号检查器（旧接口兼容）
-  ├── signal_parser.py      标准化信号解析器（新/旧格式统一入口）
-  ├── worker_pool.py        并行 HTTP 调用 9Router（stdlib-only）
-  ├── pool_cli.py           worker_pool CLI 入口
-  ├── task_utils.py         任务操作函数（check/complete/fail/logs）
-  │
-  # ── 工作流系统 ──
-  ├── lifecycle_manager.py  工作流状态机
-  ├── step_engine.py        5 种步骤类型引擎
-  ├── notification_engine.py 步骤完成通知引擎
-  ├── workflow_client.py    CCS 角色使用的工作流客户端
-  ├── workflow_gate.py      模板门禁系统
-  ├── template_registry.py  模板注册中心（10 字段 JSON Schema）
-  ├── template_validator.py 模板 5 步验证流程
-  ├── migrate_v11_collab.py V1.1 跨角色协作数据库迁移
-  │
-  # ── 跨角色协作 ──
-  ├── partner_client.py     跨角色协作核心（Layer 1-3）
-  ├── p0_exemption.py       P0 豁免通道 + 审计轨迹
-  ├── cross_role_router.py  跨角色路由拦截器（存根）
-  ├── migration_scripts.py  存量数据迁移 + 回滚
-  │
-  # ── 生态集成 ──
-  ├── ecosystem_health.py   三项目统一健康检查 API（可编程 + CLI）
-  ├── ecosystem_cli.py      生态 CLI（status/relations/board）
+  # ── 路由与门禁 ──
+  ├── routing/roles.py      角色加载 + workspace 注入 + 禁区映射
+  ├── routing/gatekeeper.py 三源验证 + 敏感操作门禁 + 工作群组
+  ├── routing/partner.py    伙伴客户端
   │
   # ── 兼容 ──
-  ├── launcher.py           兼容层（旧接口导出）
-  └── paths.py              统一路径管理（集中 Path.home() 调用）
+  ├── paths.py              统一路径管理（从 hermes_bus.config 导入）
+  └── ...
 ```
-
----
-
-## 核心功能```
 
 ---
 
@@ -157,9 +136,9 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
   "pid": 12345,
   "started_at": 1700000000.0,
   "lifecycle": "infinite",
-  "partner": "scout",
+  "partners": ["scout"],
   "bus_track": "architecture",
-  "health": { "watchdog_ok": true, "last_turn_check": 1700000100.0 }
+  "health": { "watchdog_ok": true, "last_bus_msg_age": -1, "restart_count": 0 }
 }
 ```
 
@@ -199,124 +178,45 @@ bus_client.py write debate "消息"
 
 **降级保障**：feed socket 不可用时静默降级，不丢 SQLite 写入。
 
-### 6. 工作空间管理
-
-```bash
-python3 src/ccs.py workspace create <name>   # 创建/更新 workspace CLAUDE.md
-python3 src/ccs.py workspace list            # 列出所有 workspace
-```
-
-workspace CLAUDE.md 使用 `<!-- WORKSPACE_SYS:START/END -->` 标记系统区域，用户的额外内容保留在外部。
-
-### 7. 工作流模板
-
-```bash
-python3 src/template_registry.py list                # 列出模板
-python3 src/template_registry.py register <file>     # 注册模板（10 字段验证）
-python3 src/template_registry.py validate <file>     # 校验不入库
-python3 src/template_validator.py <file>              # 5 步验证
-```
-
-10 字段模板 = workflow_id + name + description + trigger_scene + allowed_initiators + allowed_executors + steps + max_duration_hours + quality_standards + notify_template
-
-### 8. 跨角色协作
-
-```bash
-python3 src/partner_client.py resolve <role>           # 查询角色状态
-python3 src/partner_client.py wake <role> --as <actor> # 唤醒角色
-python3 src/partner_client.py confirm <task_id> <role> # 双信号等待确认
-python3 src/partner_client.py send-safe <role> <msg>   # 安全发送（自动唤醒）
-```
-
-### 9. Worker Pool
-
-并行 HTTP 调用 9Router（stdlib-only，无 `requests` 依赖）：
-
-```bash
-python3 src/worker_pool.py <role> '[{"id":"t1","prompt":"..."}]'
-```
-
-### 10. P0 豁免
-
-仅 coordinator 和 lr 可创建 P0 豁免任务，4 小时内必须补录 template_id，超时自动检测并通知。
-
 ---
 
-## 红线
+## 跨项目接口
 
-1. **协作逻辑在代码层，不在 prompt 文本中** — 创建/守护/重启/死锁检测全部代码内置
-2. **创建方必须守护被创建方** — `--partner` 自动启动 watchdog
-3. **轮次追踪必须内置** — `--bus-track` 自动启动 turn_tracker
-4. **死锁超时 > 15 分钟** → 写入 bus 升级给人
-5. **stdlib only** — 禁止新增第三方 Python 依赖
-6. **不使用 eval()** — 改用安全的 regex 模式匹配
+session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
----
+```
+pipeline/routes.py → subprocess run([sys.executable, CCS_CLI, "send", role, message])
+```
 
-## 依赖项目
+**注意**：这是 pipeline→launcher 的唯一调用路径。launcher 不反向调用 pipeline。
 
-| 项目 | 关系 | 说明 |
-|------|------|------|
-| hermes-session-roles | 上游定义层 | 读取角色 JSON 定义（25 角色 + 57 Browser Harness 人格） |
-| session-pipeline | 下游路由层 | 消息优先级分发与消费者调度 |
-| Sister Bus | 基础设施 | SQLite blackboard + Unix Socket feed |
-| 9Router | 推理引擎 | HTTP API (localhost:20128) |
+`CCS_CLI` 定义在 `paths.py`（从 `hermes_bus.config` 导入），两个项目的 `paths.py` 指向同一路径。
 
----
+### MCP 隔离
 
-## 测试
+launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，实现 MCP 按角色隔离：
 
-```bash
-# 6 维度深度 QA（推荐）
-python3 -m pytest tests/test_6dimension_deep_qa.py -v
-
-# 端到端 mock
-python3 -m pytest tests/test_e2e_mock.py -v
-
-# 系统健康检查
-python3 -m pytest tests/test_system_health.py -v
-
-# 验证全部模块导入
-PYTHONPATH=src python3 -c "import core, tmux_ops, role_manager, codex_ops, signals, sentinel, watchdog, tracker, launcher; print('All imports OK')"
+```python
+# core.py: _write_mcp_settings()
+# 从 persona JSON 读取 mcp_servers 字段
+# 只给每个角色开启它声明需要的 MCP server
 ```
 
 ---
 
-## 快速恢复指南
-
-当 session 重启后，CCS 进程会丢失（WSL2 无 systemd 持久化时）：
+## 验证
 
 ```bash
-# 1. 启动守护进程（pipeline-daemon + workflow-engine）
-bash ~/session-launcher/scripts/start_daemons.sh
-
-# 2. 启动核心 CCS 角色
-for role in pg engineer maintainer coordinator scout; do
-  python3 src/ccs.py start $role --no-attach
-done
-
-# 3. 检查恢复状态
-python3 src/ccs.py status
-python3 ~/session-pipeline/src/auto_route.py --status
-
-# 4. 给 PG 分配任务
-python3 src/ccs.py workspace create pg
-python3 src/ccs.py start pg --no-attach
+python3 tests/test_wl_selfcheck.py -v
+python3 src/ecosystem_health.py --json
+python3 src/ccs.py health
 ```
 
-**已知限制**：
-- systemd 不可用时（WSL2），daemon 和 CCS 需手动启动
-- `--bare` 参数解决 hook 渗透问题（2026-07-15 修复）
-- 多 CCS 同时启动需注意内存（`_MEM_FREE_MIN_MB=1000`）
+## 环境变量
 
-## 系统别名（注册到 ~/.bash_aliases）
-
-```bash
-ccs <role> [title]          # 启动 CCS 并 attach
-ccs-status                  # 列出所有 CCS 状态
-ccs-ls                      # tmux 列表（只看 ccs-）
-ccs-stop <role>             # 停止 CCS
-ccs-send <role> "消息"       # 向 CCS 发消息
-ccs-out <role>              # 查看 CCS 输出
-ccs-stream <role>           # 流式输出（实时跟踪）
-```
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| SESSION_ROLES_ROOT | ~/hermes-session-roles | 角色定义目录 |
+| SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
+| HERMES_SCRIPTS_DIR | ~/.hermes/scripts | Hermes 脚本目录 |
+| CCS_SOCKET_TOKEN | (无) | CCS Socket 认证令牌 |

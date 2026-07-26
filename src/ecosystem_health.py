@@ -119,7 +119,7 @@ def _check_dir_exists(path: Path, name: str) -> CheckItem:
 _IMPORT_MAP = {
     "sentinel": "ops.sentinel",
     "signals": "events.signals",
-    "signal_parser": "signal_parser",
+    "signal_parser": "events.parser",
     # template_registry & workflow_client: 已废弃，工作流统一至 session-pipeline
     "partner_client": "routing.partner",
 }

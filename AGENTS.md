@@ -6,14 +6,19 @@ Session 生态的**执行层**——CCS 创建、生命周期管理、跨 sessio
 
 ## 整体架构
 ```
-hermes-session-roles (定义层) → 读取角色 JSON
+hermes-session-roles (定义层) ──→ 读取角色 JSON
         │
-        ▼
-  session-launcher (执行层) ← 本项目
-        │
-        ├──→ Sister Bus (SQLite) + Feed Push (Unix Socket)
-        └──→ session-pipeline (路由层)
+        ├────────────────────────────────┐
+        ▼                                ▼
+  session-launcher (执行层) ← 本项目    session-pipeline (路由+执行层)
+        │                                 │
+        │  pipeline→launcher 唯一调用:     │
+        │  subprocess ccs.py send         │
+        │                                 │
+        └─────────→ Sister Bus ←──────────┘
 ```
+
+**注意：不是三层流水线。pipeline 和 launcher 各自独立消费 session-roles 定义。**
 
 **铁律：修改本项目时必须同时考虑上下游影响。**
 
