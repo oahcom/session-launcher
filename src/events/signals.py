@@ -20,6 +20,72 @@ from paths import BUS_CLIENT as _BUS_CLIENT_PATH
 BUS_CLIENT = str(_BUS_CLIENT_PATH)
 
 
+_PRIORITY_MAP = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+
+def _check_bus_priority(spec: dict) -> bool:
+    """If spec has min_priority, check bus for unconsumed messages with priority >= that level."""
+    min_priority = spec.get("min_priority")
+    if min_priority is None:
+        return True
+    category = spec.get("category", "")
+    if not category:
+        return False
+    try:
+        r = subprocess.run(
+            ["python3", BUS_CLIENT, "unread", "--json", "--all", "--limit", "0"],
+            capture_output=True, text=True, timeout=10
+        )
+        import json
+        data = json.loads(r.stdout) if r.stdout else {}
+        facts = data if isinstance(data, list) else data.get("facts", [])
+        for f in facts:
+            if f.get("category", "") != category:
+                continue
+            tag = f.get("tags", "").strip().upper()
+            priority = _PRIORITY_MAP.get(tag, 4)
+            if priority <= min_priority:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _check_max_unread(spec: dict, category: str) -> bool:
+    """If spec has max_unread, check if unread count >= threshold."""
+    max_unread = spec.get("max_unread")
+    if max_unread is None:
+        return False
+    if not category:
+        return False
+    try:
+        r = subprocess.run(
+            ["python3", BUS_CLIENT, "unread", "--json", "--all", "--limit", "0"],
+            capture_output=True, text=True, timeout=10
+        )
+        import json
+        data = json.loads(r.stdout) if r.stdout else {}
+        facts = data if isinstance(data, list) else data.get("facts", [])
+        count = sum(1 for f in facts if f.get("category", "") == category)
+        return count >= max_unread
+    except Exception:
+        return False
+
+
+def _write_notice(category: str, threshold: int) -> None:
+    """Write a notice to bus when backlog exceeds threshold."""
+    title = f"[signals] {category} backlog >= {threshold}"
+    try:
+        subprocess.run(
+            ["python3", BUS_CLIENT, "write", "notice", title,
+             "--evidence", f"category={category}, threshold={threshold}",
+             "--src", "signals"],
+            capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        pass
+
+
 # ── 新格式统一入口 ──
 
 def check_signal(signal_def: dict) -> bool:
@@ -28,7 +94,7 @@ def check_signal(signal_def: dict) -> bool:
     新格式字段：
       - type: "bus" | "shell" | "http" | "journalctl" | "custom"
       - spec: 对应类型的参数（dict）
-        bus: {"category": "security"}
+        bus: {"category": "security", "min_priority": 1, "max_unread": 5}
         shell: {"command": "systemctl is-active ..."}
         http: {"url": "http://localhost:8890"}
         journalctl: {"unit": "sister-agent-dkk", "command": "journalctl ..."}
@@ -38,9 +104,19 @@ def check_signal(signal_def: dict) -> bool:
       - timeout_sec: 超时秒数（可选，默认 10）
 
     旧格式（source 字段）自动转换并打印 warning。
+
+    bus 类型特殊处理：先检查 priority 过滤，再检查 max_unread 积压告警。
     """
-    # 委托给 signal_parser 统一解析器
     from events.parser import parse_signal
+    if signal_def.get("type") == "bus":
+        spec = signal_def.get("spec", {})
+        category = spec.get("category", "")
+        if not _check_bus_priority(spec):
+            return False
+        max_unread = spec.get("max_unread")
+        if max_unread is not None and _check_max_unread(spec, category):
+            _write_notice(category, max_unread)
+        return parse_signal(signal_def)
     return parse_signal(signal_def)
 
 
