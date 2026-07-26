@@ -144,8 +144,8 @@ class TestLayerPollution:
         if ref_section_start is None:
             return  # 没有"项目引用"段 → 通过
         ref_headings = [l for l in outside[ref_section_start:] if _HEADING_RE.match(l)]
-        # 排除 ## 七本身
-        ref_headings = [l for l in ref_headings if "##" not in l.strip()[:3]]
+        # 排除 ## 七本身（排除行首为 ## 但非 ### 的标题）
+        ref_headings = [l for l in ref_headings if l.strip().startswith("###")]
 
         errors = []
         for kw in ["关键端口", "Sister Bus", "CCS 跨 Session"]:
@@ -197,7 +197,7 @@ class TestSkillAutoLoad:
         assert path.exists(), "role_assembler.py 不存在"
         content = path.read_text(encoding="utf-8")
         # 必须包含 SKILL.md fallback（dir.md → dir/SKILL.md）
-        assert "/ SKILL.md" in content or "SKILL.md" in content, (
+        assert "/SKILL.md" in content, (
             "read_skill 没有 SKILL.md fallback 逻辑"
         )
         # 必须包含 'SKILL NOT FOUND' 容错返回
