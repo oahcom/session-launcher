@@ -76,6 +76,8 @@ class CcsSentinel:
     bus_timeout: int = 300
     session_id: str = ""
     engine: str = "ccs"
+    role_contract_version: str = ""
+    collab_mode: str = "peer-to-peer"
     health: CcsHealth = field(default_factory=CcsHealth)
 
     def to_dict(self) -> dict:
@@ -86,6 +88,8 @@ class CcsSentinel:
             "partners": self.partners, "bus_track": self.bus_track,
             "bus_timeout": self.bus_timeout, "session_id": self.session_id,
             "engine": self.engine,
+            "role_contract_version": self.role_contract_version,
+            "collab_mode": self.collab_mode,
             "health": {
                 "last_watchdog_check": self.health.last_watchdog_check,
                 "watchdog_ok": self.health.watchdog_ok,
@@ -122,6 +126,8 @@ class CcsSentinel:
             bus_timeout=data.get("bus_timeout", 300),
             session_id=data.get("session_id", ""),
             engine=data.get("engine", "ccs"),
+            role_contract_version=data.get("role_contract_version", ""),
+            collab_mode=data.get("collab_mode", "peer-to-peer"),
             health=health,
         )
 
@@ -250,6 +256,14 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                 if role_json:
                     sentinel.partners = role_json.get("partners", [])
                     sentinel.bus_track = role_json.get("bus_track", "")
+                    sentinel.role_contract_version = role_json.get("contract_version") or role_json.get("version", "")
+                    workgroup = role_json.get("workgroup", [])
+                    if workgroup and isinstance(workgroup, list) and len(workgroup) > 0:
+                        first = workgroup[0]
+                        if isinstance(first, dict):
+                            sentinel.collab_mode = first.get("mode", "peer-to-peer")
+                        elif isinstance(first, str):
+                            sentinel.collab_mode = first
                 health_path = _HEALTH_DIR / f"{role}.json"
                 if health_path.exists():
                     try:
@@ -296,6 +310,14 @@ def list_sentinels() -> list[CcsSentinel]:
         if role_json:
             sentinel.partners = role_json.get("partners", [])
             sentinel.bus_track = role_json.get("bus_track", "")
+            sentinel.role_contract_version = role_json.get("contract_version") or role_json.get("version", "")
+            workgroup = role_json.get("workgroup", [])
+            if workgroup and isinstance(workgroup, list) and len(workgroup) > 0:
+                first = workgroup[0]
+                if isinstance(first, dict):
+                    sentinel.collab_mode = first.get("mode", "peer-to-peer")
+                elif isinstance(first, str):
+                    sentinel.collab_mode = first
         health_path = _HEALTH_DIR / f"{role}.json"
         if health_path.exists():
             try:

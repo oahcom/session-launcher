@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from ops.sentinel import update_health
+from ops.sentinel import update_health, _get_role_json
 
 
 
@@ -48,6 +48,17 @@ def _bus_write(cat: str, text: str, src: str = ""):
 def _audit_monitor(decision: str, detail: str, src: str = ""):
     """审计日志：所有 CCS 决策写入 bus monitor_audit。"""
     _bus_write("monitor_audit", f"决策: {decision} → {detail}", src=src or "tracker")
+
+
+def _get_collab_mode(role: str, partner: str) -> str:
+    """从角色 JSON workgroup 读取协作模式，默认 peer-to-peer。"""
+    data = _get_role_json(role)
+    if data:
+        wg = data.get("workgroup", [])
+        for entry in wg:
+            if entry.get("role") == partner:
+                return entry.get("mode", "peer-to-peer")
+    return "peer-to-peer"
 
 
 def _run(this_role: str, bus_cat: str, timeout_sec: int,
@@ -100,20 +111,42 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
                 if p_alive:
                     partner_alive = True
 
-            if partner_alive:
-                # 伙伴活但 bus 停 → 直接发提醒给伙伴
+            # 协作模式差异化处理
+            mode = _get_collab_mode(this_role, p) if partners else "peer-to-peer"
+            if mode == "notify-only":
+                # notify-only: 跳过死锁检测，只做送达确认
                 _bus_write(bus_cat,
-                           f"[{this_role}] 死锁检测: {bus_cat} 最后消息 {int(age)}s 前 (by {src})，请继续",
+                           f"[{this_role}] 送达确认: {bus_cat} 最后消息 {int(age)}s 前 (by {src})",
                            src=this_role)
-                _audit_monitor("死锁检测",
-                    f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 存活，已发提醒",
-                    src=this_role)
-                _log(tag, f"死锁提醒: {bus_cat} 超时 {int(age)}s，已通知 {src}")
+                _log(tag, f"notify-only 送达: {bus_cat} 超时 {int(age)}s")
+            elif mode == "master-slave":
+                if partner_alive:
+                    # master-slave: 只检测 slave 存活，不要求双向轮次
+                    _log(tag, f"master-slave: {bus_cat} 超时 {int(age)}s，slave {partners} 存活，等待 slave 响应")
+                else:
+                    # slave 死 → 写 bus 让 master 重启
+                    _bus_write(bus_cat,
+                               f"[{this_role}] 死锁检测: slave {p} 已死，请 master 重启",
+                               src=this_role)
+                    _audit_monitor("死锁-slave死亡",
+                        f"{this_role} 检测到 slave {partners} 已死，请求 master 重启",
+                        src=this_role)
+                    _log(tag, f"master-slave: slave {partners} 已死，请求重启")
             else:
-                _audit_monitor("死锁-伙伴死亡",
-                    f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 已死",
-                    src=this_role)
-                _log(tag, f"死锁: {bus_cat} 超时 {int(age)}s，但伙伴已死（watchdog 负责重启）")
+                # peer-to-peer: 现有死锁检测逻辑（双向轮次超时检查）
+                if partner_alive:
+                    _bus_write(bus_cat,
+                               f"[{this_role}] 死锁检测: {bus_cat} 最后消息 {int(age)}s 前 (by {src})，请继续",
+                               src=this_role)
+                    _audit_monitor("死锁检测",
+                        f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 存活，已发提醒",
+                        src=this_role)
+                    _log(tag, f"死锁提醒: {bus_cat} 超时 {int(age)}s，已通知 {src}")
+                else:
+                    _audit_monitor("死锁-伙伴死亡",
+                        f"{this_role} 检测到 {bus_cat} 超时 {int(age)}s，伙伴 {partners} 已死",
+                        src=this_role)
+                    _log(tag, f"死锁: {bus_cat} 超时 {int(age)}s，但伙伴已死（watchdog 负责重启）")
 
             last_reminder = now
 

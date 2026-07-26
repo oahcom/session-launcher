@@ -75,6 +75,14 @@ def _restart_partner(partner_role: str):
         _log("watchdog", f"已发起 {partner_role} 重启: {result}")
 
 
+def _should_restart(partner_mode: str, this_role: str) -> bool:
+    """根据协作模式判断是否应该重启伙伴。"""
+    if partner_mode == "master-slave":
+        return True
+    # peer-to-peer / notify-only: 不自启
+    return False
+
+
 def _run(this_role: str, partner_role: str, auto_restart: bool,
          interval: int, restart_delay: int):
     """守护线程主循环。异常不退出，记录后继续。"""
@@ -97,6 +105,23 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
 
             _log(tag, f"partner {partner_role} 已死")
 
+            partner_sentinel = read_sentinel(partner_role)
+            partner_mode = partner_sentinel.collab_mode if partner_sentinel else "peer-to-peer"
+
+            if partner_mode == "notify-only":
+                _audit_monitor("伙伴死亡-仅记录",
+                    f"{this_role} 检测到 {partner_role} 死亡，mode=notify-only 跳过")
+                _log(tag, "notify-only 模式，仅记录")
+                continue
+
+            if partner_mode == "peer-to-peer":
+                _audit_monitor("伙伴死亡-通知不重启",
+                    f"{this_role} 检测到 {partner_role} 死亡，通知 coordinator，不自启",
+                    src=this_role)
+                _log(tag, "peer-to-peer 模式，通知 coordinator")
+                continue
+
+            # master-slave: 自动重启（默认行为）
             if not auto_restart:
                 _audit_monitor("伙伴死亡-不重启",
                     f"{this_role} 检测到 {partner_role} 死亡，auto_restart=False 跳过")
