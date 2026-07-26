@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-role_manager.py — 角色加载/注入功能
+roles.py — 角色加载、workspace 知识注入、禁区映射、动作模板
 """
 
 __all__ = [
@@ -251,6 +251,8 @@ def _contract_block(role: dict) -> str:
 
     workgroup = role.get("workgroup", [])
     drive = role.get("drive", "")
+    cron_schedule = role.get("cron_schedule", "")
+    auto_msgs = role.get("auto_send_messages", [])
 
     lines = ["\n## 契约"]
     lines.append(f"- 产出分类: {', '.join(produce) if produce else '无'}")
@@ -259,6 +261,10 @@ def _contract_block(role: dict) -> str:
         lines.append(f"- 协作组: {', '.join(workgroup)}")
     if drive:
         lines.append(f"- 驱动方式: {drive}")
+    if cron_schedule:
+        lines.append(f"- 定时调度: {cron_schedule} (由 cron-worker 触发)")
+    else:
+        lines.append(f"- 定时调度: 无 (事件驱动)")
 
     eval_criteria = role.get("eval_criteria", [])[:3]
     if eval_criteria:
@@ -291,11 +297,38 @@ def _role_assembler_output(name: str, role: dict | None = None) -> str:
     return ""
 
 def _build_role_prompt(role: dict) -> str:
-    """构建会话启动 prompt（仅 BUS_LOOP_SUFFIX）。角色定义由 CLAUDE.md KNOWLEDGE 块提供。"""
-    BUS_LOOP_SUFFIX = """"""
-    if not BUS_LOOP_SUFFIX:
-        return ""
-    return BUS_LOOP_SUFFIX.format(name=role["name"])
+    """构建会话启动 prompt。
+
+    角色身份/契约/红线由 workspace CLAUDE.md KNOWLEDGE 块提供，
+    这里仅做启动时的驱动模式提示和初始指令。
+    """
+    name = role.get("name", "")
+    title = role.get("title", "")
+    drive = role.get("drive", "ondemand")
+    cron_schedule = role.get("cron_schedule", "")
+    msgs = [f"## {title} ({name}) — 已就绪"]
+
+    if drive == "feed":
+        msgs.append("驱动模式: feed（事件驱动）")
+        msgs.append("等待 cron-worker 或 bus 消息唤醒。收到 task 后处理并等待下一条。")
+        msgs.append("空闲时定期自检 `/status`。")
+    elif drive == "loop":
+        msgs.append("驱动模式: ondemand（手动触发）")
+        if cron_schedule:
+            msgs.append(f"声明定时: {cron_schedule}（由 cron-worker 触发）")
+        msgs.append("无待处理任务时进入空闲等待。")
+    elif drive == "ondemand":
+        msgs.append("驱动模式: ondemand（按需启动）")
+        msgs.append("等待上游角色或 cron-worker 通过 `ccs.py send` 发送任务。")
+    else:
+        msgs.append(f"驱动模式: {drive}")
+
+    msgs.append("")
+    msgs.append("启动自检:")
+    msgs.append("1. 确认 CLAUDE.md KNOWLEDGE 区块已加载身份与契约")
+    msgs.append("2. 确认 MCP 工具列表中有所需工具")
+    msgs.append("3. 执行当前角色的第一条 eval_criteria")
+    return "\n".join(msgs)
 
 def _resolve_ws_paths(name: str) -> list[Path]:
     """解析角色的 workspace CLAUDE.md 路径列表（可能多个）。"""
