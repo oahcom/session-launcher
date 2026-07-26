@@ -12,6 +12,7 @@ __all__ = [
 ]
 
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -32,12 +33,34 @@ from ops.sentinel import (
 
 
 def _is_alive(tmux_name: str) -> bool:
+    """双检：tmux session 存在 + pane 内 claude 进程存活。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],
             capture_output=True, timeout=5
         )
-        return r.returncode == 0
+        if r.returncode != 0:
+            return False
+        # 再查 pane PID 对应的 claude 进程是否存活
+        r2 = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r2.stdout.strip().isdigit():
+            pane_pid = r2.stdout.strip()
+            r3 = subprocess.run(
+                ["pgrep", "-P", pane_pid, "-f", "claude"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r3.stdout.strip():
+                return True
+            # 如果 pane_pid 本身还活着（claude 就是直接子进程）
+            try:
+                os.kill(int(pane_pid), 0)
+                return True
+            except OSError:
+                return False
+        return True  # 无 PID 信息时信任 tmux
     except Exception:
         return False
 
