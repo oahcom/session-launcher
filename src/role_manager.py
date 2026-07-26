@@ -4,8 +4,9 @@
 from routing.roles import (
     SESSION_ROLES_ROOT, SESSION_MARKER_START, SESSION_MARKER_END,
     load_roles, get_role, check_wake_permission,
-    inject_role_knowledge_into_workspace, inject_prompt_into_claudemd,
-    clear_injected_prompt, validate_ccs_execution,
+    inject_role_knowledge_into_workspace,  # ponytail: inject_prompt_into_claudemd 已废弃
+    # ponytail: clear_injected_prompt 已废弃
+    validate_ccs_execution,
     # Private helpers used by core.py
     _invalidate_role_cache, _forbidden_list, _action_templates,
     _build_role_prompt, _resolve_ws_paths, _validate_role_name,
@@ -17,8 +18,9 @@ from routing.roles import (
 __all__ = [
     'SESSION_ROLES_ROOT', 'SESSION_MARKER_START', 'SESSION_MARKER_END',
     'load_roles', 'get_role', 'check_wake_permission',
-    'inject_role_knowledge_into_workspace', 'inject_prompt_into_claudemd',
-    'clear_injected_prompt', 'validate_ccs_execution',
+    'inject_role_knowledge_into_workspace',  # ponytail: inject_prompt_into_claudemd 已废弃
+    # ponytail: clear_injected_prompt 已废弃
+    'validate_ccs_execution',
     '_invalidate_role_cache', '_forbidden_list', '_action_templates',
     '_build_role_prompt', '_resolve_ws_paths', '_validate_role_name',
     '_ensure_bus_aliases_in_bashrc', '_ROLE_NAME_RE',
