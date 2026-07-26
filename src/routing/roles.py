@@ -15,6 +15,7 @@ __all__ = [
     'inject_role_knowledge_into_workspace',
     '_validate_role_name',
     '_ensure_bus_aliases_in_bashrc',
+    # ponytail: inject_prompt_into_claudemd/clear_injected_prompt 已废弃，保留定义兼容旧 cron 模式
     'inject_prompt_into_claudemd',
     'clear_injected_prompt',
     '_ROLE_NAME_RE',
@@ -426,11 +427,7 @@ alias bus_search='python3 {BUS_CLIENT} search'
     bashrc.write_text(content.rstrip() + "\n" + alias_block)
 
 def inject_prompt_into_claudemd(role: dict) -> str:
-    """将角色的 system_prompt 通过 marker 注入到主项目 CLAUDE.md（legacy）。
-
-    这是旧版 launcher cron 模式使用的方法。
-    CCS 模式应使用 inject_role_knowledge_into_workspace()。
-    """
+    """DEPRECATED — 旧版 launcher cron 模式使用。CCS 模式应使用 inject_role_knowledge_into_workspace()。"""
     _ensure_bus_aliases_in_bashrc()
     prompt = _build_role_prompt(role)
     ctx = _role_assembler_output(role["name"], role)

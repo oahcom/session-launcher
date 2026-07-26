@@ -179,7 +179,7 @@ def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
-          drive: str = "ondemand", feed_cat: str = "",
+          drive: str = "", feed_cat: str = "",
           workspace: str = "",
           no_auto_send: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
@@ -234,11 +234,17 @@ def start(role: str, title: str = "", detach: bool = False,
     role_def = get_role(role)
     if role_def:
         inject_role_knowledge_into_workspace(role_def)
+        # drive 解析：CLI 未指定时从 persona JSON 读取，JSON 无值则 fallback "ondemand"
+        if not drive:
+            drive = (role_def.get("drive", "") or "").lower()
         if not init_prompt:
             init_prompt = _build_role_prompt(role_def)
             print(f"📋 已构建角色 prompt ({len(init_prompt)} 字符)")
     elif not init_prompt:
         print(f"⚠ 未找到 {role} 角色定义（{SESSION_ROLES_ROOT}），使用空 prompt 启动")
+
+    if not drive:
+        drive = "ondemand"
 
     # 4.5 写入角色专属 settings.json（MCP 隔离）
     _write_mcp_settings(ws_path, role_def)

@@ -90,6 +90,7 @@ class CcsSentinel:
     pid: Optional[int] = None
     started_at: float = 0.0
     lifecycle: str = "infinite"
+    drive: str = ""
     partners: list[str] = field(default_factory=list)
     bus_track: str = ""
     bus_timeout: int = 300
@@ -103,7 +104,7 @@ class CcsSentinel:
             "tmux_session": self.tmux_session, "pid": self.pid,
             "started_at": self.started_at, "lifecycle": self.lifecycle,
             "partners": self.partners, "bus_track": self.bus_track,
-            "bus_timeout": self.bus_timeout, "session_id": self.session_id,
+            "drive": self.drive, "bus_timeout": self.bus_timeout, "session_id": self.session_id,
             "engine": self.engine,
             "health": {
                 "last_watchdog_check": self.health.last_watchdog_check,
@@ -271,8 +272,9 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                     engine=engine,
                 )
                 if role_json:
-                    sentinel.partners = role_json.get("partners", [])
-                    sentinel.bus_track = role_json.get("bus_track", "")
+                    # partners/bus_track 是运行时参数(不在JSON schema中)，不从此处读取
+                    sentinel.lifecycle = role_json.get("lifecycle", "infinite")
+                    sentinel.drive = role_json.get("drive", "")
                 health_path = _HEALTH_DIR / f"{role}.json"
                 if health_path.exists():
                     try:
@@ -317,8 +319,8 @@ def list_sentinels() -> list[CcsSentinel]:
             engine=engine,
         )
         if role_json:
-            sentinel.partners = role_json.get("partners", [])
-            sentinel.bus_track = role_json.get("bus_track", "")
+            sentinel.lifecycle = role_json.get("lifecycle", "infinite")
+            sentinel.drive = role_json.get("drive", "")
         health_path = _HEALTH_DIR / f"{role}.json"
         if health_path.exists():
             try:
