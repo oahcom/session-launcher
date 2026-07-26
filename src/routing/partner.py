@@ -63,7 +63,7 @@ def _bus_client() -> Any:
 
 def is_ccs_running(role_name: str) -> bool:
     """检查 CCS 是否在运行（自动加 ccs- tmux 前缀）。"""
-    from core import _is_alive
+    from tmux_ops import _is_alive
     return _is_alive(f"ccs-{role_name}")
 
 from paths import WORKFLOWS_DB as WORKFLOW_DB

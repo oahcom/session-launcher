@@ -3,6 +3,8 @@
 core.py — 生命周期编排（从 tmux_ops/role_manager/codex_ops 导入）
 """
 
+_start_feed_subprocess = None  # defined at module end
+
 __all__ = [
     'start',
     'register_hook',
@@ -30,8 +32,7 @@ __all__ = [
     '_forbidden_list',
     'check_wake_permission',
     '_build_role_prompt',
-    'inject_prompt_into_claudemd',
-    'clear_injected_prompt',
+    # ponytail: inject_prompt_into_claudemd/clear_injected_prompt 已废弃，若需恢复从 roles.py 导入
     'write_lifecycle_sentinel',
     'check_ondemand_timeout',
     'cleanup_stale_sentinels',
@@ -107,7 +108,7 @@ from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claud
     CODEX_LOOP_DELAY, CODEX_OUTPUT_MAX, CODEX_ERROR_MAX, CODEX_SESSION_MAX,
     CODEX_READY_RETRIES, CODEX_READY_INTERVAL, _MEM_FREE_MIN_MB, _CCS_LAUNCH_INTERVAL)
 
-from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, inject_prompt_into_claudemd, clear_injected_prompt, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
+from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
 
 from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status, _active_codex_session_count, _wait_codex_ready, CODEX_SESSION_MAX, CODEX_TMUX_PREFIX, CODEX_LOOP_DELAY
 
@@ -145,11 +146,94 @@ from ops.ccs_config import (
     get_value as _cfg_get_value,
 )
 
+# ── 命名常量 ──
+_CCS_READY_RETRIES = 15   # 启动 CCS 后轮询 tmux 就绪的次数
+_BUS_MSG_TRUNCATE = 200   # bus 通知消息内容截断长度
+
+# ── 已知 MCP server 注册表（name → {command, args, env}）──
+# ponytail: 从全局 settings.json 和所有插件 .mcp.json 加载
+_MCP_SERVER_REGISTRY: dict[str, dict] = {}
+
+
+def _load_mcp_registry() -> dict[str, dict]:
+    """扫描全局 settings.json + 所有插件 .mcp.json，构建 MCP server 注册表。"""
+    registry: dict[str, dict] = {}
+    # 1. 全局 settings.json 的 mcpServers
+    gs = Path.home() / ".claude" / "settings.json"
+    if gs.exists():
+        try:
+            import json as _json
+            gcfg = _json.loads(gs.read_text(encoding="utf-8"))
+            registry.update(gcfg.get("mcpServers", {}))
+        except Exception:
+            pass
+    # 2. 扫描所有插件目录下的 .mcp.json（marketplace 注册 + 缓存）
+    for base in [Path.home() / ".claude/plugins/marketplaces",
+                 Path.home() / ".claude/plugins/cache"]:
+        if not base.is_dir():
+            continue
+        for fpath in sorted(base.rglob(".mcp.json")):
+            try:
+                data = json.loads(fpath.read_text(encoding="utf-8"))
+                # 两种格式：{"mcpServers": {...}} 或直接 {"server_name": {...}}
+                entries = data.get("mcpServers", data)
+                if not isinstance(entries, dict):
+                    continue
+                for name, cfg in entries.items():
+                    if not isinstance(cfg, dict):
+                        continue
+                    s = json.dumps(cfg)
+                    if "${CLAUDE_PLUGIN_ROOT}" in s:
+                        s = s.replace("${CLAUDE_PLUGIN_ROOT}",
+                                      str(fpath.parent.resolve()))
+                        cfg = json.loads(s)
+                    if name not in registry:
+                        registry[name] = cfg
+            except Exception:
+                continue
+    return registry
+
+
+_MCP_SERVER_REGISTRY = _load_mcp_registry()
+
+def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
+    """写 workspace 专属 .claude/settings.json，MCP + 权限按角色隔离。
+
+    继承全局 settings.json 的 mcpServers/hooks/model 等配置，
+    覆写 mcpServers（按 persona 声明）和 permissions（按角色最小权限）。
+    角色无 permissions 字段时写空 allow list → 所有操作需人工确认。
+    """
+    claude_dir = ws_path / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = claude_dir / "settings.json"
+    gs = Path.home() / ".claude" / "settings.json"
+    cfg = json.loads(gs.read_text(encoding="utf-8")) if gs.exists() else {}
+    mcp_names = (role_def or {}).get("mcp_servers", [])
+    # 继承全局 mcpServers（如 hex-line 等基础设施），再按角色增补
+    base_mcp = cfg.get("mcpServers", {})
+    role_mcp = {n: _MCP_SERVER_REGISTRY[n] for n in mcp_names if n in _MCP_SERVER_REGISTRY}
+    base_mcp.update(role_mcp)
+    cfg["mcpServers"] = base_mcp
+    # 权限：角色级 allowlist 替换全局 bypass
+    # ponytail: mcp_tools 中的工具级限制尚未映射到 permissions.allow，
+    # 因为 Claude Code 无"per-server MCP tool"粒度的权限条目。
+    # 需要时添加到对应的 MCP server 层（server 自身的 auth）或 hook 层。
+    role_perms = (role_def or {}).get("permissions", {})
+    if role_perms:
+        cfg["permissions"] = role_perms
+    else:
+        # 严格默认：无一预授权 → 所有操作弹出确认
+        cfg["permissions"] = {"allow": []}
+    settings_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    _log.info("写入 %s mcp_servers=%s perms_rules=%d",
+              settings_path, list(cfg["mcpServers"].keys()),
+              len(cfg["permissions"].get("allow", [])))
+
 def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
-          drive: str = "ondemand", feed_cat: str = "",
+          drive: str = "", feed_cat: str = "",
           workspace: str = "",
           no_auto_send: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
@@ -204,15 +288,23 @@ def start(role: str, title: str = "", detach: bool = False,
     role_def = get_role(role)
     if role_def:
         inject_role_knowledge_into_workspace(role_def)
+        # drive 解析：CLI 未指定时从 persona JSON 读取，JSON 无值则 fallback "ondemand"
+        if not drive:
+            drive = (role_def.get("drive", "") or "").lower()
         if not init_prompt:
             init_prompt = _build_role_prompt(role_def)
             print(f"📋 已构建角色 prompt ({len(init_prompt)} 字符)")
     elif not init_prompt:
         print(f"⚠ 未找到 {role} 角色定义（{SESSION_ROLES_ROOT}），使用空 prompt 启动")
 
-    # 5. 启动 tmux + claude
-    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS",
-        " --allow-dangerously-skip-permissions --dangerously-skip-permissions --permission-mode bypassPermissions")
+    if not drive:
+        drive = "ondemand"
+
+    # 4.5 写入角色专属 settings.json（MCP 隔离）
+    _write_mcp_settings(ws_path, role_def)
+
+    # 5. 启动 tmux + claude — 权限由 workspace settings.json permissions.allow 控制
+    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
     cmd = (
         "claude --bare --model 9router_hermes"
         f"{_PERM_FLAGS}"
@@ -228,7 +320,7 @@ def start(role: str, title: str = "", detach: bool = False,
         return {"success": False, "error": f"tmux 启动失败: {r.stderr.strip()}"}
 
     # 6. 等 claude 就绪
-    for _ in range(15):
+    for _ in range(_CCS_READY_RETRIES):
         time.sleep(1)
         try:
             out = subprocess.run(
@@ -240,6 +332,14 @@ def start(role: str, title: str = "", detach: bool = False,
         except Exception:
             pass
     time.sleep(1)
+
+    # 6.5 自动加载角色技能（skills→/skill load）
+    skill_names = (role_def or {}).get("skills", [])
+    if skill_names:
+        for sk in skill_names:
+            _tmux_send(tmux_name, f"/skill {sk}")
+            time.sleep(0.5)
+        _log.info("[skills] auto-loaded %d skills for %s", len(skill_names), role)
 
     # 7. 注入 prompt（自动构建的 role prompt 或用户提供的 init_prompt）
     if init_prompt:
@@ -285,7 +385,7 @@ def start(role: str, title: str = "", detach: bool = False,
     )
     write_sentinel(s)
 
-    # 9. 启动守护线程（仅 detach 模式）
+    # 9. 启动守护线程 + feed listener（仅 detach 模式）
     if detach:
         for p in partners:
             start_watchdog(role, p, auto_restart=auto_restart, interval=30)
@@ -299,6 +399,12 @@ def start(role: str, title: str = "", detach: bool = False,
         if feed_cat:
             _start_feed_listener(role, feed_cat)
             print(f"✅ feed listener: 实时监控 {feed_cat} 分类")
+
+    # 10. 启动 feed_listener 子进程（将 bus 实时消息注入 tmux）
+    # 任何有 tmux 会话的模式都启动，不限于 detach
+    if drive not in ("ondemand",):
+        _start_feed_subprocess(tmux_name)
+        print(f"✅ feed 子进程: 实时消息注入 {tmux_name}")
     elif partners or bus_track:
         print(f"⚠ 非 detach 模式，监控线程不会启动（需要 --no-attach）")
 
@@ -396,12 +502,17 @@ def send(role: str, message: str, source: str = "") -> dict:
     return {"success": True, "sent_chars": len(message)}
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
-    """降级时写一条 [ccs_send_fallback] 通知到 bus。"""
+    """降级时写一条 [ccs_send_fallback] 通知到 bus。
+
+    使用 notice 分类而非 architecture，防止级联风暴：
+    architecture 被 10 个角色 consume → 反复触发路由 + 创建 workflow → blocker 洪水。
+    notice 仅 maintainer/writer/public 3 角色消费，不会放大级联。
+    """
     try:
         subprocess.run(
-            [str(BUS_CLIENT), "write", "architecture",
+            [str(BUS_CLIENT), "write", "notice",
              f"[ccs_send_fallback] {source}→{role} 失败: {reason}",
-             "--evidence", f"message='{message[:200]}' reason={reason}",
+             "--evidence", f"message='{message[:_BUS_MSG_TRUNCATE]}' reason={reason}",
              "--src", "core.send"],
             capture_output=True, timeout=5)
     except Exception:
@@ -551,3 +662,31 @@ from ops.runner import dashboard, _start_feed_listener
 
 from ops.workspace import register, workspace_create, workspace_list
 
+
+def _start_feed_subprocess(tmux_name: str) -> None:
+    """启动 feed_listener.py 子进程，实时接收 bus 消息并注入到 tmux 会话。"""
+    try:
+        subprocess.Popen(
+            [sys.executable, str(FEED_LISTENER), "--tmux-target", tmux_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _log.info("feed 子进程已启动: %s -> %s", FEED_LISTENER, tmux_name)
+    except Exception as e:
+        _log.warning("feed 子进程启动失败: %s", e)
+
+
+# ── dev 环境隔离（DESIGN-dev-environment.md） ──
+_ENV_PREFIX = {"dev": "dev:", "staging": "test:", "prod": ""}
+
+def _get_env() -> str:
+    """从 CCS_ROLE 解析环境后缀: engineer+dev → dev"""
+    role = os.environ.get("CCS_ROLE", "")
+    if "+" in role:
+        return role.split("+", 1)[1]
+    m = re.search(r'\+(dev|staging|prod)\b', role)
+    return m.group(1) if m else "prod"
+
+def _env_path(base: str) -> str:
+    """环境感知路径: ~/workspace/ → ~/workspace+dev/"""
+    env = _get_env()
+    return f"{base}+{env}" if env != "prod" else base

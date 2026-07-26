@@ -30,7 +30,7 @@ def main():
     if not quiet: print(f"  Routed: {routed}/{total}")
     if not dry_run and "error" not in result and routed > 0:
         try:
-            subprocess.run([sys.executable, str(BUS_CLIENT), "write", "architecture",
+            subprocess.run([sys.executable, str(BUS_CLIENT), "write", "notice",
                           f"[route-activator] routed {routed}/{total} msgs",
                           "--src", "route-activator",
                           "--evidence", json.dumps({"routed": routed, "total": total})],

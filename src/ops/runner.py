@@ -43,16 +43,21 @@ def dashboard() -> str:
     lines.append("")
     lines.append("── 路由拓扑 ──")
     try:
-        _pipeline_router_path = Path.home() / "session-pipeline" / "src"
-        if str(_pipeline_router_path) not in sys.path:
-            sys.path.insert(0, str(_pipeline_router_path))
-        from router import get_router
-        r = get_router()
-        for role, data in sorted(r.routing.items()):
-            cat_count = len(data.get("produce", []))
-            c = data.get("consume", [])
-            consume_cat = "*" if "*" in c else str(len(c))
-            lines.append(f"  {role:16} 产出 {cat_count}分类  消费 {consume_cat}分类")
+        r = subprocess.run(
+            ["python3", "-c",
+             "import sys; sys.path.insert(0, '/home/administrator/session-pipeline/src'); "
+             "from router import get_router; r = get_router(); print(r.routing)"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            import json as _json
+            import ast as _ast
+            routing = _ast.literal_eval(r.stdout)
+            for role, data in sorted(routing.items()):
+                cat_count = len(data.get("produce", []))
+                c = data.get("consume", [])
+                consume_cat = "*" if "*" in c else str(len(c))
+                lines.append(f"  {role:16} 产出 {cat_count}分类  消费 {consume_cat}分类")
     except Exception:
         lines.append("  (pipeline router 不可达)")
 

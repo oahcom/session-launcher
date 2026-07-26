@@ -1,0 +1,241 @@
+{
+  "collected_at": "2026-07-26T02:19:00Z",
+  "session_id": "current",
+  "projects": {
+    "hermes-session-roles": {
+      "root": "/home/administrator/hermes-session-roles",
+      "branch": "master",
+      "git_status": "clean (no staged/stashed changes; untracked: test_wf_e2e.py)",
+      "core_files": {
+        "source": [
+          "src/__init__.py", "src/models.py", "src/paths.py", "src/registry.py",
+          "src/role_assembler.py", "src/shared_loader.py", "src/validate_roles.py"
+        ],
+        "personas_session_roles": [
+          "personas/session-roles/persona_00_maintainer.json",
+          "personas/session-roles/persona_01_scout.json",
+          "personas/session-roles/persona_03_curator.json",
+          "personas/session-roles/persona_04_coordinator.json",
+          "personas/session-roles/persona_05_engineer.json",
+          "personas/session-roles/persona_06_closer.json",
+          "personas/session-roles/persona_08_optimizer.json",
+          "personas/session-roles/persona_10_codex_dev.json",
+          "personas/session-roles/persona_11_ccs_monitor.json",
+          "personas/session-roles/persona_12_debate_verifier.json",
+          "+21 more"
+        ],
+        "personas_browser_harness": [
+          "personas/browser-harness/persona_01_core.json",
+          "personas/browser-harness/persona_02_specialized.json",
+          "personas/browser-harness/persona_03_advanced.json",
+          "personas/browser-harness/persona_qa_qa-tester.json",
+          "personas/browser-harness/persona_qa_security-tester.json",
+          "personas/browser-harness/persona_qa_test-automator.json"
+        ],
+        "prompts": [
+          "prompts/base.md",
+          "prompts/mixins/cron_driver.md",
+          "prompts/mixins/loop_driver.md",
+          "prompts/mixins/ondemand_driver.md",
+          "prompts/roles/ (23 role-specific prompt files)"
+        ],
+        "tests": ["tests/test_registry.py", "test_wf_e2e.py"]
+      }
+    },
+    "session-launcher": {
+      "root": "/home/administrator/session-launcher",
+      "branch": "master",
+      "git_status": "modified: feed_listener.py, src/core.py, src/routing/roles.py",
+      "core_files": {
+        "source_src": [
+          "src/ccs.py", "src/ccs_socket.py", "src/codex_ops.py", "src/core.py",
+          "src/ecosystem_health.py", "src/migration_scripts.py", "src/paths.py",
+          "src/role_manager.py", "src/tmux_ops.py"
+        ],
+        "source_ops": [
+          "src/ops/ccs_config.py", "src/ops/runner.py", "src/ops/sentinel.py",
+          "src/ops/tracker.py", "src/ops/watchdog.py", "src/ops/workspace.py"
+        ],
+        "source_routing": [
+          "src/routing/gatekeeper.py", "src/routing/partner.py", "src/routing/roles.py"
+        ],
+        "source_events": ["src/events/parser.py", "src/events/signals.py"],
+        "source_migration": ["src/migration/scripts.py"],
+        "scripts": [
+          "scripts/bh_route_sync.py", "scripts/bus_balance_optimizer.py",
+          "scripts/cleanup_stale_workflows.py", "scripts/ecosystem_auto_cycle_v5.py",
+          "scripts/ecosystem_health.py", "scripts/ecosystem_health_daemon.py",
+          "scripts/sync_all_skills.sh", "scripts/workflow_launcher.sh",
+          "scripts/cdx-traffic-summary.py", "scripts/session-activity-summary.py"
+        ],
+        "root_config": [
+          "ccs_config.json", "conftest.py", "feed_listener.py", "persona_99_test_v2.json",
+          "deploy_all.sh", "ccs_watchdog.sh", "workflows.db"
+        ],
+        "tests": ["tests/conftest.py", "tests/test_wl_selfcheck.py"]
+      }
+    },
+    "session-pipeline": {
+      "root": "/home/administrator/session-pipeline",
+      "branch": "master",
+      "git_status": "modified: src/pipeflow/engine.py; untracked: src/eval_checker.py, src/routing_daemon.py",
+      "core_files": {
+        "source": [
+          "src/config_loader.py", "src/eval_checker.py", "src/p0_exemption.py",
+          "src/paths.py", "src/reliability.py", "src/reliability_core.py",
+          "src/routing_daemon.py", "src/template_registry.py"
+        ],
+        "source_lifecycle": ["src/lifecycle/manager.py"],
+        "source_pipeflow": ["src/pipeflow/daemon.py", "src/pipeflow/db.py", "src/pipeflow/engine.py"],
+        "source_routing": [
+          "src/routing/auto.py", "src/routing/polling.py", "src/routing/rdb.py",
+          "src/routing/router.py", "src/routing/routes.py"
+        ],
+        "source_workflow": [
+          "src/workflow/client.py", "src/workflow/db.py",
+          "src/workflow/gateway.py", "src/workflow/sync.py"
+        ],
+        "config": ["config/config.yaml"],
+        "tests": [
+          "tests/test_cross_component.py", "tests/test_engine_e2e.py",
+          "tests/test_helpers.py", "tests/test_integration.py",
+          "tests/test_role_interaction.py", "tests/test_router.py",
+          "tests/test_router_extend_bh.py", "tests/test_template_quality.py",
+          "tests/test_workflow_daemon.py", "tests/test_workflow_db.py",
+          "tests/test_workflow_engine.py"
+        ]
+      }
+    }
+  },
+  "architecture_docs": {
+    "hermes-session-roles": [
+      "/home/administrator/hermes-session-roles/ARCHITECTURE.md",
+      "/home/administrator/hermes-session-roles/docs/ARCHITECTURE.md",
+      "/home/administrator/hermes-session-roles/docs/ARCHITECTURE_PROTOCOL.md",
+      "/home/administrator/hermes-session-roles/docs/ECOSYSTEM_OVERVIEW.md",
+      "/home/administrator/hermes-session-roles/docs/TECHNICAL_DEEP_DIVE.md",
+      "/home/administrator/hermes-session-roles/docs/ROLE_TEMPLATE.md",
+      "/home/administrator/hermes-session-roles/docs/INDEX.md",
+      "/home/administrator/hermes-session-roles/docs/SEARCH.md",
+      "/home/administrator/hermes-session-roles/docs/QUICKSTART.md",
+      "/home/administrator/hermes-session-roles/docs/AUDIT_REPORT.md",
+      "/home/administrator/hermes-session-roles/docs/TEST_WORKFLOW.md"
+    ],
+    "session-launcher": [
+      "/home/administrator/session-launcher/HERMES_SESSION_ARCHITECTURE.md",
+      "/home/administrator/session-launcher/CCS_COLLAB_PROTOCOL.md",
+      "/home/administrator/session-launcher/BUS_PUSH_ARCH.md",
+      "/home/administrator/session-launcher/docs/ECOSYSTEM_EVOLUTION.md",
+      "/home/administrator/session-launcher/docs/TECHNICAL_DEEP_DIVE.md",
+      "/home/administrator/session-launcher/docs/approval_token_design.md",
+      "/home/administrator/session-launcher/docs/verification_rules_design.md",
+      "/home/administrator/session-launcher/docs/workflow_architecture_fix.md"
+    ],
+    "session-pipeline": [
+      "/home/administrator/session-pipeline/docs/ARCHITECTURE.md",
+      "/home/administrator/session-pipeline/docs/MASTER_PRD.md",
+      "/home/administrator/session-pipeline/docs/ROUTER_AUTO_WORKFLOW_PRD.md",
+      "/home/administrator/session-pipeline/docs/STORAGE_MERGE_ARCH.md",
+      "/home/administrator/session-pipeline/docs/SYSTEM_LANDSCAPE.md",
+      "/home/administrator/session-pipeline/docs/TECHNICAL_DEEP_DIVE.md",
+      "/home/administrator/session-pipeline/docs/TEST_WORKFLOW.md",
+      "/home/administrator/session-pipeline/docs/WORKFLOW_TEMPLATE_SPEC.md",
+      "/home/administrator/session-pipeline/docs/DOCS.md"
+    ],
+    "hermes_ecosystem": [
+      "/home/administrator/.hermes/notes/architecture/PROJECT_MANUAL.md",
+      "/home/administrator/.claude/memory/hermes-architecture.md",
+      "/home/administrator/.claude/memory/hermes-development.md"
+    ],
+    "architecture_redlines": "hermes-architecture-redlines.md not found at expected path (~/.claude/projects/-mnt-c-Users-Administrator/memory/hermes-architecture-redlines.md); likely refactored into ~/.claude/memory/ files above"
+  },
+  "user_key_remarks": [
+    {
+      "text": "收集所有需要审查的素材，返回结构化JSON：\n1. 三个项目的核心文件清单\n2. 架构文档路径\n3. 用户在本session中的关键言论（直接引用）\n4. 本次修改的所有git diff摘要\n5. CCS对话历史（如果有）",
+      "context": "当前session的唯一指令，来自父agent或用户",
+      "intent": "要求全面收集审查素材，以结构化JSON格式返回"
+    }
+  ],
+  "git_diffs": {
+    "session-launcher": {
+      "feed_listener.py": {
+        "summary": "新增 _inject_to_tmux() 函数和 tmux_target 参数支持；run() 接收 --tmux-target 将 bus feed 消息注入到指定 tmux 会话",
+        "stats": "+31 -3",
+        "key_changes": [
+          "新增 _inject_to_tmux(tmux_target, event) 从 feed 事件中提取 cat/title/text/evidence 拼装 /goal 命令并发给 tmux",
+          "run() 函数新增 tmux_target 参数",
+          "运行时若指定 tmux_target，每条消息注入到对应 tmux 会话",
+          "CLI 新增 --tmux-target 参数"
+        ]
+      },
+      "src/core.py": {
+        "summary": "新增 MCP 服务器注册表 (_MCP_SERVER_REGISTRY) 和 _write_mcp_settings()，为 workspace 写入角色隔离的 MCP 配置；在 start() 中新增第10步启动 feed_listener 子进程",
+        "stats": "+49 -1",
+        "key_changes": [
+          "新增 _MCP_SERVER_REGISTRY 模块级字典供后续扩展",
+          "新增 _write_mcp_settings(ws_path, role_def) 从全局 settings.json 继承配置，仅覆写 mcpServers 为 persona 声明的 server 列表",
+          "start() 中新增步骤 4.5 写入角色专属 settings.json",
+          "start() 中新增步骤 10 启动 feed_listener 子进程（除 ondemand 外所有模式）",
+          "新增 _start_feed_subprocess(tmux_name) 辅助函数"
+        ]
+      },
+      "src/routing/roles.py": {
+        "summary": "新增 _contract_block() 函数，从角色定义构建 ## 契约 区块（产出分类、消费分类、协作组、验证标准），注入到 workspace 知识注入块",
+        "stats": "+38 -0",
+        "key_changes": [
+          "新增 _contract_block(role) 解析 output_targets 产出 cat、input_signals 消费 cat、workgroup、drive、eval_criteria",
+          "在 inject_role_knowledge_into_workspace() 中将 contract 区块追加到 KNOWLEDGE 块中"
+        ]
+      }
+    },
+    "session-pipeline": {
+      "src/pipeflow/engine.py": {
+        "summary": "重构 CCS 拉起/通信逻辑：统一 CCS_CLI 导入路径、修复 ccs send 参数顺序、移除 /loop 注入、改进异常日志记录、修复 _sync_step_results 双写问题",
+        "stats": "+18 -22",
+        "key_changes": [
+          "导入 CCS_CLI 路径从 paths 模块（统一入口）",
+          "修改 step 处理逻辑：所有 notified/running 状态都进入 _tick() 处理超时/催办/升级，不再仅对 exit_condition 步骤",
+          "移除 lifecycle.manager 已写入 step_results 后的重复写入",
+          "改进异常日志：用 LOGGER.exception 替换 pass",
+          "移除 _check_session_alive 中的 /loop 注入（由 lifecycle.manager.handle_loop 统一管理）",
+          "CCS 拉起模式从 ondemand 改为 loop（确保 tmux 会话持续存在）",
+          "修复 ccs send 参数顺序：删除多余的 workflow_engine 参数",
+          "替换硬编码的 ccs.py 路径构造为 CCS_CLI 变量"
+        ]
+      }
+    },
+    "hermes-session-roles": {
+      "status": "no committed changes; untracked file test_wf_e2e.py only"
+    }
+  },
+  "ccs_sessions": {
+    "running_tmux_sessions": [
+      {"name": "ccs-product_architect", "created": "2026-07-26T01:41:15Z", "pid": null, "lifecycle": "ondemand"},
+      {"name": "ccs-scout", "created": "2026-07-26T02:01:33Z", "pid": 1464735, "lifecycle": "infinite"},
+      {"name": "ccs-workflow_engine", "created": "2026-07-26T01:43:02Z", "pid": null, "lifecycle": "ondemand"}
+    ],
+    "sentinel_files": [
+      "/tmp/ccs-sentinels/engineer.json",
+      "/tmp/ccs-sentinels/product_architect.json",
+      "/tmp/ccs-sentinels/scout.json",
+      "/tmp/ccs-sentinels/workflow_engine.json"
+    ],
+    "conversation_history": null,
+    "notes": "All sentinel records show last_watchdog_check=0.0 and last_turn_check=0.0 indicating watchdog/turn_tracker threads never activated. engineer/product_architect/workflow_engine have pid=0 and empty tmux_session (ondemand lifecycle). Only scout has actual pid and tmux_session."
+  },
+  "sister_bus_unread": {
+    "total_unread": 30,
+    "categories_summary": {
+      "architecture": "~15 messages (ccs_send_fallback failures, cluster change notification, auto-v5 score report)",
+      "reflexion_lesson": "~8 messages (STALE_HEARTBEAT: 1887xxx sec old - watchdog reporting stale CCS sessions)",
+      "task_spec": "~4 messages (needs_implementation @scout/@engineer workflow tasks)",
+      "ccs_health": "1 message (cluster change notification: 2->3, sentinel 3->4)"
+    },
+    "key_observations": [
+      "Most CCS send fallbacks fail because target CCS is not running (ondemand lifecycle never started actual tmux session)",
+      "STALE_HEARTBEAT messages show heartbeats ~1,888,000 sec old (approx 22 days) - severe watchdog failure",
+      "Workflow engine's task dispatch to scout failed at '三源验证拒绝' (triple-source verification reject)",
+      "Cluster changed from 2 to 3 CCS sessions per last ccs_health notice"
+    ]
+  }
+}

@@ -68,8 +68,8 @@ def main():
                          help="轮次超时秒数（默认 300）")
     p_start.add_argument("--workspace", default="",
                          help="工作空间名（默认同 role），设置后 tmux 在对应 ~/ccs-workspaces/<name>/ 启动")
-    p_start.add_argument("--drive", default="loop",
-                         help="驱动方式: loop / feed / both（默认 loop）")
+    p_start.add_argument("--drive", default="",
+                         help="驱动方式: loop / feed / ondemand（默认从 persona JSON 读取）")
     p_start.add_argument("--feed-cat", default="",
                          help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
     p_start.add_argument("--route-policy", default="sticky",
@@ -259,13 +259,10 @@ def main():
         from ccs_socket import CCSStreamer
 
         client = CCSStreamer(args.role)
-        if client.start(lambda chunk: print(chunk, end="", flush=True)):
-            try:
-                import time
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                client.stop()
+        # ponytail: CCSStreamer.start() returns None; the if/while/True/sleep
+        # block was dead code.  The daemon (sister_agent_daemon.py) is the
+        # real runtime; stream is only used for on-demand tailing.
+        client.start(lambda chunk: print(chunk, end="", flush=True))
 
     elif args.command == "health":
         result = health_check(args.role)

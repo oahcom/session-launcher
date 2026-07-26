@@ -12,6 +12,7 @@ __all__ = [
 ]
 
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -32,12 +33,34 @@ from ops.sentinel import (
 
 
 def _is_alive(tmux_name: str) -> bool:
+    """双检：tmux session 存在 + pane 内 claude 进程存活。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],
             capture_output=True, timeout=5
         )
-        return r.returncode == 0
+        if r.returncode != 0:
+            return False
+        # 再查 pane PID 对应的 claude 进程是否存活
+        r2 = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=3
+        )
+        if r2.stdout.strip().isdigit():
+            pane_pid = r2.stdout.strip()
+            r3 = subprocess.run(
+                ["pgrep", "-P", pane_pid, "-f", "claude"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r3.stdout.strip():
+                return True
+            # 如果 pane_pid 本身还活着（claude 就是直接子进程）
+            try:
+                os.kill(int(pane_pid), 0)
+                return True
+            except OSError:
+                return False
+        return True  # 无 PID 信息时信任 tmux
     except Exception:
         return False
 
@@ -83,11 +106,13 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
     """守护线程主循环。异常不退出，记录后继续。"""
     partner_tmux = f"ccs-{partner_role}"
     tag = f"watchdog:{this_role}"
+    _restarting_self = False
 
     while True:
         try:
             time.sleep(interval)
 
+            # 检查伙伴存活
             alive = _is_alive(partner_tmux)
 
             # 更新本方哨兵的健康状态
@@ -95,29 +120,40 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
                           last_watchdog_check=time.time(),
                           watchdog_ok=alive)
 
-            if alive:
-                continue
+            if not alive:
+                _log_info(tag, f"partner {partner_role} 已死")
 
-            _log_info(tag, f"partner {partner_role} 已死")
+                if not auto_restart:
+                    _audit_monitor("伙伴死亡-不重启",
+                        f"{this_role} 检测到 {partner_role} 死亡，auto_restart=False 跳过")
+                    _log_info(tag, "未配置 auto-restart，跳过")
+                    continue
 
-            if not auto_restart:
-                _audit_monitor("伙伴死亡-不重启",
-                    f"{this_role} 检测到 {partner_role} 死亡，auto_restart=False 跳过")
-                _log_info(tag, "未配置 auto-restart，跳过")
-                continue
+                _audit_monitor("伙伴死亡-自动重启",
+                    f"{this_role} 检测到 {partner_role} 死亡，正在自动重启",
+                    src=this_role)
+                _log_info(tag, f"正在重启 {partner_role}...")
+                time.sleep(restart_delay)
+                _restart_partner(partner_role)
 
-            _audit_monitor("伙伴死亡-自动重启",
-                f"{this_role} 检测到 {partner_role} 死亡，正在自动重启",
-                src=this_role)
-            _log_info(tag, f"正在重启 {partner_role}...")
-            time.sleep(restart_delay)
-            _restart_partner(partner_role)
+                # 更新本方 restart_count
+                s = read_sentinel(this_role)
+                if s:
+                    s.health.restart_count += 1
+                    write_sentinel(s)
 
-            # 更新本方 restart_count
-            s = read_sentinel(this_role)
-            if s:
-                s.health.restart_count += 1
-                write_sentinel(s)
+            # 自体存活检查：本方 CCS 进程是否还在
+            if _restarting_self:
+                continue  # 正在自愈中，跳过本轮
+            self_alive = _is_alive(f"ccs-{this_role}")
+            if not self_alive:
+                _log_info(tag, f"自身 CCS ccs-{this_role} 已死，尝试重启")
+                _audit_monitor("自体死亡-自动重启",
+                    f"watchdog 检测到自身 CCS ccs-{this_role} 死亡，发起重启",
+                    src=this_role)
+                _restarting_self = True
+                _restart_partner(this_role)
+                _restarting_self = False
         except Exception as e:
             _log_info(tag, f"异常: {e}，等待下一轮重试")
             time.sleep(interval)

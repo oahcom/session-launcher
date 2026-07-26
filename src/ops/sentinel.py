@@ -90,6 +90,7 @@ class CcsSentinel:
     pid: Optional[int] = None
     started_at: float = 0.0
     lifecycle: str = "infinite"
+    drive: str = ""
     partners: list[str] = field(default_factory=list)
     bus_track: str = ""
     bus_timeout: int = 300
@@ -103,7 +104,7 @@ class CcsSentinel:
             "tmux_session": self.tmux_session, "pid": self.pid,
             "started_at": self.started_at, "lifecycle": self.lifecycle,
             "partners": self.partners, "bus_track": self.bus_track,
-            "bus_timeout": self.bus_timeout, "session_id": self.session_id,
+            "drive": self.drive, "bus_timeout": self.bus_timeout, "session_id": self.session_id,
             "engine": self.engine,
             "health": {
                 "last_watchdog_check": self.health.last_watchdog_check,
@@ -217,34 +218,38 @@ def _get_started_at(tmux_session: str) -> float:
     return time.time()
 
 
-# ── 文件 API（外部脚本 + 内部调用）──
+# ── 哨兵文件级锁（防止多线程 read-modify-write 竞态）──
+_SENTINEL_LOCK = threading.Lock()
 
 def write_sentinel(s: CcsSentinel) -> Path:
-    """写入哨兵 /tmp/ccs-sentinels/{role}.json。"""
+    """写入哨兵 /tmp/ccs-sentinels/{role}.json（线程安全）。"""
     path = SENTINEL_DIR / f"{s.role}.json"
-    path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
+    with _SENTINEL_LOCK:
+        path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
     return path
 
 
 def delete_sentinel(role: str) -> bool:
-    """删除哨兵 + 健康文件。"""
+    """删除哨兵 + 健康文件（线程安全）。"""
     deleted = False
-    for d in (SENTINEL_DIR, _HEALTH_DIR):
-        path = d / f"{role}.json"
-        if path.exists():
-            path.unlink()
-            deleted = True
+    with _SENTINEL_LOCK:
+        for d in (SENTINEL_DIR, _HEALTH_DIR):
+            path = d / f"{role}.json"
+            if path.exists():
+                path.unlink()
+                deleted = True
     return deleted
 
 
 def read_sentinel(role: str) -> Optional[CcsSentinel]:
-    """读哨兵：文件优先 → tmux 回退。"""
+    """读哨兵：文件优先 → tmux 回退（线程安全）。"""
     path = SENTINEL_DIR / f"{role}.json"
-    if path.exists():
-        try:
-            return CcsSentinel.from_dict(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError):
-            pass
+    with _SENTINEL_LOCK:
+        if path.exists():
+            try:
+                return CcsSentinel.from_dict(json.loads(path.read_text()))
+            except (json.JSONDecodeError, OSError):
+                pass
 
     # 回退：tmux 实时派生（文件不存在时）
     for prefix in ("ccs", "cdx"):
@@ -267,8 +272,9 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                     engine=engine,
                 )
                 if role_json:
-                    sentinel.partners = role_json.get("partners", [])
-                    sentinel.bus_track = role_json.get("bus_track", "")
+                    # partners/bus_track 是运行时参数(不在JSON schema中)，不从此处读取
+                    sentinel.lifecycle = role_json.get("lifecycle", "infinite")
+                    sentinel.drive = role_json.get("drive", "")
                 health_path = _HEALTH_DIR / f"{role}.json"
                 if health_path.exists():
                     try:
@@ -283,17 +289,18 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
 
 
 def list_sentinels() -> list[CcsSentinel]:
-    """列出哨兵：合并文件 + tmux 实时数据，活 PID 优先。"""
+    """列出哨兵：合并文件 + tmux 实时数据，活 PID 优先（线程安全）。"""
     result: dict[str, CcsSentinel] = {}
 
-    # 1. 读文件
+    # 1. 读文件（持锁避免读到并发写入的 torn 数据）
     for path in sorted(SENTINEL_DIR.glob("*.json")):
         role = path.stem
-        try:
-            s = CcsSentinel.from_dict(json.loads(path.read_text()))
-            result[role] = s
-        except (json.JSONDecodeError, OSError):
-            pass
+        with _SENTINEL_LOCK:
+            try:
+                s = CcsSentinel.from_dict(json.loads(path.read_text()))
+                result[role] = s
+            except (json.JSONDecodeError, OSError):
+                pass
 
     # 2. 读 tmux（补充未被文件覆盖的活 session，或更新 pid）
     for tmux_name in sorted(_list_tmux_sessions()):
@@ -313,8 +320,8 @@ def list_sentinels() -> list[CcsSentinel]:
             engine=engine,
         )
         if role_json:
-            sentinel.partners = role_json.get("partners", [])
-            sentinel.bus_track = role_json.get("bus_track", "")
+            sentinel.lifecycle = role_json.get("lifecycle", "infinite")
+            sentinel.drive = role_json.get("drive", "")
         health_path = _HEALTH_DIR / f"{role}.json"
         if health_path.exists():
             try:
@@ -324,7 +331,8 @@ def list_sentinels() -> list[CcsSentinel]:
                 pass
         result[role] = sentinel
 
-    return list(result.values())
+    # filter out zombie sentinels (pid=0/None + empty tmux)
+    return [s for s in result.values() if s.tmux_session or (s.pid or 0) > 0]
 
 
 def update_health(role: str, **kwargs) -> bool:

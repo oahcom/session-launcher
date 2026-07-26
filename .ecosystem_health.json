@@ -1,5 +1,5 @@
 {
-  "timestamp": 1784975388.1831675,
+  "timestamp": 1785006001.1550512,
   "checks": [
     {
       "name": "所有 .py 文件编译通过",
@@ -8,8 +8,8 @@
     },
     {
       "name": "核心模块全部可导入",
-      "ok": true,
-      "detail": ""
+      "ok": false,
+      "detail": "失败: ['launcher', 'events.notify', 'routing.gateway']"
     },
     {
       "name": "workflows.db 表完整",
@@ -27,8 +27,8 @@
       "detail": "no tests ran in 0.01s"
     }
   ],
-  "passed": 4,
-  "failed": 1,
+  "passed": 3,
+  "failed": 2,
   "test_output": "no tests ran in 0.01s",
-  "status": "⚠ 1 项异常"
+  "status": "⚠ 2 项异常"
 }
