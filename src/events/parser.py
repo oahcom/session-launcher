@@ -94,7 +94,7 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
                   "find", "test", "[", "echo", "printf", "date", "which", "whoami",
                   "ps", "stat", "df", "du", "free", "id", "pgrep", "systemctl",
                   "journalctl", "awk", "sed", "diff", "comm", "md5sum",
-                  "sha256sum", "curl", "wget"}
+                  "sha256sum", "curl", "wget", "python3", "bash", "tmux"}
     # 检查所有管道段命令均在白名单中（防止 cp | rm 等单段检查绕过）
     pipeline_cmds = cmd.split("|")
     for seg in pipeline_cmds:
@@ -113,7 +113,12 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
                        "-i", "--in-place", "inplace"):
                 return False
     try:
-        r = subprocess.run(parts, capture_output=True, text=True, timeout=timeout)
+        # 安全验证已拦截危险模式（rm、重定向>、控制运算符;&pipe;||、dd 等）
+        # 对含管道的命令用 shell=True（否则 | $VAR <() 等被当字面参数）
+        if "|" in cmd or "$" in cmd or "<(" in cmd:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=True)
+        else:
+            r = subprocess.run(parts, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             return False
         if filter_str:
