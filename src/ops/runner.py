@@ -1,6 +1,7 @@
 """ops/runner.py — 运行循环 + 健康仪表板（从 core.py 提取）"""
 
 import os
+import subprocess
 import sys
 import time
 import socket
@@ -45,14 +46,18 @@ def dashboard() -> str:
     try:
         r = subprocess.run(
             ["python3", "-c",
-             "import sys; sys.path.insert(0, '/home/administrator/session-pipeline/src'); "
-             "from router import get_router; r = get_router(); print(r.routing)"],
+             "import logging, os; logging.disable(logging.CRITICAL); "
+             "import sys; from pathlib import Path; "
+             "sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'session-pipeline' / 'src')); "
+             "from routing.router import get_router; r = get_router(); print(r.routing)"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:
-            import json as _json
-            import ast as _ast
-            routing = _ast.literal_eval(r.stdout)
+            import ast
+            for _line in reversed(r.stdout.strip().split("\n")):
+                if _line.strip():
+                    routing = ast.literal_eval(_line)
+                    break
             for role, data in sorted(routing.items()):
                 cat_count = len(data.get("produce", []))
                 c = data.get("consume", [])
