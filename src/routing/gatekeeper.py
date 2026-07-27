@@ -11,10 +11,13 @@ cross_role_router.py — 跨角色路由层（三源验证）
 """
 
 import json
+import logging
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS
 
@@ -116,7 +119,8 @@ def _load_workgroup_from_personas() -> dict[str, set[str]] | None:
             if roles:
                 matrix[name] = roles
                 loaded_any = True
-    except Exception:
+    except Exception as e:
+        logger.warning("_load_workgroup_from_personas: %s", e, exc_info=True)
         return None  # 异常 → 使用硬编码回退
 
     return matrix if loaded_any else None
@@ -191,7 +195,13 @@ class CrossRoleRouter:
         msg_sensitivity = classify_message_content(message)
         allowed_targets = WORKGROUP_MATRIX.get(source, set())
 
-        # 🟢 绿消息（自由）→ 直接放行, 不检查来源
+        # 全类型消息统一校验: 未知来源且不在 workgroup → 拒绝
+        if not allowed_targets and not source in ("cli", "loop", "pipeline", "cron-worker"):
+            self._log_violation(source, target, message,
+                                f"unknown source {source}, not in workgroup matrix")
+            return False
+
+        # 🟢 绿消息（自由）→ 放行
         if msg_sensitivity == "green":
             return True
 
@@ -267,7 +277,7 @@ class CrossRoleRouter:
         else:
             details.append("sentinel=not_found")
 
-        sources_ok = matches >= 2 or (bool(sentinel_ok) and bool(claimed_source))
+        sources_ok = matches >= 2
         return {
             "sources_ok": sources_ok,
             "match_count": matches,
@@ -300,7 +310,8 @@ class CrossRoleRouter:
             if r.stdout.strip() and not r.stdout.strip().startswith("No results"):
                 return "partial"
             return ""
-        except Exception:
+        except Exception as e:
+            logger.warning("_check_bus_source: %s", e, exc_info=True)
             return ""
 
     def _check_db_assigner(self, claimed_source: str) -> str:
@@ -326,7 +337,8 @@ class CrossRoleRouter:
                 return ""
             finally:
                 conn.close()
-        except Exception:
+        except Exception as e:
+            logger.warning("_check_db_assigner: %s", e, exc_info=True)
             return ""
 
     def _check_sentinel(self, claimed_source: str) -> bool:
@@ -339,7 +351,8 @@ class CrossRoleRouter:
             if r.returncode != 0:
                 return False
             sessions = set(r.stdout.strip().split("\n"))
-        except Exception:
+        except Exception as e:
+            logger.warning("_check_sentinel: %s", e, exc_info=True)
             return False
         # 检查主实例
         if make_tmux_name(claimed_source, 0) in sessions:
