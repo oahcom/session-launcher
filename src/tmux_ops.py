@@ -10,6 +10,9 @@ __all__ = [
     '_active_codex_session_count',
     '_wait_codex_ready',
     'TMUX_PREFIX',
+    'MAX_INSTANCES',
+    'make_tmux_name',
+    'parse_tmux_name',
     'CODEX_TMUX_PREFIX',
     'CODEX_LOOP_DELAY',
     'CODEX_OUTPUT_MAX',
@@ -36,6 +39,41 @@ from typing import Optional
 TMUX_PREFIX = "ccs-"
 
 CODEX_TMUX_PREFIX = "cdx-"
+
+# 单个角色的最大扩展实例数（用于多 instance 遍历检查）
+MAX_INSTANCES = 16
+
+
+def make_tmux_name(role: str, instance_id: int = 0) -> str:
+    """生成 tmux session 名。
+
+    instance_id=0 时保持旧格式 ccs-{role}（向后兼容），
+    >0 时扩展为 ccs-{role}-{id} 实现角色多 session。
+    """
+    if instance_id:
+        return f"ccs-{role}-{instance_id}"
+    return f"ccs-{role}"
+
+
+def parse_tmux_name(tmux_name: str) -> tuple[str, int]:
+    """反向解析 tmux session 名为 (role, instance_id)。
+
+    支持格式: ccs-{role} → (role, 0)
+              ccs-{role}-{id} → (role, id)
+              cdx-{role} → (role, 0)   (Codex)
+              cdx-{role}-{id} → (role, id)
+    非 ccs-/cdx- 前缀返回 ("", 0)。
+    """
+    if tmux_name.startswith("ccs-"):
+        rest = tmux_name[4:]
+    elif tmux_name.startswith("cdx-"):
+        rest = tmux_name[4:]
+    else:
+        return ("", 0)
+    m = re.search(r'^(.+)-(\d+)$', rest)
+    if m:
+        return (m.group(1), int(m.group(2)))
+    return (rest, 0)
 
 CODEX_SENTINEL_DIR = Path.home() / ".hermes" / "run" / "cdx-sentinels"
 

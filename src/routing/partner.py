@@ -61,10 +61,10 @@ def _send(*a: Any, **kw: Any) -> Any:
 def _bus_client() -> Any:
     return _core().BUS_CLIENT
 
-def is_ccs_running(role_name: str) -> bool:
+def is_ccs_running(role_name: str, instance_id: int = 0) -> bool:
     """检查 CCS 是否在运行（自动加 ccs- tmux 前缀）。"""
-    from tmux_ops import _is_alive
-    return _is_alive(f"ccs-{role_name}")
+    from tmux_ops import _is_alive, make_tmux_name
+    return _is_alive(make_tmux_name(role_name, instance_id))
 
 from paths import WORKFLOWS_DB as WORKFLOW_DB
 
@@ -219,21 +219,26 @@ class PartnerClient:
 
     # ── Layer 2: Status ─────────────────────────────────────
 
-    def resolve(self, role: str) -> dict:
+    def resolve(self, role: str, instance_id: int = 0) -> dict:
         """完整的伙伴状态解析（哨兵 + tmux + workflow DB）。
 
-        返回字段：
+        参数:
+          role: 角色名
+          instance_id: 实例编号（0=主实例, >0=扩展实例）
+
+        返回字段:
           role, alive, pid, lifecycle, pending_tasks,
           last_active_sec, current_task_id, bus_msg_age
         """
-        sentinel = read_sentinel(role)
-        alive = is_ccs_running(role)
+        from tmux_ops import make_tmux_name
+        sentinel = read_sentinel(role, instance_id)
+        alive = is_ccs_running(role, instance_id)
         tmux_alive = alive
 
         # PID
         pid = sentinel.pid if sentinel else None
         if alive:
-            tmux_name = f"ccs-{role}"
+            tmux_name = make_tmux_name(role, instance_id)
             pid = _find_pid(tmux_name) or pid
 
         # lifecycle

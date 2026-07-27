@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-sentinel.py — 哨兵系统（统一路径：/tmp/ccs-sentinels/）
+sentinel.py — 哨兵系统
 
-哨兵文件写入 /tmp/ccs-sentinels/{role}.json，供外部脚本/ccs-status 读取。
-watchdog 状态额外写入 /tmp/ccs-health/{role}.json（进程健康数据）。
+哨兵文件写入 {SENTINEL_DIR}/{role}.json，供外部脚本/ccs-status 读取。
+watchdog 状态额外写入 {_HEALTH_DIR}/{role}.json（进程健康数据）。
 """
 __all__ = [
     'CcsSentinel',
@@ -27,6 +27,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+# 延迟导入 parse_tmux_name（在 _role_name_from_tmux 和 list_sentinels 中用到）
+# 在模块级别不导入，避免循环依赖
 
 # ── 跨 Session 内存（omux 模式，持久化到哨兵文件）──
 _MEMORY_DIR = Path.home() / ".hermes" / "run" / "ccs-cross-session-memory"
@@ -74,7 +77,7 @@ _HEALTH_LOCK = threading.RLock()
 
 @dataclass
 class CcsHealth:
-    """健康状态字段（持久化到 /tmp/ccs-health/{role}.json）。"""
+    """健康状态字段（持久化到 ~/.hermes/run/ccs-health/{role}.json）。"""
     last_watchdog_check: float = 0.0
     watchdog_ok: bool = True
     last_turn_check: float = 0.0
@@ -83,9 +86,10 @@ class CcsHealth:
 
 @dataclass
 class CcsSentinel:
-    """哨兵数据——持久化到 /tmp/ccs-sentinels/{role}.json。"""
+    """哨兵数据——持久化到 {SENTINEL_DIR}/{role}.json (instance_id=0) 或 {role}-{id}.json (>0)。"""
     role: str = ""
     title: str = ""
+    instance_id: int = 0  # 0=单实例/主实例, >0=扩展实例
     tmux_session: str = ""
     pid: Optional[int] = None
     started_at: float = 0.0
@@ -98,9 +102,17 @@ class CcsSentinel:
     engine: str = "ccs"
     health: CcsHealth = field(default_factory=CcsHealth)
 
+    @property
+    def sentinel_key(self) -> str:
+        """哨兵文件 key：instance_id=0 时用 role，>0 时用 role-{id}。"""
+        if self.instance_id:
+            return f"{self.role}-{self.instance_id}"
+        return self.role
+
     def to_dict(self) -> dict:
         return {
             "role": self.role, "title": self.title,
+            "instance_id": self.instance_id,
             "tmux_session": self.tmux_session, "pid": self.pid,
             "started_at": self.started_at, "lifecycle": self.lifecycle,
             "partners": self.partners, "bus_track": self.bus_track,
@@ -133,6 +145,7 @@ class CcsSentinel:
         return cls(
             role=data.get("role", ""),
             title=data.get("title", ""),
+            instance_id=data.get("instance_id", 0),
             tmux_session=data.get("tmux_session", ""),
             pid=data.get("pid"),
             started_at=data.get("started_at", 0.0),
@@ -172,7 +185,17 @@ def _list_tmux_sessions() -> set[str]:
 
 
 def _role_name_from_tmux(tmux_name: str) -> str:
+    """从 tmux name 提取角色名（去掉 instance 后缀）。"""
+    _role, _ = _parse_tmux_name(tmux_name)
+    if _role:
+        return _role
     return tmux_name.removeprefix("ccs-").removeprefix("cdx-")
+
+
+def _parse_tmux_name(tmux_name: str) -> tuple[str, int]:
+    """从 tmux name 解析 (role, instance_id)，延迟导入防循环。"""
+    from tmux_ops import parse_tmux_name as _ptn  # fmt: skip — 延迟导入防循环
+    return _ptn(tmux_name)
 
 
 def _engine_from_tmux(tmux_name: str) -> str:
@@ -221,29 +244,72 @@ def _get_started_at(tmux_session: str) -> float:
 # ── 哨兵文件级锁（防止多线程 read-modify-write 竞态）──
 _SENTINEL_LOCK = threading.Lock()
 
+def _sentinel_file_path(key: str) -> Path:
+    """哨兵文件路径：SENTINEL_DIR / {key}.json。key 为 role 或 role-{id}。"""
+    return SENTINEL_DIR / f"{key}.json"
+
+
+def _health_file_path(key: str) -> Path:
+    """健康文件路径：_HEALTH_DIR / {key}.json。"""
+    return _HEALTH_DIR / f"{key}.json"
+
+
 def write_sentinel(s: CcsSentinel) -> Path:
-    """写入哨兵 /tmp/ccs-sentinels/{role}.json（线程安全）。"""
-    path = SENTINEL_DIR / f"{s.role}.json"
+    """写入哨兵文件（线程安全）。
+    instance_id=0 → {role}.json，>0 → {role}-{id}.json。
+    """
+    path = _sentinel_file_path(s.sentinel_key)
     with _SENTINEL_LOCK:
         path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
     return path
 
 
-def delete_sentinel(role: str) -> bool:
-    """删除哨兵 + 健康文件（线程安全）。"""
+def delete_sentinel(key_or_role: str, instance_id: int = 0) -> bool:
+    """删除哨兵 + 健康文件（线程安全）。
+    支持两种调用方式：
+      delete_sentinel("engineer")          → 删 engineer.json
+      delete_sentinel("engineer", 2)       → 删 engineer-2.json
+      delete_sentinel("engineer-2")        → 删 engineer-2.json
+    """
+    if instance_id:
+        key = f"{key_or_role}-{instance_id}"
+    else:
+        key = key_or_role
+    key = key.removesuffix(".json")  # 防御：如果调用方传了 .json
     deleted = False
     with _SENTINEL_LOCK:
         for d in (SENTINEL_DIR, _HEALTH_DIR):
-            path = d / f"{role}.json"
+            path = d / f"{key}.json"
             if path.exists():
                 path.unlink()
                 deleted = True
     return deleted
 
 
-def read_sentinel(role: str) -> Optional[CcsSentinel]:
-    """读哨兵：文件优先 → tmux 回退（线程安全）。"""
-    path = SENTINEL_DIR / f"{role}.json"
+def read_sentinel(key_or_role: str, instance_id: int = 0) -> Optional[CcsSentinel]:
+    """读哨兵：文件优先 → tmux 回退（线程安全）。
+    支持两种调用方式：
+      read_sentinel("engineer")           → 读 engineer.json（兼容旧格式）
+      read_sentinel("engineer", 2)        → 读 engineer-2.json
+      read_sentinel("engineer-2")         → 读 engineer-2.json
+    """
+    if instance_id:
+        key = f"{key_or_role}-{instance_id}"
+    else:
+        key = key_or_role
+    key = key.removesuffix(".json")
+    # 解析 role: engineer-2 → (engineer, 2); ccs-coordinator → (ccs-coordinator, 0)
+    _dp = key.rsplit("-", 1)
+    if len(_dp) == 2 and _dp[1].isdigit() and not _dp[1].startswith("0"):
+        role = _dp[0]
+        parsed_inst = int(_dp[1])
+    else:
+        role = key
+        parsed_inst = 0
+    if not instance_id:
+        instance_id = parsed_inst
+
+    path = _sentinel_file_path(key)
     with _SENTINEL_LOCK:
         if path.exists():
             try:
@@ -253,7 +319,10 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
 
     # 回退：tmux 实时派生（文件不存在时）
     for prefix in ("ccs", "cdx"):
-        tmux_name = f"{prefix}-{role}"
+        if instance_id:
+            tmux_name = f"{prefix}-{role}-{instance_id}"
+        else:
+            tmux_name = f"{prefix}-{key}"  # 兼容 old ccs-role 格式
         try:
             r = subprocess.run(
                 ["tmux", "has-session", "-t", tmux_name],
@@ -265,6 +334,7 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                 sentinel = CcsSentinel(
                     role=role,
                     title=role_json.get("title", role) if role_json else role,
+                    instance_id=instance_id,
                     tmux_session=tmux_name,
                     pid=_get_pid(tmux_name),
                     started_at=_get_started_at(tmux_name),
@@ -272,10 +342,9 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
                     engine=engine,
                 )
                 if role_json:
-                    # partners/bus_track 是运行时参数(不在JSON schema中)，不从此处读取
                     sentinel.lifecycle = role_json.get("lifecycle", "infinite")
                     sentinel.drive = role_json.get("drive", "")
-                health_path = _HEALTH_DIR / f"{role}.json"
+                health_path = _health_file_path(key)
                 if health_path.exists():
                     try:
                         hd = json.loads(health_path.read_text())
@@ -290,29 +359,37 @@ def read_sentinel(role: str) -> Optional[CcsSentinel]:
 
 
 def list_sentinels() -> list[CcsSentinel]:
-    """列出哨兵：合并文件 + tmux 实时数据，活 PID 优先（线程安全）。"""
+    """列出哨兵：合并文件 + tmux 实时数据，活 PID 优先（线程安全）。
+
+    文件名格式：{role}.json（instance_id=0）或 {role}-{instance_id}.json（>0）。
+    使用 sentinel_key 作为 result dict 的 key 而非 role，避免多 instance 互相覆盖。
+    """
     result: dict[str, CcsSentinel] = {}
 
     # 1. 读文件（持锁避免读到并发写入的 torn 数据）
     for path in sorted(SENTINEL_DIR.glob("*.json")):
-        role = path.stem
+        key = path.stem  # "engineer" 或 "engineer-2"
         with _SENTINEL_LOCK:
             try:
                 s = CcsSentinel.from_dict(json.loads(path.read_text()))
-                result[role] = s
+                result[s.sentinel_key] = s
             except (json.JSONDecodeError, OSError):
                 pass
 
     # 2. 读 tmux（补充未被文件覆盖的活 session，或更新 pid）
     for tmux_name in sorted(_list_tmux_sessions()):
-        role = _role_name_from_tmux(tmux_name)
+        role, instance_id = _parse_tmux_name(tmux_name)
+        if not role:
+            continue
         pid = _get_pid(tmux_name)
         if pid is None:
             continue  # 死 session 不覆盖
+        key = role if instance_id == 0 else f"{role}-{instance_id}"
         engine = _engine_from_tmux(tmux_name)
         role_json = _get_role_json(role)
         sentinel = CcsSentinel(
             role=role,
+            instance_id=instance_id,
             title=role_json.get("title", role) if role_json else role,
             tmux_session=tmux_name,
             pid=pid,
@@ -323,7 +400,7 @@ def list_sentinels() -> list[CcsSentinel]:
         if role_json:
             sentinel.lifecycle = role_json.get("lifecycle", "infinite")
             sentinel.drive = role_json.get("drive", "")
-        health_path = _HEALTH_DIR / f"{role}.json"
+        health_path = _health_file_path(key)
         if health_path.exists():
             try:
                 hd = json.loads(health_path.read_text())
@@ -331,16 +408,19 @@ def list_sentinels() -> list[CcsSentinel]:
                                               if k in CcsHealth.__dataclass_fields__})
             except (json.JSONDecodeError, OSError):
                 pass
-        result[role] = sentinel
+        result[key] = sentinel
 
     # filter out zombie sentinels (pid=0/None + empty tmux)
     return [s for s in result.values() if s.tmux_session or (s.pid or 0) > 0]
 
 
-def update_health(role: str, **kwargs) -> bool:
-    """更新 /tmp/ccs-health/{role}.json 中的 watchdog 状态。"""
+def update_health(role: str, instance_id: int = 0, **kwargs) -> bool:
+    """更新 ccs-health 中的 watchdog 状态。
+    instance_id=0 → {role}.json，>0 → {role}-{id}.json。
+    """
+    key = f"{role}-{instance_id}" if instance_id else role
     with _HEALTH_LOCK:
-        path = _HEALTH_DIR / f"{role}.json"
+        path = _health_file_path(key)
         health = {}
         if path.exists():
             try:

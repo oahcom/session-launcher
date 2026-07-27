@@ -349,7 +349,7 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     """将角色契约写入 workspace 级 CLAUDE.md（WORKSPACE_SYS marker 之后）。
 
     收敛策略：CLAUDE.md 只放身份契约（产出/消费/协作组/验证标准/驱动方式）。
-    完整方法论 → Skill 文件（/skill load 按需加载）。
+    完整方法论 → Skill 文件（Skill 目录自动发现）。
     角色 prompt → ccs send 注入对话历史。
 
     自动处理 `{name}` 和 `ccs-{name}` 双路径，同时更新所有匹配的 workspace。
@@ -365,7 +365,7 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         return "skipped (no workspace)"
 
     # ── 收敛：只写契约块（身份关系），不 dump 全文知识 ──
-    # 完整方法论 → Skill 文件（/skill load 按需加载）
+    # 完整方法论 → Skill 文件（Skill 目录自动发现）
     # 角色 prompt → role_assembler 编译产物（ccs send 注入对话）
     # CLAUDE.md 只保留 "我是谁、跟谁协作、验证标准"
     contract = _contract_block(role)

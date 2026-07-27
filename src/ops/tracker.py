@@ -55,9 +55,9 @@ def _audit_monitor(decision: str, detail: str, src: str = ""):
 
 
 def _run(this_role: str, bus_cat: str, timeout_sec: int,
-         interval: int, partners: list[str]):
+         interval: int, partners: list[str], instance_id: int = 0):
     """轮次追踪主循环。异常不退出，记录后继续。"""
-    tag = f"tracker:{this_role}"
+    tag = f"tracker:{this_role}[{instance_id}]"
     last_reminder = 0.0
 
     while True:
@@ -73,7 +73,8 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             src = latest.get("src", "")
 
             # 更新本方哨兵的 bus 消息年龄
-            update_health(this_role, last_bus_msg_age=age, last_turn_check=time.time())
+            update_health(this_role, instance_id=instance_id,
+                          last_bus_msg_age=age, last_turn_check=time.time())
 
             # 未超时 → 跳过
             if age <= timeout_sec:
@@ -87,15 +88,16 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             if now - last_reminder < 1800:
                 continue
 
-            # 交叉检查伙伴存活
+            # 交叉检查伙伴存活（所有 instance）
             partner_alive = False
             for p in partners:
                 p_alive = False
                 try:
                     import subprocess
-                    from core import TMUX_PREFIX  # noqa: F811
+                    from tmux_ops import make_tmux_name
+                    tmux_name = make_tmux_name(p, instance_id)
                     r = subprocess.run(
-                        ["tmux", "has-session", "-t", f"{TMUX_PREFIX}{p}"],
+                        ["tmux", "has-session", "-t", tmux_name],
                         capture_output=True, timeout=5
                     )
                     p_alive = r.returncode == 0
@@ -129,13 +131,14 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
 def start_tracker(this_role: str, bus_cat: str,
                   timeout_sec: int = 300,
                   interval: int = 10,
-                  partners: Optional[list[str]] = None) -> threading.Thread:
+                  partners: Optional[list[str]] = None,
+                  instance_id: int = 0) -> threading.Thread:
     """启动轮次追踪线程。daemon=False 保持存活。"""
     t = threading.Thread(
         target=_run,
-        args=(this_role, bus_cat, timeout_sec, interval, partners or []),
+        args=(this_role, bus_cat, timeout_sec, interval, partners or [], instance_id),
         daemon=False,
-        name=f"tracker:{this_role}:{bus_cat}",
+        name=f"tracker:{this_role}:{bus_cat}:{instance_id}",
     )
     t.start()
     return t

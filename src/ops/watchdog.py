@@ -79,33 +79,33 @@ def _audit_monitor(decision: str, detail: str, src: str = ""):
         pass
 
 
-def _restart_partner(partner_role: str):
-    """从哨兵读取伙伴上下文并重启（保留 title/partners/bus_track 等配置）。
-
-    必须在 read_sentinel 之后才 delete_sentinel，否则上下文永远丢失。
-    """
+def _restart_partner(partner_role: str, instance_id: int = 0):
+    """从哨兵读取伙伴上下文并重启（保留 title/partners/bus_track 等配置）。"""
     from core import start  # 延迟导入打破循环
-    old = read_sentinel(partner_role)
-    # 读完旧上下文后才删除旧哨兵（防止并发重启时哨兵膨胀）
-    delete_sentinel(partner_role)
+    old = read_sentinel(partner_role, instance_id)
+    delete_sentinel(partner_role, instance_id)
     if old:
         result = start(partner_role, title=old.title,
                        partners=old.partners if old.partners else None,
                        auto_restart=True,
                        bus_track=old.bus_track,
                        bus_timeout=old.bus_timeout,
+                       instance_id=instance_id,
                        detach=True)
-        _log_info("watchdog", f"已发起 {partner_role} 重启: {result}")
+        _log_info("watchdog", f"已发起 {partner_role}[{instance_id}] 重启: {result}")
     else:
-        result = start(partner_role, detach=True)
-        _log_info("watchdog", f"已发起 {partner_role} 重启: {result}")
+        result = start(partner_role, instance_id=instance_id, detach=True)
+        _log_info("watchdog", f"已发起 {partner_role}[{instance_id}] 重启: {result}")
 
 
 def _run(this_role: str, partner_role: str, auto_restart: bool,
-         interval: int, restart_delay: int):
+         interval: int, restart_delay: int, instance_id: int = 0):
     """守护线程主循环。异常不退出，记录后继续。"""
-    partner_tmux = f"ccs-{partner_role}"
-    tag = f"watchdog:{this_role}"
+    tag = f"watchdog:{this_role}[{instance_id}]"
+
+    from tmux_ops import make_tmux_name
+    partner_tmux = make_tmux_name(partner_role, instance_id)
+    self_tmux = make_tmux_name(this_role, instance_id)
     _restarting_self = False
 
     while True:
@@ -116,7 +116,7 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
             alive = _is_alive(partner_tmux)
 
             # 更新本方哨兵的健康状态
-            update_health(this_role,
+            update_health(this_role, instance_id=instance_id,
                           last_watchdog_check=time.time(),
                           watchdog_ok=alive)
 
@@ -134,10 +134,10 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
                     src=this_role)
                 _log_info(tag, f"正在重启 {partner_role}...")
                 time.sleep(restart_delay)
-                _restart_partner(partner_role)
+                _restart_partner(partner_role, instance_id=instance_id)
 
                 # 更新本方 restart_count
-                s = read_sentinel(this_role)
+                s = read_sentinel(this_role, instance_id)
                 if s:
                     s.health.restart_count += 1
                     write_sentinel(s)
@@ -145,14 +145,14 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
             # 自体存活检查：本方 CCS 进程是否还在
             if _restarting_self:
                 continue  # 正在自愈中，跳过本轮
-            self_alive = _is_alive(f"ccs-{this_role}")
+            self_alive = _is_alive(self_tmux)
             if not self_alive:
-                _log_info(tag, f"自身 CCS ccs-{this_role} 已死，尝试重启")
+                _log_info(tag, f"自身 CCS {self_tmux} 已死，尝试重启")
                 _audit_monitor("自体死亡-自动重启",
-                    f"watchdog 检测到自身 CCS ccs-{this_role} 死亡，发起重启",
+                    f"watchdog 检测到自身 CCS {self_tmux} 死亡，发起重启",
                     src=this_role)
                 _restarting_self = True
-                _restart_partner(this_role)
+                _restart_partner(this_role, instance_id=instance_id)
                 _restarting_self = False
         except Exception as e:
             _log_info(tag, f"异常: {e}，等待下一轮重试")
@@ -169,40 +169,43 @@ AUTO_CONTINUE_THRESHOLD = 120  # 秒
 _AUTO_CONTINUE_LOCK = threading.Lock()
 _AUTO_CONTINUE_SENT: dict[str, float] = {}  # role -> last_sent_ts
 
-def check_auto_continue(role: str) -> bool:
+def check_auto_continue(role: str, instance_id: int = 0) -> bool:
     """检查是否需要 auto-continue。返回 True 如果发送了 continue。"""
     from core import _is_alive, _tmux_send
+    from tmux_ops import make_tmux_name
     now = __import__("time").time()
+    key = f"{role}[{instance_id}]"
     with _AUTO_CONTINUE_LOCK:
-        last_sent = _AUTO_CONTINUE_SENT.get(role, 0)
+        last_sent = _AUTO_CONTINUE_SENT.get(key, 0)
         if now - last_sent < AUTO_CONTINUE_THRESHOLD:
             return False
-    
-    tmux_name = f"ccs-{role}"
+
+    tmux_name = make_tmux_name(role, instance_id)
     if not _is_alive(tmux_name):
         return False
-    
+
     try:
         _tmux_send(tmux_name, "/continue")
-        _AUTO_CONTINUE_SENT[role] = now
+        _AUTO_CONTINUE_SENT[key] = now
         _audit_monitor("auto-continue",
-            f"{role} 无响应超过 {AUTO_CONTINUE_THRESHOLD}s，已发送 /continue",
+            f"{role}[{instance_id}] 无响应超过 {AUTO_CONTINUE_THRESHOLD}s，已发送 /continue",
             src=role)
-        _log.info("[auto-continue:%s] 发送 /continue 唤醒", role)
+        _log.info("[auto-continue:%s] 发送 /continue 唤醒", key)
         return True
     except Exception as e:
-        _log.warning("[auto-continue:%s] 失败: %s", role, e)
+        _log.warning("[auto-continue:%s] 失败: %s", key, e)
         return False
 def start_watchdog(this_role: str, partner_role: str,
                    auto_restart: bool = False,
                    interval: int = 30,
-                   restart_delay: int = 5) -> threading.Thread:
-    """启动守护线程。daemon=True 但需主线程保持存活（detach 模式由 caller 保证）。"""
+                   restart_delay: int = 5,
+                   instance_id: int = 0) -> threading.Thread:
+    """启动守护线程。instance_id 决定监控哪个实例的 tmux session。"""
     t = threading.Thread(
         target=_run,
-        args=(this_role, partner_role, auto_restart, interval, restart_delay),
+        args=(this_role, partner_role, auto_restart, interval, restart_delay, instance_id),
         daemon=False,
-        name=f"watchdog:{this_role}:{partner_role}",
+        name=f"watchdog:{this_role}:{partner_role}:{instance_id}",
     )
     t.start()
     return t

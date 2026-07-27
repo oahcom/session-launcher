@@ -77,6 +77,10 @@ def main():
                          help="路由策略")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
+    p_start.add_argument("--instance-id", type=int, default=0,
+                         help="实例编号: 0=主实例(默认), >0=扩展实例")
+    p_start.add_argument("--instances", type=int, default=0,
+                         help="批量启动 N 个实例（从 1 到 N），仅 detach 模式")
 
     # ── config ──
     p_cfg = sub.add_parser("config", help="查看/修改 ccs_config.json")
@@ -109,6 +113,8 @@ def main():
     # ── stop ──
     p_stop = sub.add_parser("stop", help="终止 CCS")
     p_stop.add_argument("role", help="角色名")
+    p_stop.add_argument("--instance-id", type=int, default=0,
+                        help="实例编号（默认 0=主实例）")
 
 
     # ── status ──
@@ -120,11 +126,15 @@ def main():
     p_send.add_argument("message", help="消息内容")
     p_send.add_argument("--from", dest="from_role", default="",
                         help="来源角色名（三源验证用）")
+    p_send.add_argument("--instance-id", type=int, default=0,
+                        help="实例编号（默认 0=主实例）")
 
     # ── output ──
     p_out = sub.add_parser("output", help="查看 CCS 输出")
     p_out.add_argument("role", help="角色名")
     p_out.add_argument("--tail", type=int, default=20, help="行数")
+    p_out.add_argument("--instance-id", type=int, default=0,
+                        help="实例编号（默认 0=主实例）")
 
     # ── stream ──
     p_stream = sub.add_parser("stream", help="流式输出 CCS 输出")
@@ -206,26 +216,53 @@ def main():
     # ═══════════ 命令分发 ═══════════
 
     if args.command == "start":
-        result = start(
-            role=args.role,
-            title=args.title,
-            detach=args.no_attach,
-            init_prompt=args.prompt,
-            partners=args.partner,
-            auto_restart=args.auto_restart,
-            bus_track=args.bus_track,
-            bus_timeout=args.bus_timeout,
-            drive=args.drive,
-            feed_cat=args.feed_cat,
-            workspace=args.workspace,
-            no_auto_send=args.no_auto_send,
-        )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        if not result.get("success"):
-            sys.exit(1)
+        if args.instances > 0:
+            # 批量启动 N 个实例
+            results = []
+            for i in range(1, args.instances + 1):
+                result = start(
+                    role=args.role,
+                    title=f"{args.title or args.role}#{i}",
+                    detach=True,
+                    init_prompt=args.prompt,
+                    partners=args.partner,
+                    auto_restart=args.auto_restart,
+                    bus_track=args.bus_track,
+                    bus_timeout=args.bus_timeout,
+                    drive=args.drive,
+                    feed_cat=args.feed_cat,
+                    workspace=args.workspace,
+                    no_auto_send=args.no_auto_send,
+                    instance_id=i,
+                )
+                results.append(result)
+                if not result.get("success"):
+                    print(f"⚠ 实例 {i} 启动失败: {result.get('error')}")
+            print(json.dumps(results, ensure_ascii=False, indent=2))
+            successes = sum(1 for r in results if r.get("success"))
+            print(f"启动 {successes}/{args.instances} 个实例")
+        else:
+            result = start(
+                role=args.role,
+                title=args.title,
+                detach=args.no_attach,
+                init_prompt=args.prompt,
+                partners=args.partner,
+                auto_restart=args.auto_restart,
+                bus_track=args.bus_track,
+                bus_timeout=args.bus_timeout,
+                drive=args.drive,
+                feed_cat=args.feed_cat,
+                workspace=args.workspace,
+                no_auto_send=args.no_auto_send,
+                instance_id=args.instance_id,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
 
     elif args.command == "stop":
-        result = stop(args.role)
+        result = stop(args.role, instance_id=args.instance_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
             sys.exit(1)
@@ -239,21 +276,24 @@ def main():
             for s in result:
                 uptime_m = s["uptime_sec"] // 60
                 health = s["health"]
-                print(f"  [{s['role']:12}] {s['title']}  "
-                      f"{'✅' if s['alive'] else '❌'}  "
+                inst = f"[{s['instance_id']}]" if s.get("instance_id") else ""
+                alive = s['alive']
+                print(f"  [{s['role']:12}{inst}] {s['title']}  "
+                      f"{'✅' if alive else '❌'}  "
                       f"运行 {uptime_m}分  pid={s['pid']}  "
                       f"partner={s['partner'] or '-'}  bus={s['bus_track'] or '-'}")
                 print(f"      health: watchdog={'✅' if health['watchdog_ok'] else '❌'} "
                       f"bus_age={health['bus_msg_age']}s restarts={health['restart_count']}")
 
     elif args.command == "send":
-        result = send(args.role, args.message, source=args.from_role)
+        result = send(args.role, args.message, source=args.from_role,
+                      instance_id=args.instance_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
             sys.exit(1)
 
     elif args.command == "output":
-        print(output(args.role, tail=args.tail))
+        print(output(args.role, tail=args.tail, instance_id=args.instance_id))
 
     elif args.command == "stream":
         from ccs_socket import CCSStreamer

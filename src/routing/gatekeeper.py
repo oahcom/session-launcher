@@ -84,28 +84,53 @@ def classify_message_content(text: str) -> str:
 # 决定哪些角色之间可以进行敏感通信
 # 动态从 persona JSON 加载 workgroup 字段
 # 兼容旧行为: 无 workgroup 字段时回退为硬编码矩阵
-def _load_workgroup_from_personas() -> dict[str, set[str]]:
+def _load_workgroup_from_personas() -> dict[str, set[str]] | None:
     """从 persona JSON 动态加载工作群组矩阵。
 
     返回: {role: set(allowed_target_roles)}
+    workgroup 字段支持两种格式：
+      - 字符串列表: ["coordinator", "lr"]
+      - 字典列表: [{"role": "coordinator", "mode": "peer-to-peer"}]
+    coordinator 始终有 * 权限。
+    若动态加载无法构建有效矩阵，返回 None 让调用方使用硬编码回退。
     """
     matrix = {"coordinator": {"*"}}  # coordinator 兜底可联系所有人
+    loaded_any = False
 
     try:
         for f in SESSION_ROLES_PERSONAS.glob("*.json"):
             data = json.loads(f.read_text())
             name = data.get("name")
+            if not name:
+                continue
             workgroup = data.get("workgroup", [])
-            if name and workgroup:
-                matrix[name] = set(workgroup)
+            if not workgroup:
+                continue
+            # 将 workgroup 条目统一提取为 role 字符串
+            roles = set()
+            for w in workgroup:
+                if isinstance(w, str):
+                    roles.add(w)
+                elif isinstance(w, dict) and "role" in w:
+                    roles.add(w["role"])
+            if roles:
+                matrix[name] = roles
+                loaded_any = True
     except Exception:
-        pass  # 静默回退到硬编码
+        return None  # 异常 → 使用硬编码回退
 
-    return matrix
+    return matrix if loaded_any else None
 
 
 # 兼容旧代码: 如果动态加载结果为空，使用硬编码矩阵
 _workgroup_dynamic = _load_workgroup_from_personas()
+# 动态矩阵中不存在的角色（如无 persona JSON 的系统角色）补充权限
+_SUPPLEMENT_MATRIX: dict[str, set[str]] = {
+    "workflow_engine": {"coordinator", "lr", "product_architect", "engineer", "pg",
+                         "reviewer", "qa", "scout", "devops", "maintainer"},
+}
+if _workgroup_dynamic:
+    _workgroup_dynamic.update(_SUPPLEMENT_MATRIX)
 WORKGROUP_MATRIX: dict[str, set[str]] = _workgroup_dynamic if _workgroup_dynamic else {
     "coordinator": {"*"},
     "lr": {"*"},
@@ -120,6 +145,8 @@ WORKGROUP_MATRIX: dict[str, set[str]] = _workgroup_dynamic if _workgroup_dynamic
     "maintainer": {"coordinator", "lr", "pm", "pg", "devops"},
     "scout": {"coordinator", "lr", "pm"},
     "closer": {"coordinator", "lr"},
+    "workflow_engine": {"coordinator", "lr", "product_architect", "engineer", "pg",
+                         "reviewer", "qa", "scout", "devops", "maintainer"},
 }
 
 # 审计上限: 每角色每小时可发送的敏感操作次数
@@ -303,16 +330,29 @@ class CrossRoleRouter:
             return ""
 
     def _check_sentinel(self, claimed_source: str) -> bool:
-        """源3: 检查 tmux session 是否存在。"""
-        for prefix in ("ccs", "cdx"):
-            try:
-                r = subprocess.run(
-                    ["tmux", "has-session", "-t", f"{prefix}-{claimed_source}"],
-                    capture_output=True, timeout=3)
-                if r.returncode == 0:
-                    return True
-            except Exception:
-                continue
+        """源3: 检查 tmux session 是否存在（含多 instance，单次 tmux list-sessions）。"""
+        from tmux_ops import make_tmux_name, MAX_INSTANCES
+        try:
+            r = subprocess.run(
+                ["tmux", "list-sessions", "-F", "#{session_name}"],
+                capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return False
+            sessions = set(r.stdout.strip().split("\n"))
+        except Exception:
+            return False
+        # 检查主实例
+        if make_tmux_name(claimed_source, 0) in sessions:
+            return True
+        # cdx- 主实例
+        if f"cdx-{claimed_source}" in sessions:
+            return True
+        # 检查扩展实例 (1-16)
+        for i in range(1, MAX_INSTANCES + 1):
+            if make_tmux_name(claimed_source, i) in sessions:
+                return True
+            if f"cdx-{claimed_source}-{i}" in sessions:
+                return True
         return False
 
     def check_send_permission(self, source: str, target: str,

@@ -32,7 +32,6 @@ __all__ = [
     '_forbidden_list',
     'check_wake_permission',
     '_build_role_prompt',
-    # ponytail: inject_prompt_into_claudemd/clear_injected_prompt 已废弃，若需恢复从 roles.py 导入
     'write_lifecycle_sentinel',
     'check_ondemand_timeout',
     'cleanup_stale_sentinels',
@@ -54,6 +53,8 @@ __all__ = [
     '_action_templates',
     'list_roles',
     'get_config_value',
+    '_write_instance_claude_md',
+    '_register_instance_in_workspace',
 ]
 
 
@@ -235,54 +236,80 @@ def start(role: str, title: str = "", detach: bool = False,
           bus_timeout: int = 300,
           drive: str = "", feed_cat: str = "",
           workspace: str = "",
-          no_auto_send: bool = False) -> dict:
+          no_auto_send: bool = False,
+          instance_id: int = 0) -> dict:
     """创建一个 CCS 并写入哨兵。
 
     自动从 hermes-session-roles 加载角色定义（如存在），
     构建 system prompt 并注入专业知识到 workspace CLAUDE.md。
 
-    若 workspace 指定，tmux 在该工作空间目录启动（系统级 CCS）；
-    若未指定，使用 ~/ccs-workspaces/<role>（兼容旧行为）。
+    参数:
+      instance_id: 实例编号。
+        0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
+        >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
     """
     if not _validate_role_name(role):
         return {"success": False, "error": f"非法角色名: {role}"}
-    tmux_name = f"{TMUX_PREFIX}{role}"
+
+    from tmux_ops import make_tmux_name
+    tmux_name = make_tmux_name(role, instance_id)
     partners = partners or []
-    ws_name = workspace or role  # 指定 workspace 则用自定义工作空间
+    ws_name = workspace or role
+
+    # 实例感知工作空间路径
+    if instance_id and not workspace:
+        ws_path = Path(f"~/ccs-workspaces/{role}/instances/{instance_id}").expanduser()
+    else:
+        ws_path = Path(f"~/ccs-workspaces/{ws_name}").expanduser()
 
     # 0. ondemand 模式：只写 workspace + 哨兵，不启动 tmux
     if drive == "ondemand":
-        workspace_create(role)
+        # instance mode：创建实例级 workspace
+        if instance_id:
+            ws_path.mkdir(parents=True, exist_ok=True)
+            _write_instance_claude_md(ws_path, role, instance_id)
+        else:
+            workspace_create(role)
         role_def = get_role(role)
         if role_def:
             inject_role_knowledge_into_workspace(role_def)
         s = CcsSentinel(
             role=role, title=title or role, tmux_session="",
             pid=0, started_at=time.time(), lifecycle="ondemand",
+            instance_id=instance_id,
         )
         write_sentinel(s)
-        print(f"📋 {role} (ondemand) — 已写 workspace + 哨兵")
-        return {"success": True, "role": role, "mode": "ondemand",
-                "workspace": str(Path(f"~/ccs-workspaces/{role}").expanduser())}
+        print(f"📋 {role}[{instance_id}] (ondemand) — 已写 workspace + 哨兵")
+        return {"success": True, "role": role, "instance_id": instance_id,
+                "mode": "ondemand", "workspace": str(ws_path)}
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
         if not detach:
             os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
         print(f"📋 {tmux_name} 已在运行")
-        return {"success": True, "role": role, "tmux_session": tmux_name}
+        return {"success": True, "role": role, "tmux_session": tmux_name,
+                "instance_id": instance_id}
 
     # 2. 内存守卫：确认有足够资源启动新 CCS 进程
     err = _check_memory_before_launch(role)
     if err:
         return {"success": False, "error": err}
 
-    # 3. 确保工作空间存在并更新系统 CLAUDE.md
-    ws_path = Path(f"~/ccs-workspaces/{ws_name}").expanduser()
-    result = workspace_create(ws_name)
-    if result.get("success"):
-        action = result.get("action", "")
-        print(f"📁 {'已创建' if action == 'created' else '已更新'} 工作空间: {ws_path}")
+    # 3. 确保工作空间存在
+    if instance_id and not workspace:
+        # 扩展实例：在 role workspace 下创建 instances/{id}/ 子目录
+        ws_path.mkdir(parents=True, exist_ok=True)
+        # 创建实例级 CLAUDE.md（包含 WORKSPACE_SYS marker）
+        _write_instance_claude_md(ws_path, role, instance_id)
+        # 在角色级 workspace 写入 instance 注册信息
+        _register_instance_in_workspace(role, instance_id, ws_path)
+        print(f"📁 已创建实例 workspace: {ws_path}")
+    else:
+        result = workspace_create(ws_name)
+        if result.get("success"):
+            action = result.get("action", "")
+            print(f"📁 {'已创建' if action == 'created' else '已更新'} 工作空间: {ws_path}")
 
     # 4. 注入角色知识到 workspace
     role_def = get_role(role)
@@ -333,13 +360,9 @@ def start(role: str, title: str = "", detach: bool = False,
             pass
     time.sleep(1)
 
-    # 6.5 自动加载角色技能（skills→/skill load）
-    skill_names = (role_def or {}).get("skills", [])
-    if skill_names:
-        for sk in skill_names:
-            _tmux_send(tmux_name, f"/skill {sk}")
-            time.sleep(0.5)
-        _log.info("[skills] auto-loaded %d skills for %s", len(skill_names), role)
+    # 6.5 技能自动发现：skills 已由 deploy_role_skills.sh 部署到
+    # ~/.claude/skills/ 目录，Claude Code 启动时自动扫描。无需 /skills load。
+    # 见 ~/session-launcher/scripts/deploy_role_skills.sh
 
     # 7. 注入 prompt（自动构建的 role prompt 或用户提供的 init_prompt）
     if init_prompt:
@@ -374,6 +397,7 @@ def start(role: str, title: str = "", detach: bool = False,
     s = CcsSentinel(
         role=role,
         title=title or role,
+        instance_id=instance_id,
         tmux_session=tmux_name,
         pid=pid,
         started_at=time.time(),
@@ -388,12 +412,14 @@ def start(role: str, title: str = "", detach: bool = False,
     # 9. 启动守护线程 + feed listener（仅 detach 模式）
     if detach:
         for p in partners:
-            start_watchdog(role, p, auto_restart=auto_restart, interval=30)
+            start_watchdog(role, p, auto_restart=auto_restart, interval=30,
+                          instance_id=instance_id)
             print(f"✅ 守护线程: 监控 {p} 存活")
 
         if bus_track:
             start_tracker(role, bus_track, timeout_sec=bus_timeout,
-                          interval=10, partners=partners)
+                          interval=10, partners=partners,
+                          instance_id=instance_id)
             print(f"✅ 轮次追踪: 监控 {bus_track} 死锁 (超时 {bus_timeout}s)")
 
         if feed_cat:
@@ -401,15 +427,17 @@ def start(role: str, title: str = "", detach: bool = False,
             print(f"✅ feed listener: 实时监控 {feed_cat} 分类")
 
     # 10. 启动 feed_listener 子进程（将 bus 实时消息注入 tmux）
-    # 任何有 tmux 会话的模式都启动，不限于 detach
     if drive not in ("ondemand",):
+        # feed 子进程：任何有 tmux 会话的模式都启动（不限于 detach）。
+        # 将 bus 实时消息注入到 tmux session 供 Claude 消费。
         _start_feed_subprocess(tmux_name)
         print(f"✅ feed 子进程: 实时消息注入 {tmux_name}")
     elif partners or bus_track:
         print(f"⚠ 非 detach 模式，监控线程不会启动（需要 --no-attach）")
 
     result = {
-        "success": True, "role": role, "tmux_session": tmux_name,
+        "success": True, "role": role, "instance_id": instance_id,
+        "tmux_session": tmux_name,
         "pid": pid, "partners": partners or [], "bus_track": bus_track or None,
     }
 
@@ -424,17 +452,18 @@ def start(role: str, title: str = "", detach: bool = False,
 
     return result
 
-def stop(role: str) -> dict:
+def stop(role: str, instance_id: int = 0) -> dict:
     """终止 CCS 并清理哨兵。"""
+    from tmux_ops import make_tmux_name
     if not _validate_role_name(role):
         return {"success": False, "error": f"非法角色名: {role}"}
-    tmux_name = f"{TMUX_PREFIX}{role}"
+    tmux_name = make_tmux_name(role, instance_id)
     was_alive = _is_alive(tmux_name)
     _tmux_kill(tmux_name)
-    delete_sentinel(role)
+    delete_sentinel(role, instance_id)
     if not was_alive:
         return {"success": False, "error": "CCS 不存在", "role": role}
-    return {"success": True, "role": role}
+    return {"success": True, "role": role, "instance_id": instance_id}
 
 def status() -> list[dict]:
     """列出所有 CCS 的运行状态（含死亡的）。"""
@@ -442,8 +471,16 @@ def status() -> list[dict]:
     statuses = []
     for s in sentinels:
         alive = _is_alive(s.tmux_session)
+        ws_path = Path(f"~/ccs-workspaces/{s.role}").expanduser()
+        if s.instance_id:
+            ws = str(ws_path / "instances" / str(s.instance_id))
+        elif ws_path.exists():
+            ws = str(ws_path)
+        else:
+            ws = None
         statuses.append({
             "role": s.role,
+            "instance_id": s.instance_id,
             "title": s.title,
             "alive": alive,
             "pid": s.pid,
@@ -451,8 +488,7 @@ def status() -> list[dict]:
             "lifecycle": s.lifecycle,
             "partner": s.partners[0] if s.partners else None,
             "bus_track": s.bus_track or None,
-            "workspace": f"~/ccs-workspaces/{s.role}" if Path(
-                f"~/ccs-workspaces/{s.role}").expanduser().exists() else None,
+            "workspace": ws,
             "health": {
                 "watchdog_ok": s.health.watchdog_ok,
                 "bus_msg_age": round(s.health.last_bus_msg_age, 0),
@@ -461,8 +497,13 @@ def status() -> list[dict]:
         })
     return statuses
 
-def send(role: str, message: str, source: str = "") -> dict:
-    """向 CCS 发送消息。失败通知写入 bus [ccs_send_fallback]。"""
+
+def send(role: str, message: str, source: str = "",
+         instance_id: int = 0) -> dict:
+    """向 CCS 发送消息。失败通知写入 bus [ccs_send_fallback]。
+    instance_id>0 向指定实例发送，0 向主实例发送。
+    """
+    from tmux_ops import make_tmux_name
     if not _validate_role_name(role):
         _write_bus_notice(role, message, source, "非法角色名")
         return {"success": False, "error": f"非法角色名: {role}"}
@@ -484,10 +525,10 @@ def send(role: str, message: str, source: str = "") -> dict:
         except Exception as e:
             _write_bus_notice(role, message, source, f"门禁降级: {e}")
 
-    tmux_name = f"{TMUX_PREFIX}{role}"
+    tmux_name = make_tmux_name(role, instance_id)
     if not _is_alive(tmux_name):
         _write_bus_notice(role, message, source, "CCS未运行")
-        return {"success": False, "error": f"CCS {role} 未运行"}
+        return {"success": False, "error": f"CCS {role}[{instance_id}] 未运行"}
 
     # CCS-RULE: send 前校验
     try:
@@ -518,19 +559,26 @@ def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None
     except Exception:
         pass  # 写 bus 失败不阻塞
 
-def output(role: str, tail: int = 20) -> str:
+def output(role: str, tail: int = 20, instance_id: int = 0) -> str:
     """截取 CCS tmux pane 的最新输出。"""
-    return _tmux_output(f"{TMUX_PREFIX}{role}", tail=tail)
+    from tmux_ops import make_tmux_name
+    return _tmux_output(make_tmux_name(role, instance_id), tail=tail)
 
-def health_check(role: str = "") -> dict:
+def health_check(role: str = "", instance_id: int = 0) -> dict:
     """健康检查：返回所有（或指定）CCS 的存活状态。"""
-    sentinels = list_sentinels() if not role else (
-        [s] if (s := read_sentinel(role)) else []
-    )
+    if role and instance_id:
+        sentinels = [s] if (s := read_sentinel(role, instance_id)) else []
+    else:
+        sentinels = list_sentinels() if not role else (
+            [s] if (s := read_sentinel(role, instance_id)) else []
+        )
     result = {}
     for s in sentinels:
         alive = _is_alive(s.tmux_session)
-        result[s.role] = {
+        key = f"{s.role}[{s.instance_id}]" if s.instance_id else s.role
+        result[key] = {
+            "role": s.role,
+            "instance_id": s.instance_id,
             "alive": alive,
             "partner": s.partners[0] if s.partners else None,
             "bus_track": s.bus_track or None,
@@ -634,13 +682,24 @@ def cleanup_stale_sentinels() -> list[str]:
 
 
 def list_roles() -> list[dict]:
-    """列出所有可启动角色, 附带运行状态。"""
+    """列出所有可启动角色, 附带运行状态（含多 instance 信息）。"""
     roles = load_roles()
+    from tmux_ops import make_tmux_name, MAX_INSTANCES
+    from ops.sentinel import _list_tmux_sessions
+    # 单次 tmux list-sessions 获取所有活跃 session
+    active_sessions = _list_tmux_sessions()
+    def _has_session(role: str, instance: int = 0) -> bool:
+        t = make_tmux_name(role, instance)
+        return t in active_sessions
+
     result = []
     for r in roles:
         name = r.get("name", "?")
-        tmux_name = f"{TMUX_PREFIX}{name}"
-        alive = _is_alive(tmux_name)
+        alive = _has_session(name, 0)
+        instances = []
+        for i in range(1, MAX_INSTANCES + 1):
+            if _has_session(name, i):
+                instances.append(i)
         result.append({
             "name": name,
             "title": r.get("title", ""),
@@ -648,6 +707,7 @@ def list_roles() -> list[dict]:
             "description": r.get("description", ""),
             "lifecycle": r.get("lifecycle", "infinite"),
             "alive": alive,
+            "instances": instances,
             "drive": r.get("drive", ""),
         })
     return result
@@ -673,6 +733,42 @@ def _start_feed_subprocess(tmux_name: str) -> None:
         _log.info("feed 子进程已启动: %s -> %s", FEED_LISTENER, tmux_name)
     except Exception as e:
         _log.warning("feed 子进程启动失败: %s", e)
+
+
+# ── 多 instance 辅助函数 ──
+
+def _write_instance_claude_md(ws_path: Path, role: str, instance_id: int = 0) -> None:
+    """为实例 workspace 写入 CLAUDE.md（含 WORKSPACE_SYS marker）。"""
+    claude_md = ws_path / "CLAUDE.md"
+    if claude_md.exists():
+        return
+    label = f"{role}[{instance_id}]" if instance_id else role
+    content = (
+        f"{_WS_MARKER_START}\n"
+        f"> 本 workspace 属于 {label}，由 CCS Launcher 自动管理。\n"
+        "> 实例级工作空间，与主实例隔离。\n"
+        "\n"
+        f"## 工作流提示\n"
+        "- 每个任务完成后更新 CLAUDE.md\n"
+        "- 使用 bus 跨角色通信\n"
+        f"- 实例 ID: {instance_id}\n"
+        f"{_WS_MARKER_END}\n"
+    )
+    claude_md.write_text(content, encoding="utf-8")
+
+
+def _register_instance_in_workspace(role: str, instance_id: int, ws_path: Path) -> None:
+    """在角色级 workspace 的 instances/REGISTRY.md 中注册实例信息。"""
+    role_ws = Path(f"~/ccs-workspaces/{role}").expanduser()
+    reg_path = role_ws / "instances" / "REGISTRY.md"
+    reg_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = f"- [{instance_id}]({instance_id}/) — started at {datetime.now(timezone.utc).isoformat()}\n"
+    if reg_path.exists():
+        content = reg_path.read_text()
+        if f"[{instance_id}]" not in content:
+            reg_path.write_text(content.rstrip() + "\n" + entry)
+    else:
+        reg_path.write_text(f"# Instance Registry — {role}\n\n{entry}")
 
 
 # ── dev 环境隔离（DESIGN-dev-environment.md） ──
