@@ -26,7 +26,7 @@ from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS
 SENSITIVE_CMDS: dict[str, list[str]] = {
     "admin": ["stop", "kill", "force_start_ccs", "register_hook"],
     "operation": ["start", "wake_ccs", "send-safe", "send-direct", "codex start"],
-    "info": ["send", "send-safe", "output", "status", "health", "workspace"],
+    "info": ["send", "output", "status", "health", "workspace"],
 }
 # 允许执行 admin/operation 级别的角色
 ADMIN_ROLES: set = {"coordinator", "maintainer", "closer"}
@@ -40,14 +40,15 @@ SENSITIVE_PERMISSIONS: dict[str, set] = {
 def classify_ccs_command(message: str) -> str:
     """对 ccs 命令分类：admin / operation / info / unknown。
 
-    ponytail: 基于前缀匹配，后续可改为 intent-NLP 分类。"""
+    基于首词精确匹配，避免 send/send-safe 等前缀歧义。
+    ponytail: 后续可改为 intent-NLP 分类。"""
     msg = message.strip().lower()
     if not msg:
         return "unknown"
-    cmds = msg.split()
+    first = msg.split()[0]
     for cat, patterns in SENSITIVE_CMDS.items():
         for p in patterns:
-            if msg.startswith(p.lower()):
+            if first == p.lower():
                 return cat
     return "unknown"
 
@@ -120,7 +121,7 @@ def _load_workgroup_from_personas() -> dict[str, set[str]] | None:
                 matrix[name] = roles
                 loaded_any = True
     except Exception as e:
-        logger.warning("_load_workgroup_from_personas: %s", e, exc_info=True)
+        logger.warning("_load_workgroup_from_personas: %s", e)
         return None  # 异常 → 使用硬编码回退
 
     return matrix if loaded_any else None
@@ -311,7 +312,7 @@ class CrossRoleRouter:
                 return "partial"
             return ""
         except Exception as e:
-            logger.warning("_check_bus_source: %s", e, exc_info=True)
+            logger.warning("_check_bus_source: %s", e)
             return ""
 
     def _check_db_assigner(self, claimed_source: str) -> str:
@@ -338,7 +339,7 @@ class CrossRoleRouter:
             finally:
                 conn.close()
         except Exception as e:
-            logger.warning("_check_db_assigner: %s", e, exc_info=True)
+            logger.warning("_check_db_assigner: %s", e)
             return ""
 
     def _check_sentinel(self, claimed_source: str) -> bool:
@@ -352,7 +353,7 @@ class CrossRoleRouter:
                 return False
             sessions = set(r.stdout.strip().split("\n"))
         except Exception as e:
-            logger.warning("_check_sentinel: %s", e, exc_info=True)
+            logger.warning("_check_sentinel: %s", e)
             return False
         # 检查主实例
         if make_tmux_name(claimed_source, 0) in sessions:
