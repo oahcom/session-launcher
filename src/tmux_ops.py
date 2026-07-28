@@ -165,7 +165,8 @@ def _find_claude_session_id(role: str = "") -> Optional[str]:
     """从 CCS 独立工作目录中查找最新的 claude session ID。"""
     try:
         if role:
-            base = Path(f"/tmp/ccs-sessions/{role}/.claude/projects")
+            from paths import CCS_SESSIONS_DIR
+            base = CCS_SESSIONS_DIR / role / ".claude" / "projects"
         else:
             base = Path.home() / ".claude" / "projects"
         if not base.exists():

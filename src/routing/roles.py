@@ -65,7 +65,8 @@ _WAKE_PERMISSION_MAP: dict[str, list[str]] = {
     "qa": ["pm", "reviewer"],
 }
 
-_ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+_ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+\Z')
+# ponytail: \Z blocks trailing \n that $ would accept
 
 SESSION_ROLES_ROOT = Path(os.environ.get(
     "SESSION_ROLES_ROOT",
@@ -124,12 +125,15 @@ def load_roles() -> list[dict]:
     但 produce/consume 解析已统一至 shared_loader 的 roles_export.json。
     """
     global _LOADED_ALL_ROLES, _SHARED_LOADER_CHECKED
+    _need_validate = False
     with _lock:
         if _LOADED_ALL_ROLES is not None:
             return _LOADED_ALL_ROLES
         if not _SHARED_LOADER_CHECKED:
-            _run_shared_loader_validate()
-            _SHARED_LOADER_CHECKED = True
+            _need_validate = True
+    if _need_validate:
+        _run_shared_loader_validate()
+        _SHARED_LOADER_CHECKED = True
     roles = []
     for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
         try:
@@ -292,8 +296,11 @@ def _role_assembler_output(name: str, role: dict | None = None) -> str:
             )
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip()
-        except Exception:
-            pass
+        except Exception as _e:
+            import logging
+            logging.getLogger("roles").warning(
+                "role_assembler failed for %s (falling back to system_prompt): %s", name, _e
+            )
     if role:
         return (role.get("system_prompt", "")
                 .replace("{persona_name}", role["name"])

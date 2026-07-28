@@ -188,8 +188,8 @@ class CrossRoleRouter:
         """
         self._log_cross_role_send(source, target, message)
 
-        # 同角色消息直接放行
-        if source == target or source in ("cli", "loop", "pipeline", "cron-worker"):
+        # 同角色消息 & 系统角色直接放行
+        if source == target or source in ("cli", "loop", "pipeline", "cron-worker", "workflow_engine"):
             return True
 
         # WL-P0-01: 消息内容敏感度分类

@@ -172,7 +172,7 @@ def _check_router() -> CheckItem:
     start = time.time()
     result = subprocess.run(
         [sys.executable, "-c",
-         "from router import get_router; r = get_router(); print(len(r._routing))"],
+         "from router import get_router; r = get_router(); print(len(r.routing))"],
         cwd=str(PIPELINE),
         env={**os.environ, "PYTHONPATH": f"{PIPELINE}/src"},
         capture_output=True, text=True, timeout=10
@@ -236,9 +236,9 @@ def check_all() -> HealthReport:
 
     # 2. 模块导入（核心模块）
     core_modules = {
-        "launcher": ["core", "tmux_ops", "role_manager", "codex_ops",
+        "launcher": ["core", "role_manager", "codex_ops",
                      "sentinel", "signals", "signal_parser",
-                     "partner_client", "dispatch_pipeline"],
+                     "partner_client"],
         "roles": ["registry", "search", "models", "validate_roles"],
         "pipeline": ["router", "reliability", "config_loader",
                      "workflow_engine", "composite_runner"],

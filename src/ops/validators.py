@@ -34,3 +34,9 @@ def validate_role(func):
             return {"success": False, "error": f"角色 {role} 不在注册表中 (known: {sorted(_KNOWN_ROLES)})"}
         return func(role, *args, **kwargs)
     return wrapper
+
+
+def clear_role_cache():
+    """运行时清除角色缓存，供 coordinator 调用"""
+    global _KNOWN_ROLES
+    _KNOWN_ROLES = {}

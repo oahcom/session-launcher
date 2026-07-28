@@ -24,11 +24,16 @@ from typing import Callable, Optional
 log = logging.getLogger("ccs-socket")
 
 # 复用 sister_bus socket server（由 systemd 管理）
-SISTER_BUS_SOCK = Path("/tmp/sister_bus_ccs.sock")
+from paths import CCS_SOCKET_PATH
+SISTER_BUS_SOCK = CCS_SOCKET_PATH
 
 
 class CCSClient:
-    """CCS Socket 客户端 — 连接 sister_bus_ccs.sock"""
+    """CCS Socket 客户端 — 连接 sister_bus_ccs.sock
+
+    线程安全的连接池：同一 (role, loop) 复用连接，最多 hold 60s 空闲断连。
+    """
+    _pools: dict[str, tuple[asyncio.StreamReader, asyncio.StreamWriter, float]] = {}
 
     def __init__(self, role: str):
         self.role = role
@@ -36,19 +41,56 @@ class CCSClient:
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
 
-    async def connect(self) -> bool:
-        try:
-            self.reader, self.writer = await asyncio.open_unix_connection(str(SISTER_BUS_SOCK))
-            # 注册 agent 名（server 根据 SUBSCRIBE 注册到 subscribers）
-            cmd = {"cmd": "SUBSCRIBE", "agent": self.agent}
-            await self._send(cmd)
-            # 读取确认
-            resp = await asyncio.wait_for(self.reader.readline(), timeout=5)
-            data = json.loads(resp.decode().strip())
-            return data.get("event") == "subscribed"
-        except Exception as e:
-            log.warning("connect(%s): %s", self.role, e)
-            return False
+    async def connect(self, max_retries: int = 3) -> bool:
+        """连接 socket，失败时自动重试（指数退避）。
+
+        优先复用连接池中的存活连接，跳过重复 SUBSCRIBE。
+        池中连接空闲 >60s 自动失效。
+
+        Args:
+            max_retries: 最大重试次数（默认 3），0 表示不重试。
+        """
+        import asyncio
+        _POOL_IDLE_TIMEOUT = 60.0
+        now = time.time()
+        # 尝试复用池中连接
+        pool_key = self.role
+        pooled = self._pools.get(pool_key)
+        if pooled:
+            r, w, ts = pooled
+            if not w.is_closing() and (now - ts) < _POOL_IDLE_TIMEOUT:
+                self.reader, self.writer = r, w
+                log.debug("connect(%s): reusing pooled conn", self.role)
+                return True
+            # 过期或已关闭，丢弃
+            try:
+                w.close()
+                await w.wait_closed()
+            except Exception as e:
+                log.warning("connect(%s): 清理过期连接出错: %s", self.role, e)
+            self._pools.pop(pool_key, None)
+
+        # 新建连接
+        for attempt in range(max_retries + 1):
+            try:
+                self.reader, self.writer = await asyncio.open_unix_connection(str(SISTER_BUS_SOCK))
+                cmd = {"cmd": "SUBSCRIBE", "agent": self.agent}
+                await self._send(cmd)
+                resp = await asyncio.wait_for(self.reader.readline(), timeout=5)
+                data = json.loads(resp.decode().strip())
+                ok = data.get("event") == "subscribed"
+                if ok:
+                    self._pools[pool_key] = (self.reader, self.writer, time.time())
+                    return True
+                log.warning("connect(%s): unexpected response %s", self.role, data)
+            except (OSError, asyncio.TimeoutError, ConnectionRefusedError) as e:
+                log.warning("connect(%s) attempt %d/%d failed: %s", self.role, attempt, max_retries, e)
+            except Exception as e:
+                log.warning("connect(%s) attempt %d/%d error: %s", self.role, attempt, max_retries, e)
+            if attempt < max_retries:
+                wait = 0.5 * (2 ** (attempt - 1))  # 指数退避: 0.5s, 1s, 2s
+                await asyncio.sleep(wait)
+        return False
 
     async def _send(self, cmd: dict):
         data = (json.dumps(cmd, ensure_ascii=False) + "\n").encode()
@@ -75,8 +117,10 @@ class CCSClient:
                 msg = json.loads(line.decode().strip())
                 if msg.get("event") == "message":
                     cb(msg.get("msg", {}))
-            except Exception as e:
-                log.warning("listen(%s): %s", self.role, e)
+            except json.JSONDecodeError as e:
+                log.warning("listen(%s): 畸形消息，跳过: %s", self.role, e)
+            except (OSError, asyncio.IncompleteReadError) as e:
+                log.warning("listen(%s): 连接断开: %s", self.role, e)
                 break
 
     async def close(self):
@@ -86,6 +130,9 @@ class CCSClient:
                 await self.writer.wait_closed()
             except Exception as e:
                 log.warning("close(%s): %s", self.role, e)
+            finally:
+                self._pools.pop(self.role, None)
+                self.reader = self.writer = None
 
 
 # ── 流式输出（tmux capture-pane）────

@@ -1,5 +1,6 @@
 """ops/runner.py — 运行循环 + 健康仪表板（从 core.py 提取）"""
 
+import logging
 import os
 import subprocess
 import sys
@@ -8,6 +9,8 @@ import socket
 import json
 import threading
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from ops.sentinel import list_sentinels
 from tmux_ops import _is_alive
@@ -90,7 +93,7 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
                 try:
                     s.close()
                 except Exception:
-                    pass
+                    log.debug("feed socket close failed", exc_info=True)
                 s = None
             return False
 
@@ -127,12 +130,8 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
                 try:
                     s.close()
                 except Exception:
-                    pass
+                    log.debug("feed socket close failed", exc_info=True)
                 s = None
             time.sleep(5)
 
     t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    if not hasattr(_start_feed_listener, "_threads"):
-        _start_feed_listener._threads = []
-    _start_feed_listener._threads.append(t)
