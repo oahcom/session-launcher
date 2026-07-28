@@ -111,6 +111,8 @@ from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claud
 
 from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
 
+from ops.validators import validate_role
+
 from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status, _active_codex_session_count, _wait_codex_ready, CODEX_SESSION_MAX, CODEX_TMUX_PREFIX, CODEX_LOOP_DELAY
 
 import json
@@ -166,8 +168,8 @@ def _load_mcp_registry() -> dict[str, dict]:
             import json as _json
             gcfg = _json.loads(gs.read_text(encoding="utf-8"))
             registry.update(gcfg.get("mcpServers", {}))
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("全局 settings.json MCP 加载失败: %s", e)
     # 2. 扫描所有插件目录下的 .mcp.json（marketplace 注册 + 缓存）
     for base in [Path.home() / ".claude/plugins/marketplaces",
                  Path.home() / ".claude/plugins/cache"]:
@@ -230,6 +232,7 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
               settings_path, list(cfg["mcpServers"].keys()),
               len(cfg["permissions"].get("allow", [])))
 
+@validate_role
 def start(role: str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
@@ -237,7 +240,8 @@ def start(role: str, title: str = "", detach: bool = False,
           drive: str = "", feed_cat: str = "",
           workspace: str = "",
           no_auto_send: bool = False,
-          instance_id: int = 0) -> dict:
+          instance_id: int = 0,
+          dry_run: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
 
     自动从 hermes-session-roles 加载角色定义（如存在），
@@ -248,9 +252,6 @@ def start(role: str, title: str = "", detach: bool = False,
         0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
         >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
     """
-    if not _validate_role_name(role):
-        return {"success": False, "error": f"非法角色名: {role}"}
-
     from tmux_ops import make_tmux_name
     tmux_name = make_tmux_name(role, instance_id)
     partners = partners or []
@@ -337,12 +338,19 @@ def start(role: str, title: str = "", detach: bool = False,
         f"{_PERM_FLAGS}"
         " --effort max"
     )
-    r = subprocess.run([
-        "tmux", "new-session", "-d", "-s", tmux_name,
-        "-c", str(ws_path),
-        "-e", "FORCE_PERSONA=0",
-        "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
-    ], capture_output=True, text=True, timeout=10)
+    try:
+        r = subprocess.run([
+            "tmux", "new-session", "-d", "-s", tmux_name,
+            "-c", str(ws_path),
+            "-e", "FORCE_PERSONA=0",
+            "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
+        ], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return {"success": False, "error": "tmux 未安装或不在 PATH 中"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "tmux 启动超时 (10s)"}
+    except Exception as e:
+        return {"success": False, "error": f"tmux 启动异常: {e}"}
     if r.returncode != 0:
         return {"success": False, "error": f"tmux 启动失败: {r.stderr.strip()}"}
 
@@ -356,8 +364,8 @@ def start(role: str, title: str = "", detach: bool = False,
             )
             if "❯" in out.stdout:
                 break
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
     time.sleep(1)
 
     # 6.5 技能自动发现：skills 已由 deploy_role_skills.sh 部署到
@@ -452,11 +460,11 @@ def start(role: str, title: str = "", detach: bool = False,
 
     return result
 
-def stop(role: str, instance_id: int = 0) -> dict:
+@validate_role
+def stop(role: str, instance_id: int = 0,
+         dry_run: bool = False) -> dict:
     """终止 CCS 并清理哨兵。"""
     from tmux_ops import make_tmux_name
-    if not _validate_role_name(role):
-        return {"success": False, "error": f"非法角色名: {role}"}
     tmux_name = make_tmux_name(role, instance_id)
     was_alive = _is_alive(tmux_name)
     _tmux_kill(tmux_name)
@@ -498,15 +506,15 @@ def status() -> list[dict]:
     return statuses
 
 
+@validate_role
 def send(role: str, message: str, source: str = "",
-         instance_id: int = 0) -> dict:
+         instance_id: int = 0,
+         dry_run: bool = False) -> dict:
     """向 CCS 发送消息。失败通知写入 bus [ccs_send_fallback]。
     instance_id>0 向指定实例发送，0 向主实例发送。
     """
     from tmux_ops import make_tmux_name
-    if not _validate_role_name(role):
-        _write_bus_notice(role, message, source, "非法角色名")
-        return {"success": False, "error": f"非法角色名: {role}"}
+
     # 跨角色路由拦截（三源验证 + 敏感命令门禁）
     if role != "self" and source != "cli":
         try:
@@ -522,7 +530,7 @@ def send(role: str, message: str, source: str = "",
             if not cmd_ok:
                 _write_bus_notice(role, message, source, f"敏感操作门禁拒绝: {reason}")
                 return {"success": False, "error": f"敏感操作门禁拒绝: {reason}"}
-        except Exception as e:
+        except (subprocess.TimeoutExpired, OSError) as e:
             _write_bus_notice(role, message, source, f"门禁降级: {e}")
 
     tmux_name = make_tmux_name(role, instance_id)
@@ -534,8 +542,8 @@ def send(role: str, message: str, source: str = "",
     try:
         from routing.roles import validate_ccs_execution
         validate_ccs_execution(role, "send")
-    except Exception:
-        pass  # 降级：校验不可用时不阻塞
+    except (subprocess.TimeoutExpired, OSError) as e:
+        _log.warning("validate_ccs_execution %s send 降级: %s", role, e)
 
     _tmux_send(tmux_name, message)
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
@@ -556,15 +564,17 @@ def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None
              "--evidence", f"message='{message[:_BUS_MSG_TRUNCATE]}' reason={reason}",
              "--src", "core.send"],
             capture_output=True, timeout=5)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         pass  # 写 bus 失败不阻塞
 
-def output(role: str, tail: int = 20, instance_id: int = 0) -> str:
+def output(role: str, tail: int = 20, instance_id: int = 0,
+            dry_run: bool = False) -> str:
     """截取 CCS tmux pane 的最新输出。"""
     from tmux_ops import make_tmux_name
     return _tmux_output(make_tmux_name(role, instance_id), tail=tail)
 
-def health_check(role: str = "", instance_id: int = 0) -> dict:
+def health_check(role: str = "", instance_id: int = 0,
+                 dry_run: bool = False) -> dict:
     """健康检查：返回所有（或指定）CCS 的存活状态。"""
     if role and instance_id:
         sentinels = [s] if (s := read_sentinel(role, instance_id)) else []
@@ -589,11 +599,13 @@ def health_check(role: str = "", instance_id: int = 0) -> dict:
         }
     return result
 
+@validate_role
 def force_start_ccs(role_name: str, by_role: str = "",
                     init_prompt: str = "") -> dict:
     """强制启动 CCS（内部独立检查权限）。"""
-    if not _validate_role_name(role_name):
-        return {"success": False, "error": f"非法角色名: {role_name}"}
+    if by_role and not _ROLE_NAME_RE.match(by_role):
+        return {"success": False,
+                "error": f"非法来源角色名: {by_role}"}
     if by_role and not check_wake_permission(by_role, role_name):
         return {"success": False,
                 "error": f"权限不足: {by_role} 无权启动 {role_name}"}
@@ -601,9 +613,13 @@ def force_start_ccs(role_name: str, by_role: str = "",
         return {"success": False, "error": f"CCS {role_name} 已在运行"}
     return start(role_name, init_prompt=init_prompt)
 
+@validate_role
 def wake_ccs(role_name: str, context: str = "",
              by_role: str = "") -> dict:
     """唤醒 CCS：优先检查已有 session，否则启动新 CCS。"""
+    if by_role and not _ROLE_NAME_RE.match(by_role):
+        return {"success": False,
+                "error": f"非法来源角色名: {by_role}"}
     alive = _is_alive(f"{TMUX_PREFIX}{role_name}")
     if alive:
         if context:
@@ -731,7 +747,7 @@ def _start_feed_subprocess(tmux_name: str) -> None:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         _log.info("feed 子进程已启动: %s -> %s", FEED_LISTENER, tmux_name)
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         _log.warning("feed 子进程启动失败: %s", e)
 
 

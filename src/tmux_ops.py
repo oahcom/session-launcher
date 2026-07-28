@@ -28,6 +28,7 @@ __all__ = [
 """Auto-generated: tmux_ops.py — extracted from core.py"""
 
 import json
+import logging
 import threading
 import os
 import re
@@ -94,6 +95,7 @@ _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
 
 _CCS_LAUNCH_INTERVAL = 8  # 连续启动 CCS 之间至少等待秒数
 
+_launch_lock = threading.Lock()
 _last_ccs_launch_ts: float = 0.0
 
 
@@ -112,7 +114,7 @@ def _check_memory_before_launch(role: str) -> str | None:
                                 f"跳过 {role} 启动")
                 break
     except Exception:
-        pass
+        logging.getLogger("tmux_ops").warning("内存检查失败，跳过可用内存校验")
 
     # 连续启动间隔
     now = time.time()
@@ -196,18 +198,38 @@ def _is_alive(tmux_name: str) -> bool:
         return False
 
 
-def _tmux_send(tmux_name: str, message: str):
-    for i in range(0, len(message), 500):
-        chunk = message[i:i + 500]
-        subprocess.run(
-            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", chunk],
-            capture_output=True, timeout=3
-        )
-        time.sleep(0.05)
-    subprocess.run(
-        ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
-        capture_output=True, timeout=3
-    )
+def _tmux_send(tmux_name: str, message: str, retries: int = 3, retry_delay: float = 1.0):
+    """Send message to tmux session with retry on failure.
+
+    ponytail: 重试3次、间隔1s，覆盖 tmux session 暂时不可用的场景。
+    超时/异常后 sleep 再重试，超限后静默丢弃（日志已有 _check_alive 覆盖）。
+    """
+    for attempt in range(retries):
+        try:
+            # 退出可能的分页器/输出界面（/status 等命令的输出卡住 Claude）
+            subprocess.run(
+                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "q"],
+                capture_output=True, timeout=3,
+            )
+            time.sleep(0.1)
+            for i in range(0, len(message), 500):
+                chunk = message[i:i + 500]
+                r = subprocess.run(
+                    ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", chunk],
+                    capture_output=True, timeout=3,
+                )
+                if r.returncode != 0:
+                    raise RuntimeError(f"tmux send-keys failed (rc={r.returncode})")
+                time.sleep(0.05)
+            r = subprocess.run(
+                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
+                capture_output=True, timeout=3,
+            )
+            if r.returncode == 0:
+                return
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
 
 
 def _tmux_output(tmux_name: str, tail: int = 20) -> str:
@@ -248,8 +270,8 @@ def _find_codex_pid(tmux_name: str) -> Optional[int]:
                 )
                 if r2.stdout.strip():
                     return int(r2.stdout.strip().split("\n")[0])
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("tmux_ops").warning("_find_codex_pid(%s): %s", tmux_name, e)
     return None
 
 

@@ -15,6 +15,7 @@ partner_client.py — 跨角色协作核心模块 + 自包含 CLI。
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -22,18 +23,16 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+logger = logging.getLogger(__name__)
+
 # 确保可从 session-launcher 导入模块
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_THIS_DIR)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
-
-
 from ops.sentinel import read_sentinel, SENTINEL_DIR
 # core imports are lazy (inside functions) to break circular dependency
-
-
 
 # ── lazy core import helper (break circular) ──
 def _core() -> Any:
@@ -70,8 +69,6 @@ from paths import WORKFLOWS_DB as WORKFLOW_DB
 
 from paths import ensure_paths as _ensure_paths
 _ensure_paths()
-
-
 class PartnerClient:
     """跨角色协作核心模块。"""
 
@@ -111,8 +108,6 @@ class PartnerClient:
                 "task": None,
                 "elapsed_sec": 0.0,
             }
-
-        while (elapsed := time.time() - start_ts) < timeout:
             elapsed = time.time() - start_ts
 
             # 信号①：task.status != 'created'
@@ -182,7 +177,8 @@ class PartnerClient:
             ).fetchone()
             conn.close()
             return dict(row) if row else None
-        except Exception:
+        except Exception as e:
+            logger.warning("_get_task(%s): %s", task_id, e)
             return None
 
     def _check_bus_notification(self, role: str, task_id: str) -> bool:
@@ -214,7 +210,8 @@ class PartnerClient:
                     if task_id in evidence:
                         return True
             return False
-        except Exception:
+        except Exception as e:
+            logger.warning("_check_bus_notification(%s, %s): %s", role, task_id, e)
             return False
 
     # ── Layer 2: Status ─────────────────────────────────────
@@ -264,8 +261,8 @@ class PartnerClient:
                     pending_tasks += 1
                     if current_task_id is None:
                         current_task_id = d["task_id"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("workflow DB query failed: %s", e)
 
         # bus_msg_age
         bus_msg_age = sentinel.health.last_bus_msg_age if sentinel and hasattr(sentinel, "health") else -1.0
@@ -277,8 +274,8 @@ class PartnerClient:
                 output = _output(role, tail=1)
                 if output:
                     last_active_sec = 0.0  # 有输出表示活跃
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("tmux output check failed: %s", e)
 
         return {
             "role": role,
@@ -348,10 +345,8 @@ class PartnerClient:
             cmd.extend(["--evidence", evidence])
         try:
             subprocess.run(cmd, capture_output=True, timeout=15)
-        except Exception:
-            pass
-
-
+        except Exception as e:
+            logger.debug("bus write failed: %s", e)
 # ════════════════════════════════════════════════════════════
 # CLI 入口
 # ════════════════════════════════════════════════════════════
@@ -361,8 +356,6 @@ def cli_resolve(args: Any) -> dict:
     pc = PartnerClient(args.as_role or "unknown")
     status = pc.resolve(args.role)
     print(json.dumps(status, ensure_ascii=False, indent=2))
-
-
 def cli_wake(args: Any) -> dict:
     """wake <role> --as <actor> --context <...> — 唤醒角色。"""
     if not args.as_role:
@@ -374,8 +367,6 @@ def cli_wake(args: Any) -> dict:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result.get("success"):
         sys.exit(1)
-
-
 def cli_confirm(args: Any) -> dict:
     """confirm <task_id> <role> [--timeout N] — 确认交付。"""
     actor = args.as_role or "unknown"
@@ -384,8 +375,6 @@ def cli_confirm(args: Any) -> dict:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result.get("confirmed"):
         sys.exit(1)
-
-
 def cli_send(args: Any) -> dict:
     """send-safe <role> <message> — 安全发送消息（自动唤醒）。"""
     if not args.as_role:
@@ -398,8 +387,6 @@ def cli_send(args: Any) -> dict:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result.get("success"):
         sys.exit(1)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="PartnerClient — 跨角色协作 CLI")
@@ -447,7 +434,5 @@ def main() -> int:
         parser.print_help()
         sys.exit(1)
     args.func(args)
-
-
 if __name__ == "__main__":
     main()

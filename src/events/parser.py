@@ -62,8 +62,9 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
     # shlex.split 提取命令名做白名单检查，但允许 shell 管道/重定向
     # 安全约束：所有检查在规范化后的字符串上执行
     _normalized = cmd.replace("${", "").replace("$((", "").replace("$(", "").replace("`", "")
+    _normalized = re.sub(r'\$[A-Za-z_][A-Za-z0-9_]*', '', _normalized)
     # 若原 cmd 含 shell 执行符($(`)但规范化后变了 → 拒绝
-    if _normalized != cmd:
+    if _normalized != cmd and _normalized != re.sub(r'\$[A-Za-z_][A-Za-z0-9_]*', '', cmd):
         return False
     _danger_words = ["rm ", "mkfs", "| tee", "chmod", "chown",
                      "format", "fdisk", "mke2fs", "shred ", "wipefs",
@@ -83,6 +84,12 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
     # 禁 shell 控制运算符（; && ||），允许管道 |
     if re.search(r'(?<![|&\\]);|&&|\|\|', _normalized):
         return False
+    # 禁止 bash/python3 -c/-m 执行任意代码（P1 命令注入修复）
+    if re.search(r'\b(bash|python3?)\s+(-c|-m|-i)\b', _normalized):
+        return False
+    # 禁止 curl/wget 管道到 bash/sh/python（P1 管道注入修复）
+    if re.search(r'\b(curl|wget)\b.*\|\s*(bash|sh|python3?)\b', _normalized):
+        return False
     import shlex as _shlex
     try:
         parts = _shlex.split(cmd)
@@ -90,11 +97,12 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
         return False
     if not parts:
         return False
+    # 移除 bash/python3 白名单 - 它们承载 -c 执行任意代码风险过高
     _safe_cmds = {"cat", "grep", "ls", "head", "tail", "wc", "sort", "uniq", "cut",
                   "find", "test", "[", "echo", "printf", "date", "which", "whoami",
                   "ps", "stat", "df", "du", "free", "id", "pgrep", "systemctl",
                   "journalctl", "awk", "sed", "diff", "comm", "md5sum",
-                  "sha256sum", "curl", "wget", "python3", "bash", "tmux"}
+                  "sha256sum", "curl", "wget", "tmux"}
     # 检查所有管道段命令均在白名单中（防止 cp | rm 等单段检查绕过）
     pipeline_cmds = cmd.split("|")
     for seg in pipeline_cmds:
