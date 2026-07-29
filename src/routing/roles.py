@@ -319,20 +319,18 @@ def _build_role_prompt(role: dict) -> str:
     cron_schedule = role.get("cron_schedule", "")
     msgs = [f"## {title} ({name}) — 已就绪"]
 
-    if drive == "feed":
-        msgs.append("驱动模式: feed（事件驱动）")
-        msgs.append("等待 cron-worker 或 bus 消息唤醒。收到 task 后处理并等待下一条。")
-        msgs.append("空闲时定期自检 `/status`。")
-    elif drive == "loop":
+    if drive == "loop":
+        # loop 已淘汰，等效 ondemand
         msgs.append("驱动模式: ondemand（手动触发）")
-        if cron_schedule:
-            msgs.append(f"声明定时: {cron_schedule}（由 cron-worker 触发）")
         msgs.append("无待处理任务时进入空闲等待。")
-    elif drive == "ondemand":
-        msgs.append("驱动模式: ondemand（按需启动）")
-        msgs.append("等待上游角色或 cron-worker 通过 `ccs.py send` 发送任务。")
+    elif drive == "cron":
+        msgs.append(f"驱动模式: cron（{cron_schedule}）")
+        msgs.append("等待 cron-worker 唤醒。")
+    elif drive == "goal":
+        msgs.append("驱动模式: goal（主动执行至目标达成）")
     else:
-        msgs.append(f"驱动模式: {drive}")
+        msgs.append("驱动模式: ondemand（按需启动）")
+        msgs.append("等待上游角色或 cron-worker 通过 `ccs send` 发送任务。")
 
     msgs.append("")
     msgs.append("启动自检:")
