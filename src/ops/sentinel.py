@@ -20,6 +20,7 @@ __all__ = [
 ]
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -27,6 +28,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+LOG = logging.getLogger("sentinel")
 
 # 延迟导入 parse_tmux_name（在 _role_name_from_tmux 和 list_sentinels 中用到）
 # 在模块级别不导入，避免循环依赖
@@ -150,6 +153,7 @@ class CcsSentinel:
             pid=data.get("pid"),
             started_at=data.get("started_at", 0.0),
             lifecycle=data.get("lifecycle", "infinite"),
+            drive=data.get("drive", ""),
             partners=partners,
             bus_track=data.get("bus_track", ""),
             bus_timeout=data.get("bus_timeout", 300),
@@ -180,7 +184,8 @@ def _list_tmux_sessions() -> set[str]:
             if line.startswith("ccs-") or line.startswith("cdx-"):
                 names.add(line)
         return names
-    except Exception:
+    except Exception as _e:
+        LOG.debug("_list_tmux_sessions failed: %s", _e)
         return set()
 
 
@@ -225,8 +230,8 @@ def _get_pid(tmux_session: str) -> Optional[int]:
         )
         if r.stdout.strip().isdigit():
             return int(r.stdout.strip())
-    except Exception:
-        pass
+    except Exception as _e:
+        LOG.debug("_get_pid tmux display-message failed for %s: %s", tmux_session, _e)
     return None
 
 
@@ -237,7 +242,7 @@ def _get_started_at(tmux_session: str) -> float:
             stat = os.stat(f"/proc/{pid}")
             return stat.st_ctime
         except (FileNotFoundError, PermissionError, OSError):
-            pass
+            LOG.debug("_get_started_at stat /proc/%s failed", pid)
     return time.time()
 
 
@@ -315,7 +320,7 @@ def read_sentinel(key_or_role: str, instance_id: int = 0) -> Optional[CcsSentine
             try:
                 return CcsSentinel.from_dict(json.loads(path.read_text()))
             except (json.JSONDecodeError, OSError):
-                pass
+                LOG.warning("read_sentinel 文件损坏或不可读: %s", path)
 
     # 回退：tmux 实时派生（文件不存在时）
     for prefix in ("ccs", "cdx"):
@@ -351,9 +356,10 @@ def read_sentinel(key_or_role: str, instance_id: int = 0) -> Optional[CcsSentine
                         sentinel.health = CcsHealth(**{k: v for k, v in hd.items()
                                               if k in CcsHealth.__dataclass_fields__})
                     except (json.JSONDecodeError, OSError, TypeError):
-                        pass
+                        LOG.warning("read_sentinel health 文件损坏或不可读: %s", health_path)
                 return sentinel
-        except Exception:
+        except Exception as _e:
+            LOG.debug("read_sentinel tmux fallback failed for %s: %s", tmux_name, _e)
             continue
     return None
 
@@ -373,8 +379,8 @@ def list_sentinels() -> list[CcsSentinel]:
             try:
                 s = CcsSentinel.from_dict(json.loads(path.read_text()))
                 result[s.sentinel_key] = s
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as _e:
+                LOG.warning("list_sentinels read sentinel file %s failed: %s", path, _e)
 
     # 2. 读 tmux（补充未被文件覆盖的活 session，或更新 pid）
     for tmux_name in sorted(_list_tmux_sessions()):
@@ -406,8 +412,8 @@ def list_sentinels() -> list[CcsSentinel]:
                 hd = json.loads(health_path.read_text())
                 sentinel.health = CcsHealth(**{k: v for k, v in hd.items()
                                               if k in CcsHealth.__dataclass_fields__})
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as _e:
+                LOG.warning("list_sentinels read health file %s failed: %s", health_path, _e)
         result[key] = sentinel
 
     # filter out zombie sentinels (pid=0/None + empty tmux)
@@ -425,8 +431,8 @@ def update_health(role: str, instance_id: int = 0, **kwargs) -> bool:
         if path.exists():
             try:
                 health.update(json.loads(path.read_text()))
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as _e:
+                LOG.warning("update_health read existing health for %s failed: %s", key, _e)
         health.update(kwargs)
         path.write_text(json.dumps(health))
         return True

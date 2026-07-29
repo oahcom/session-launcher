@@ -84,9 +84,29 @@ class WorkflowClient:
             )
         return self._create_task_impl(title, description, assignee, priority, template_id)
 
+
+    @classmethod
+    def _title_is_placeholder(cls, title: str) -> bool:
+        """检查标题是否为占位符（纯编号/角色+编号），拒绝创建空转任务。"""
+        t = title.strip()
+        if not t:
+            return True
+        import re
+        if re.match(r'^(reviewer|qa|engineer|writer|maintainer|scout)\s*task\s*#?\d*$', t.lower()):
+            return True
+        if re.match(r'^task\s*#?\d*$', t.lower()):
+            return True
+        return False
+
     def create_task_v2(self, title: str, assignee: str,
                        template_id: str, initiator_role: str,
                        description: str = "") -> tuple:
+        # 标题质量门禁：拒绝占位符标题
+        if self._title_is_placeholder(title):
+            raise ValueError(
+                f"标题 '{title[:40]}' 是占位符，不会产生实际收益。"
+                f"请提供有描述性的任务标题（≥8字符，描述具体做什么）"
+            )
         self._validate_create_task(template_id, initiator_role, assignee)
         task_id = self._create_task_impl(title, description, assignee, 0, template_id)
         wf_id = self._create_workflow_instance(task_id, template_id, assignee, initiator_role)
@@ -200,7 +220,7 @@ class WorkflowClient:
         task = self.get_task(task_id)
         if not task:
             return False
-        if task['assigner'] == self.role:
+        if task['assigner'] != self.role and self.role != 'system':
             return False
         self._log(task_id=task_id, action="deleted")
         self._conn.execute("DELETE FROM workflow_instances WHERE task_id=?", (task_id,))
@@ -270,17 +290,29 @@ class WorkflowClient:
         self._log(wf_id=wf_id, action="started", detail=f"step={step_id}")
 
     def complete(self, wf_id: str, summary: str, files: list = None):
+        import uuid
         files_str = ", ".join(files) if files else ""
+        confirm_token = uuid.uuid4().hex[:16]
         self._conn.execute(
-            "UPDATE workflow_instances SET status='completed', completed_at=?, "
+            "UPDATE workflow_instances SET status='step_done_ready', completed_at=?, "
             "step_results=? WHERE instance_id=?",
-            (time.time(), json.dumps({"summary": summary, "files": files_str}), wf_id)
+            (time.time(), json.dumps({"summary": summary, "files": files_str, "confirm_token": confirm_token}), wf_id)
         )
         self._conn.commit()
         wf = self.get(wf_id)
+        # 通知审批者：把 token 发给下一步审批人
+        if wf:
+            task_id = wf.get("task_id", "")
+            reviewer = "reviewer"
+            if wf.get("template_id") == "writer_document":
+                reviewer = "lr"
+            self.notify("workflow", f"审批请求 {wf_id}",
+                evidence=f"task={task_id}, 审批者={reviewer}, token_available=true")
+            self._log(wf_id=wf_id, action="step_done_ready",
+                      detail=f"审批者={reviewer}, token_written=true")
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
-        self._log(wf_id=wf_id, action="completed", detail=f"summary={summary}")
+        return confirm_token
 
     def _sync_task_from_workflows(self, task_id: str):
         rows = self._conn.execute(
@@ -392,6 +424,120 @@ class WorkflowClient:
     def wake_partner(self, role: str, context: str = "", force: bool = False) -> dict:
         from routing.partner import PartnerClient
         return PartnerClient(self.role).wake(role, context, force)
+
+    # ── Confirm 密钥验证 ──
+
+        # ponytail: delegates to lifecycle manager; upgrade to full impl with TTL
+    def confirm_step(self, wf_id: str, token: str) -> dict:
+        """用 confirm_token 密钥确认审批。无正确密钥拒绝通过。"""
+        import json
+        inst = self.get(wf_id)
+        if not inst:
+            return {"confirmed": False, "reason": f"workflow {wf_id} 不存在"}
+        step_results = json.loads(inst.get("step_results", "{}"))
+        stored_token = step_results.get("confirm_token", "")
+        if not stored_token:
+            return {"confirmed": False, "reason": "该步骤未生成 confirm_token，无法审批"}
+        if token != stored_token:
+            return {"confirmed": False, "reason": "confirm_token 不匹配，审批拒绝"}
+        self._conn.execute(
+            "UPDATE workflow_instances SET status='completed', current_step_id=? "
+            "WHERE instance_id=?", ("approved", wf_id)
+        )
+        self._conn.commit()
+        self._log(wf_id=wf_id, action="step_confirmed", detail=f"token={token[:8]}... 审批通过")
+        return {"confirmed": True}
+
+    # ── 子工作流 ──
+
+    # 角色→默认子工作流模板映射
+    _ROLE_TEMPLATE_MAP = {
+        "engineer": "dev_implement",
+        "pg": "pg_implement",
+        "qa": "qa_test_execute",
+        "reviewer": "reviewer_pr_review",
+        "writer": "writer_document",
+        "pm": "pm_requirements",
+        "product_architect": "architect_full_design",
+        "scout": "scout_research_cycle",
+        "coordinator": "coordinator_dispatch",
+        "devops": "devops_deploy_execute",
+        "security_auditor": "security_audit_scan",
+        "knowledge_curator": "knowledge_sync",
+        "lr": "lr_tech_decision",
+        "maintainer": "maintainer_health_monitor",
+        "closer": "closer_close_loop",
+        "optimizer": "developer_implementation",
+    }
+
+    def spawn_child(self, parent_wf_id: str, child_assignee: str,
+                    child_template: str = "", title: str = "",
+                    context: dict = None) -> str:
+        """从父工作流创建子工作流（handoff 场景）。
+        父步骤完成后自动把结果传给下一个角色执行。
+        若 child_template 未指定，按角色自动选默认模板。"""
+        parent = self.get(parent_wf_id)
+        if not parent:
+            raise ValueError(f"parent {parent_wf_id} 不存在")
+        parent_task = self.get_task(parent["task_id"]) if parent.get("task_id") else {}
+        title = title or f"子任务: {parent_task.get('title', parent_wf_id)}"
+        if not child_template:
+            child_template = self._ROLE_TEMPLATE_MAP.get(child_assignee, "dev_implement")
+        child_task_id, child_wf_id = self.create_task_v2(
+            title=title, assignee=child_assignee,
+            template_id=child_template, initiator_role=self.role,
+            description=f"parent={parent_wf_id} summary={parent.get('step_results','')[:200]}"
+        )
+        self._conn.execute(
+            "UPDATE workflow_instances SET parent_wf_id=?, subflow_source_step_id=? WHERE instance_id=?",
+            (parent_wf_id, parent.get("current_step_id", ""), child_wf_id)
+        )
+        self._conn.commit()
+        self._log(wf_id=child_wf_id, action="spawned",
+                  detail=f"parent={parent_wf_id}, child={child_wf_id}, target={child_assignee}")
+        return child_wf_id
+
+    def get_children(self, parent_wf_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM workflow_instances WHERE parent_wf_id=? ORDER BY created_at",
+            (parent_wf_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def advance_pipeline(self, wf_id: str, summary: str) -> dict:
+        """推进多步骤流水线：当前步骤完成后自动派发下一个 handoff 角色的子工作流。
+        返回下一个步骤信息或 None（流程结束）。"""
+        import json, uuid
+        inst = self.get(wf_id)
+        if not inst:
+            return {"advanced": False, "reason": "实例不存在"}
+        template_id = inst.get("template_id", "")
+        row = self._conn.execute(
+            "SELECT steps_json FROM workflow_templates WHERE template_id=?", (template_id,)
+        ).fetchone()
+        if not row:
+            return {"advanced": False, "reason": f"模板 {template_id} 不存在"}
+        steps = json.loads(dict(row)["steps_json"])
+        current_step = inst.get("current_step_id", "")
+        # 找当前步骤的下一步
+        found = False
+        for s in steps:
+            if found and s.get("type") == "handoff":
+                # 更新父工作流 current_step
+                child_id = self.spawn_child(wf_id, s["target_role"],
+                    title=f"{s.get('title', template_id)}", context={"summary": summary})
+                self._conn.execute(
+                    "UPDATE workflow_instances SET current_step_id=? WHERE instance_id=?",
+                    (s["step_id"], wf_id)
+                )
+                self._conn.commit()
+                self._log(wf_id=wf_id, action="handoff",
+                          detail=f"→ {child_id} ({s['target_role']})")
+                return {"advanced": True, "next_step": s["step_id"],
+                        "child_wf_id": child_id, "target_role": s["target_role"]}
+            if s["step_id"] == current_step:
+                found = True
+        return {"advanced": False, "reason": "已到流水线末尾"}
 
     # ── Kanban ──
 

@@ -362,7 +362,7 @@ def start(role: str, title: str = "", detach: bool = False,
                 ["tmux", "capture-pane", "-p", "-t", f"{tmux_name}:0.0", "-S-3"],
                 capture_output=True, text=True, timeout=3
             )
-            if "❯" in out.stdout:
+            if "❯" in out.stdout or ("claude" in out.stdout.lower() and "ready" in out.stdout.lower()):
                 break
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)

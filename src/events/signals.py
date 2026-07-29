@@ -6,6 +6,7 @@ Signal Checkers — 所有 input_signals 的检查逻辑。
   新格式: {"type": "bus|shell|http|journalctl|custom", "spec": {...}, "filter": "...", "schedule": "...", "timeout_sec": 10}
   旧格式: {"source": "bus cat=security"} — 自动转换 + warning
 """
+import logging
 import subprocess
 import shlex
 import os
@@ -14,6 +15,7 @@ import re
 import urllib.request
 from pathlib import Path
 
+LOG = logging.getLogger("signals")
 
 from paths import BUS_CLIENT as _BUS_CLIENT_PATH
 
@@ -145,8 +147,8 @@ def check_git_staged(filter_str: str = "") -> bool:
             )
             if result.stdout.strip():
                 return True
-        except Exception:
-            pass
+        except Exception as _e:
+            LOG.warning("git_staged check failed for %s: %s", repo, _e)
     return False
 
 
@@ -189,8 +191,9 @@ def check_mem_disk(filter_str: str = "") -> bool:
                     if mem_available_mb < 500:
                         return True
                 break
-    except Exception:
-        pass
+    except Exception as _e:
+        LOG.warning("mem_disk meminfo check failed: %s", _e)
+        mem_available_mb = -1  # safe fallback — treat as unknown
 
     try:
         result = subprocess.run(
@@ -204,8 +207,8 @@ def check_mem_disk(filter_str: str = "") -> bool:
                 usage = int(usage_str)
                 if usage > 90:
                     return True
-    except Exception:
-        pass
+    except Exception as _e:
+        LOG.warning("mem_disk df check failed: %s", _e)
 
     return False
 

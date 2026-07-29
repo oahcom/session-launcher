@@ -35,7 +35,7 @@ def main():
                           "--src", "route-activator",
                           "--evidence", json.dumps({"routed": routed, "total": total})],
                          capture_output=True, timeout=10)
-        except: pass
+        except Exception: pass
 
 if __name__ == "__main__":
     main()

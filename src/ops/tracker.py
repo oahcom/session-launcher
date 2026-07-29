@@ -36,7 +36,8 @@ def _bus_read_latest(cat: str) -> Optional[dict]:
         bb = Blackboard()
         facts = bb.read(cat=cat, limit=1)
         return facts[0] if facts else None
-    except Exception:
+    except Exception as e:
+        _log.warning("_bus_read_latest: 读取 %s 失败: %s", cat, e)
         return None
 
 
@@ -46,7 +47,7 @@ def _bus_write(cat: str, text: str, src: str = ""):
         bb = Blackboard()
         bb.write(cat, text, src=src)
     except Exception:
-        pass
+        _log.warning("_bus_write: 写入失败 cat=%s src=%s", cat, src or 'none')
 
 
 def _audit_monitor(decision: str, detail: str, src: str = ""):
@@ -68,9 +69,9 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             if not latest:
                 continue
 
-            ts = latest.get("timestamp", 0)
+            ts = latest.ts
             age = time.time() - ts
-            src = latest.get("src", "")
+            src = latest.src
 
             # 更新本方哨兵的 bus 消息年龄
             update_health(this_role, instance_id=instance_id,
@@ -101,8 +102,8 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
                         capture_output=True, timeout=5
                     )
                     p_alive = r.returncode == 0
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.warning("tmux_check: 检查伙伴 %s 失败: %s", p, e)
                 if p_alive:
                     partner_alive = True
 
@@ -124,7 +125,7 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             last_reminder = now
 
         except Exception as e:
-            _log_info(tag, f"异常: {e}，等待下一轮重试")
+            _log.warning("%s: 异常 %s，等待下一轮重试", tag, e)
             time.sleep(interval)
 
 

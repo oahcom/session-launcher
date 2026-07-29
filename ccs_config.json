@@ -23,6 +23,42 @@
           "审计当前所有 CCS 哨兵",
           "检查 bus 轮次超时",
           "写本周安全快照"
+        ],
+        "engineer": [
+          "加载待处理 task_spec 并执行",
+          "检查 TASKS.md 开始下一个任务"
+        ],
+        "reviewer": [
+          "加载待处理 task_spec 并审查",
+          "检查积压代码审查任务"
+        ],
+        "qa": [
+          "加载待处理 task_spec 并测试",
+          "检查待执行测试任务"
+        ],
+        "writer": [
+          "加载待处理 task_spec 并文档",
+          "检查待写文档任务"
+        ],
+        "closer": [
+          "加载待处理 task_spec 并闭环",
+          "检查待闭环工作流"
+        ],
+        "scout": [
+          "加载待处理 task_spec 并侦察",
+          "检查待调研任务"
+        ],
+        "product_architect": [
+          "加载待处理 task_spec 并架构设计",
+          "检查待架构任务"
+        ],
+        "maintainer": [
+          "加载待处理 task_spec 并运维",
+          "检查待运维任务"
+        ],
+        "curator": [
+          "加载待处理 task_spec 并管理知识",
+          "检查知识管理任务"
         ]
       }
     }

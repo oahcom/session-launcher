@@ -130,7 +130,7 @@ def main():
         subprocess.run([sys.executable, str(BUS_CLIENT), "write", "ccs_health", summary,
                        "--src", "health-daemon", "--evidence", json.dumps(summary_data)],
                       capture_output=True, timeout=10)
-    except: pass
+    except Exception: pass
 
     # Write workspace output
     out_dir = Path.home() / "hermes" / "workspace" / "auto-cycle-v5"

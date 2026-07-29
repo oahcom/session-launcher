@@ -387,12 +387,30 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         "- ✅ 文件路径使用 `os.path.realpath()` 规范化防路径遍历\n"
     )
 
+    git_rules = (
+        "\n### Git 操作规范（本地即生产）\n"
+        "- ❌ 禁止切分支（`git switch`、`git checkout <branch>`、`git checkout -b`）——本地是生产环境\n"
+        "- ❌ 禁止 git checkout <文件> 或 git stash——会破坏其他 session 的未提交更改\n"
+        "- ❌ 禁止 `git commit --no-verify` 跳过 hooks——代码质量最后一道防线\n"
+        "- ✅ 每次变更后必须 `git add → git commit → git push`，不 push = 变更丢失\n"
+        "- ✅ commit message 格式: `feat/fix/refactor: 中文描述`\n"
+    )
+
+    review_rules = (
+        "\n### 提交前自审查\n"
+        "- ✅ 执行 `cd /home/administrator/session-launcher && codex review --uncommitted -c model=\"9router_hermes\"`\n"
+        "- ✅ 逐问题修复 → 重新运行 → 连续两轮零问题才可提交\n"
+        "- ✅ 审查结论以 `# Review: <结论>` 写入 commit message\n"
+    )
+
     knowledge_block = (
         f"\n\n<!-- KNOWLEDGE:START -->\n"
         f"# 契约 — {role.get('title', name)}\n\n"
         f"角色知识由 Skill 和 prompt 注入提供。CLAUDE.md 仅保留身份契约。\n"
         f"{contract}\n"
         f"{sec_redlines}\n"
+        f"{git_rules}\n"
+        f"{review_rules}\n"
         f"<!-- KNOWLEDGE:END -->\n"
     )
 

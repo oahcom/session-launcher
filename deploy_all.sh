@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-LAUNCHER_DIR="/home/administrator/session-launcher"
+LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER="python3 src/launcher.py"
 
 cd "$LAUNCHER_DIR"
@@ -56,7 +56,7 @@ for role in "${CODEX_ROLES[@]}"; do
         fi
     fi
     echo "▶ $role..."
-    RESULT=$($LAUNCHER start "$role" --engine codex 2>&1 || true)
+    RESULT=$($LAUNCHER start "$role" --drive goal --no-attach 2>&1 || true)
     if echo "$RESULT" | grep -q "success"; then
         echo "✅ $role"
     else
@@ -69,4 +69,4 @@ echo "=== 运行状态 ==="
 echo "CCS:"
 $LAUNCHER status 2>/dev/null || echo "  none"
 echo "Codex:"
-$LAUNCHER cdx-status 2>/dev/null || echo "  none"
+$LAUNCHER status 2>/dev/null | grep -i "codex\|CodeX" || echo "  none"

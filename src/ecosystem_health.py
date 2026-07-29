@@ -130,7 +130,7 @@ def _check_module_import(project_path: Path, module: str) -> CheckItem:
     actual = _IMPORT_MAP.get(module, module)
     result = subprocess.run(
         [sys.executable, "-c", f"import {actual}"],
-        env={**os.environ, "PYTHONPATH": python_path},
+        env={**os.environ, "PYTHONPATH": python_path + ":" + os.environ.get("PYTHONPATH", "")},
         capture_output=True, text=True, timeout=10
     )
     ok = result.returncode == 0

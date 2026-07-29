@@ -108,6 +108,9 @@ class PartnerClient:
                 "task": None,
                 "elapsed_sec": 0.0,
             }
+
+        # 轮询循环：等待任务完成或超时
+        while time.time() - start_ts < timeout:
             elapsed = time.time() - start_ts
 
             # 信号①：task.status != 'created'

@@ -75,8 +75,8 @@ def _audit_monitor(decision: str, detail: str, src: str = ""):
         from bus_protocol import Blackboard
         Blackboard().write("monitor_audit",
             f"决策: {decision} → {detail}", src=src or "watchdog")
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("audit_monitor bus write failed: %s", e)
 
 
 def _restart_partner(partner_role: str, instance_id: int = 0):
@@ -173,7 +173,7 @@ def check_auto_continue(role: str, instance_id: int = 0) -> bool:
     """检查是否需要 auto-continue。返回 True 如果发送了 continue。"""
     from core import _is_alive, _tmux_send
     from tmux_ops import make_tmux_name
-    now = __import__("time").time()
+    now = time.time()
     key = f"{role}[{instance_id}]"
     with _AUTO_CONTINUE_LOCK:
         last_sent = _AUTO_CONTINUE_SENT.get(key, 0)

@@ -4,6 +4,7 @@ set -e
 SKILL_SRC=~/shared-skills/hermes-origin/skills
 WS_DIR=~/ccs-workspaces
 
+# 全量角色→技能分类映射（来自 persona JSON 的 skill_refs）
 declare -A ROLE_SKILL_DIR=(
   [maintainer]=maintenance
   [coordinator]=coordination
@@ -25,18 +26,41 @@ declare -A ROLE_SKILL_DIR=(
   [engineer]=code
   [reviewer]=review
   [archivist]=curation
+  [pm]=pm
+  [qa]=qa
+  [devops]=devops
+  [writer]=writer
+  [lr]=lr
+  [pg]=pg
+  [public]=coordination
+  [rebutter]=debate
+  [regression_test_return]=qa
+  [research]=research
+  [test]=maintenance
+  # 以下角色无 persona JSON，使用默认分类
+  [architect]=coordination
+  [architecture]=coordination
+  [e2e_test]=qa
+  [data-analyst]=research
+  [verifier]=debate
+  [workflow_engine]=maintenance
+  [ccs-product_architect]=arch
 )
 
 # 跨目录 skill_refs 补充映射
 declare -A ROLE_EXTRA_DIRS=(
   [consumer]="knowledge"
   [debate_verifier]="coordination"
+  [public]="coordination"
+  [ccs-coordinator]="monitor coordination"
+  [archivist]="maintenance coordination"
+  [rebutter]="coordination"
 )
 
 deploy_role() {
   local role=$1
+  local ws=${2:-$WS_DIR/$role}
   local sd=${ROLE_SKILL_DIR[$role]:-$role}
-  local ws=$WS_DIR/$role
   local tgt=$ws/.claude/skills
   [ ! -d "$ws" ] && return 0
   rm -rf "$tgt" 2>/dev/null || true
@@ -62,7 +86,18 @@ deploy_role() {
   [ "$count" -gt 0 ] && echo "  $role ($sd): $count skills"
 }
 
-for ws in "$WS_DIR"/*/; do
-  deploy_role "$(basename "$ws")"
-done
-echo "=== deploy complete ==="
+# ── 单角色部署入口（被 core.py start() 调用）──
+deploy_single_role() {
+  deploy_role "$1" "${2:-}"
+  echo "=== role $1 deploy complete ==="
+}
+
+# ── 全量部署（手动运行）──
+if [ "${1:-}" = "--all" ]; then
+  for ws in "$WS_DIR"/*/; do
+    deploy_role "$(basename "$ws")"
+  done
+  echo "=== full deploy complete ==="
+elif [ -n "${1:-}" ] && [ "${1#--}" = "$1" ]; then
+  deploy_single_role "$1" "${2:-}"
+fi

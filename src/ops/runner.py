@@ -135,3 +135,4 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
             time.sleep(5)
 
     t = threading.Thread(target=_run, daemon=True)
+    t.start()

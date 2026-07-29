@@ -25,8 +25,7 @@ def check(name, ok, detail=""):
 
 def run(cmd, timeout=30):
     try: return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(SRC.parent))
-    except subprocess.TimeoutExpired: return None
-    except Exception as e: return None
+    except (subprocess.TimeoutExpired, Exception): return None
 
 # 1. PyCompile all source files
 print("\n## 1. PyCompile 编译检查")
@@ -65,7 +64,7 @@ else:
 
 def _valid_json(path, key):
     try: return bool(json.loads(path.read_text()).get(key))
-    except: return False
+    except Exception: return False
 
 # 5. Role persona files
 print("\n## 5. 角色文件健康")

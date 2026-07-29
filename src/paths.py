@@ -8,6 +8,9 @@ from pathlib import Path
 
 _HOME = Path.home()
 
+# ── hermes_bus 路径注册 ──
+sys.path.insert(0, str(_HOME / ".hermes" / "scripts"))
+
 # ── 从 hermes_bus.config 统一导入 ──
 from hermes_bus.config import (
     BUS_CLIENT, BUS_PROTOCOL,
@@ -48,6 +51,9 @@ SESSION_ROLES_PERSONAS = SESSION_ROLES_ROOT / "personas" / "session-roles"
 # ── Hermes 工作流 ──
 HERMES_WORKFLOWS = _HOME / ".hermes" / "workflows"
 HERMES_WORKFLOW_CHAINS = HERMES_WORKFLOWS / "chains"
+
+# ── CCS Session 数据目录（供 tmux_ops 等引用）──
+CCS_SESSIONS_DIR = _HOME / ".hermes" / "run" / "ccs-sessions"
 
 
 def ensure_paths() -> None:

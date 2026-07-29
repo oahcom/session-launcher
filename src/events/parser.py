@@ -19,7 +19,7 @@ import warnings
 from pathlib import Path
 
 from paths import BUS_CLIENT
-BUS_CLIENT = str(BUS_CLIENT)
+BUS_CLIENT_STR = str(BUS_CLIENT)
 
 
 def _check_bus(spec: dict, filter_str: str, timeout: int = 10) -> bool:

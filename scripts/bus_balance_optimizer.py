@@ -23,7 +23,7 @@ def get_stats():
             parts = line.strip().split(":")
             if len(parts) >= 2:
                 try: stats[parts[0].strip()] = int(parts[1].strip().split()[0])
-                except: pass
+                except Exception: pass
     return stats
 
 

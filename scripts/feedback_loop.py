@@ -10,7 +10,7 @@ SOURCES = ["reflexion_lesson", "blocker", "code_fix", "architecture", "notice", 
 def get_cursor() -> int:
     if STATE_FILE.exists():
         try: return json.loads(STATE_FILE.read_text()).get("cursor", 0)
-        except: return 0
+        except (json.JSONDecodeError, OSError, KeyError): return 0
     return 0
 def set_cursor(c: int):
     STATE_FILE.write_text(json.dumps({"cursor": c, "updated": time.time()}))
@@ -19,7 +19,7 @@ def read_facts(cat: str, limit: int = 30) -> list:
     try:
         data = json.loads(r.stdout)
         return [{"id": f["id"], "title": f["title"], "cat": f["category"]} for f in data.get("facts", [])]
-    except: return []
+    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired): return []
 def main():
     dry_run = "--dry-run" in sys.argv; quiet = "--quiet" in sys.argv
     if not quiet: print(f"[{time.strftime("%H:%M:%S")}] Feedback Loop")

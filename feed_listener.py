@@ -22,8 +22,11 @@ import time
 from typing import Optional
 
 
-FEED_SOCKET = "/tmp/sister_bus_feed.sock"
-BUS_CLIENT = "/home/administrator/.hermes/scripts/bus_client.py"
+from pathlib import Path
+_HOME = Path.home()
+FEED_SOCKET = _HOME / ".hermes" / "run" / "sister_bus_feed.sock" if (_HOME / ".hermes" / "run" / "sister_bus_feed.sock").exists() else "/tmp/sister_bus_feed.sock"
+_BUS_CLIENT = _HOME / ".hermes" / "scripts" / "bus_client.py"
+BUS_CLIENT = str(_BUS_CLIENT) if _BUS_CLIENT.exists() else str(Path.home() / ".hermes" / "scripts" / "bus_client.py")
 
 # 辩论结束关键词
 DEBATE_END_KEYWORDS = (
@@ -69,15 +72,23 @@ def connect() -> socket.socket:
 
 
 def _inject_to_tmux(tmux_target: str, event: dict):
-    """将 feed 消息注入到 tmux 会话。"""
+    """将 feed 消息注入到 tmux 会话。
+
+    task_spec / workflow 消息发送 task 触发指令。
+    其他消息发送 /goal context。
+    """
     msg = event.get("msg", event)
     cat = msg.get("cat", "")
     title = msg.get("title", "")
     text = msg.get("text", "")
     body = msg.get("evidence", "") or msg.get("body", "")
-    payload = f"/goal [{cat}] {title}"
-    if body:
-        payload += f"\n{body[:200]}"
+    if cat in ("task_spec", "workflow", "scheduler"):
+        snippet = (body or title)[:200]
+        payload = f"/goal [{cat}] 新任务: {title}\n{snippet}\n请立即: wf check → 执行 → wf complete"
+    else:
+        payload = f"/goal [{cat}] {title}"
+        if body:
+            payload += f"\n{body[:200]}"
     try:
         subprocess.run(
             ["tmux", "send-keys", "-t", tmux_target, payload, "Enter"],
@@ -92,6 +103,31 @@ def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""
 
     tmux_target: 指定后自动将消息注入到对应 tmux 会话（如 "ccs-architect"）。
     """
+    # PID 锁：防止同一 tmux_target 的重复进程（O_EXCL 原子创建，消除 TOCTOU 竞态）
+    if tmux_target:
+        import os, signal as _sig
+        pid_dir = os.path.expanduser("~/.hermes/run/feed_listeners")
+        os.makedirs(pid_dir, exist_ok=True)
+        pid_file = os.path.join(pid_dir, f"{tmux_target}.pid")
+        try:
+            fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+        except FileExistsError:
+            try:
+                old_pid = int(open(pid_file).read().strip())
+                os.kill(old_pid, 0)  # 检查进程存活
+                print(f"[feed_listener] 已有存活实例 PID={old_pid}，退出")
+                return
+            except (ValueError, OSError, FileNotFoundError):
+                pass  # 旧进程已死，覆盖写
+                Path(pid_file).write_text(str(os.getpid()))
+        import atexit, functools
+        def _cleanup():
+            try: os.unlink(pid_file)
+            except OSError: pass
+        atexit.register(lambda: [os.unlink(pid_file) for _ in [1] if os.path.exists(pid_file)])
+        _sig.signal(_sig.SIGTERM, lambda *_: (atexit._run_exitfuncs(), sys.exit(0)))
     print(f"正在连接 {FEED_SOCKET}...")
     s = None
 

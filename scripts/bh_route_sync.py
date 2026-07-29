@@ -91,7 +91,7 @@ def main():
     cursor = {}
     if STATE_FILE.exists():
         try: cursor = json.loads(STATE_FILE.read_text())
-        except: pass
+        except Exception: pass
 
     registered = 0
     all_actions = []
@@ -136,7 +136,7 @@ def main():
             subprocess.run([sys.executable, str(BUS_CLIENT), "write", "architecture", summary,
                           "--src", "bh-route-sync", "--evidence", json.dumps({"new": registered, "total_mapped": len(mapping)})],
                          capture_output=True, timeout=10)
-        except: pass
+        except Exception: pass
 
     return registered
 
@@ -223,7 +223,7 @@ def main():
     cursor = {}
     if STATE_FILE.exists():
         try: cursor = json.loads(STATE_FILE.read_text())
-        except: pass
+        except Exception: pass
 
     registered = 0
     all_actions = []
@@ -288,7 +288,7 @@ def main():
             subprocess.run([sys.executable, str(BUS_CLIENT), "write", "architecture", summary,
                           "--src", "bh-route-sync", "--evidence", json.dumps({"new": registered, "total_mapped": len(mapping), "bh_injections": len(sr_to_bh)})],
                          capture_output=True, timeout=10)
-        except: pass
+        except Exception: pass
 
     return registered
 

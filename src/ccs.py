@@ -81,6 +81,8 @@ def main():
                          help="实例编号: 0=主实例(默认), >0=扩展实例")
     p_start.add_argument("--instances", type=int, default=0,
                          help="批量启动 N 个实例（从 1 到 N），仅 detach 模式")
+    p_start.add_argument("--dry-run", action="store_true",
+                         help="只打印将执行的 tmux 命令/参数/路径，不实际执行；返回结构化 JSON (dry_run=true, planned_actions[])")
 
     # ── config ──
     p_cfg = sub.add_parser("config", help="查看/修改 ccs_config.json")
@@ -115,6 +117,8 @@ def main():
     p_stop.add_argument("role", help="角色名")
     p_stop.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
+    p_stop.add_argument("--dry-run", action="store_true",
+                         help="只打印将执行的操作，不实际执行")
 
 
     # ── status ──
@@ -128,6 +132,8 @@ def main():
                         help="来源角色名（三源验证用）")
     p_send.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
+    p_send.add_argument("--dry-run", action="store_true",
+                         help="只打印将执行的操作，不实际执行")
 
     # ── output ──
     p_out = sub.add_parser("output", help="查看 CCS 输出")
@@ -135,6 +141,8 @@ def main():
     p_out.add_argument("--tail", type=int, default=20, help="行数")
     p_out.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
+    p_out.add_argument("--dry-run", action="store_true",
+                        help="只打印将执行的操作，不实际执行")
 
     # ── stream ──
     p_stream = sub.add_parser("stream", help="流式输出 CCS 输出")
@@ -150,6 +158,8 @@ def main():
     p_health = sub.add_parser("health", help="健康检查")
     p_health.add_argument("role", nargs="?", default="",
                           help="角色名（空=全部）")
+    p_health.add_argument("--dry-run", action="store_true",
+                          help="只打印将执行的操作，不实际执行")
 
     # ── register ──
     p_reg = sub.add_parser("register", help="注册手动 tmux 为 CCS")
@@ -216,7 +226,25 @@ def main():
     # ═══════════ 命令分发 ═══════════
 
     if args.command == "start":
-        if args.instances > 0:
+        if args.dry_run:
+            result = start(
+                role=args.role,
+                title=args.title,
+                detach=args.no_attach,
+                init_prompt=args.prompt,
+                partners=args.partner,
+                auto_restart=args.auto_restart,
+                bus_track=args.bus_track,
+                bus_timeout=args.bus_timeout,
+                drive=args.drive,
+                feed_cat=args.feed_cat,
+                workspace=args.workspace,
+                no_auto_send=args.no_auto_send,
+                instance_id=args.instance_id,
+                dry_run=True,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.instances > 0:
             # 批量启动 N 个实例
             results = []
             for i in range(1, args.instances + 1):
@@ -262,10 +290,14 @@ def main():
                 sys.exit(1)
 
     elif args.command == "stop":
-        result = stop(args.role, instance_id=args.instance_id)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        if not result.get("success"):
-            sys.exit(1)
+        if args.dry_run:
+            result = stop(args.role, instance_id=args.instance_id, dry_run=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            result = stop(args.role, instance_id=args.instance_id)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
 
     elif args.command == "status":
         result = status()
@@ -286,14 +318,23 @@ def main():
                       f"bus_age={health['bus_msg_age']}s restarts={health['restart_count']}")
 
     elif args.command == "send":
-        result = send(args.role, args.message, source=args.from_role,
-                      instance_id=args.instance_id)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        if not result.get("success"):
-            sys.exit(1)
+        if args.dry_run:
+            result = send(args.role, args.message, source=args.from_role,
+                          instance_id=args.instance_id, dry_run=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            result = send(args.role, args.message, source=args.from_role,
+                          instance_id=args.instance_id)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if not result.get("success"):
+                sys.exit(1)
 
     elif args.command == "output":
-        print(output(args.role, tail=args.tail, instance_id=args.instance_id))
+        if args.dry_run:
+            result = output(args.role, tail=args.tail, instance_id=args.instance_id, dry_run=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(output(args.role, tail=args.tail, instance_id=args.instance_id))
 
     elif args.command == "stream":
         from ccs_socket import CCSStreamer
@@ -305,8 +346,12 @@ def main():
         client.start(lambda chunk: print(chunk, end="", flush=True))
 
     elif args.command == "health":
-        result = health_check(args.role)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.dry_run:
+            result = health_check(args.role, dry_run=True)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            result = health_check(args.role)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif args.command == "dashboard":
         from core import dashboard

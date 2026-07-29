@@ -39,4 +39,4 @@ def validate_role(func):
 def clear_role_cache():
     """运行时清除角色缓存，供 coordinator 调用"""
     global _KNOWN_ROLES
-    _KNOWN_ROLES = {}
+    _KNOWN_ROLES = set()

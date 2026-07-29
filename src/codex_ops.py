@@ -174,10 +174,13 @@ def _build_codex_runner_script(role: dict) -> str:
     drive = role.get("drive", "ondemand")
     idle_action = role.get("idle_action", "")
 
+    # ponytail: --dangerously-skip-permissions 用于无交互场景（tmux 内 codex 无法弹出权限确认框）。
+    # 如果后续 codex 支持 tmux 兼容的权限确认方式，应移除此标志。
+    _perm_flag = os.environ.get("CODEX_PERM_FLAG", "--dangerously-skip-permissions")
+
     if drive == "goal":
         return (
-            "codex --model 9router_hermes"
-            " --dangerously-skip-permissions\n"
+            f"codex --model 9router_hermes {_perm_flag}\n"
         )
 
     loop_delay = CODEX_LOOP_DELAY
@@ -188,7 +191,7 @@ def _build_codex_runner_script(role: dict) -> str:
 
     return (
         "while true; do\n"
-        f'  codex exec --dangerously-skip-permissions -m 9router_hermes {shlex.quote(prompt)}\n'
+        f'  codex exec {_perm_flag} -m 9router_hermes {shlex.quote(prompt)}\n'
         f'  echo "[codex-dev] round done, sleeping {loop_delay}s..."\n'
         f"  sleep {loop_delay}\n"
         "done\n"

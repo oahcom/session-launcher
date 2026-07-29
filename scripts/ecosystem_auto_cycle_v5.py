@@ -49,10 +49,10 @@ def get_bus_stats():
     for line in r.stdout.split("\n"):
         if "Blackboard" in line or "board:" in line.lower():
             try: total = int(line.split(":")[1].strip().split()[0])
-            except: pass
+            except Exception: pass
         elif line.strip().startswith("task_spec"):
             try: task_spec = int(line.split(":")[1].strip().split()[0])
-            except: pass
+            except Exception: pass
     return {"total": total, "task_spec": task_spec, "ratio": 1 - task_spec / max(total, 1)}
 
 def _probe_external_trace():
@@ -101,7 +101,7 @@ def _probe_unpushed_value():
         agent_jobs = [j for j in jobs if not j.get('no_agent', True)]
         prompt_refs = sum(1 for j in agent_jobs if any(x in j.get('prompt', '') for x in ['bh_integration', 'auto_cycle', 'bus_balance', 'feedback', 'step_engine', 'ecosystem_health']))
         return min(1.0, prompt_refs / 3.0)
-    except: return 0.0
+    except (OSError, json.JSONDecodeError, KeyError): return 0.0
 
 def _probe_workspace_docs():
     """检测迭代文档。"""
@@ -110,7 +110,7 @@ def _probe_workspace_docs():
         docs = glob.glob(os.path.expanduser('~/hermes/workspace/*.md'))
         iter_docs = [d for d in docs if '迭代' in d or '迭代' in open(d).read(200)]
         return min(1.0, len(iter_docs) * 0.25)  # 4+ docs = 1.0
-    except: return 0.0
+    except (OSError, json.JSONDecodeError): return 0.0
 
 def _probe_evolution():
     """检测 prompt/工作流质量。检查 evolution log 是否存在。"""
@@ -127,7 +127,7 @@ def _probe_evolution():
         enriched = sum(1 for r in rows if len(r['steps_json']) > 500)
         total = len(rows)
         return min(1.0, enriched / max(total, 1) * 1.5)  # 67%+ enriched = 1.0
-    except: return 0.5
+    except (ImportError, OSError): return 0.5
 
 def assess_self(bus_stats, action_names, output_count):
     scores = {}
