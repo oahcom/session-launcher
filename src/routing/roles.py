@@ -353,17 +353,10 @@ def _resolve_ws_paths(name: str) -> list[Path]:
     return paths
 
 def inject_role_knowledge_into_workspace(role: dict) -> str:
-    """将角色契约写入 workspace 级 CLAUDE.md（WORKSPACE_SYS marker 之后）。
+    """将角色契约 + base.md 通用红线写入 workspace 级 CLAUDE.md（KNOWLEDGE 块）。
 
-    收敛策略：CLAUDE.md 只放身份契约（产出/消费/协作组/验证标准/驱动方式）。
-    完整方法论 → Skill 文件（Skill 目录自动发现）。
-    角色 prompt → ccs send 注入对话历史。
-
-    自动处理 `{name}` 和 `ccs-{name}` 双路径，同时更新所有匹配的 workspace。
-
-    注：KNOWLEDGE 块仅包含 role_assembler 输出的角色定义，
-    不含 BUS_LOOP_SUFFIX（BUS_LOOP_SUFFIX 仅在 ccs start 时通过
-    tmux send 发送一次，由 Claude 写入对话历史而非 CLAUDE.md）。
+    base.md 内容通过 role_assembler 编译注入（含角色职责红线、Git 规范、自审查指令等）。
+    原有硬编码的 sec_redlines/git_rules/review_rules 已由 base.md 覆盖，移除冗余。
     """
     name = role.get("name", "")
 
@@ -371,48 +364,27 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     if not ws_paths:
         return "skipped (no workspace)"
 
-    # ── 收敛：只写契约块（身份关系），不 dump 全文知识 ──
-    # 完整方法论 → Skill 文件（Skill 目录自动发现）
-    # 角色 prompt → role_assembler 编译产物（ccs send 注入对话）
-    # CLAUDE.md 只保留 "我是谁、跟谁协作、验证标准"
-    contract = _contract_block(role)
-
-    # ── 安全红线（自包含到每个 workspace CLAUDE.md）──
-    sec_redlines = (
-        "\n### 安全红线（全员通用）\n"
-        "- ❌ 禁止硬编码凭据、密钥、令牌——使用环境变量或密钥管理注入\n"
-        "- ❌ 禁止 `shell=True` + 字符串拼接（用 `subprocess.run([...])` 代替）\n"
-        "- ❌ 禁止 SQL 字符串拼接（用参数化查询或 ORM）\n"
-        "- ✅ 所有外部输入必须验证类型、范围、格式\n"
-        "- ✅ 文件路径使用 `os.path.realpath()` 规范化防路径遍历\n"
-    )
-
-    git_rules = (
-        "\n### Git 操作规范（本地即生产）\n"
-        "- ❌ 禁止切分支（`git switch`、`git checkout <branch>`、`git checkout -b`）——本地是生产环境\n"
-        "- ❌ 禁止 git checkout <文件> 或 git stash——会破坏其他 session 的未提交更改\n"
-        "- ❌ 禁止 `git commit --no-verify` 跳过 hooks——代码质量最后一道防线\n"
-        "- ✅ 每次变更后必须 `git add → git commit → git push`，不 push = 变更丢失\n"
-        "- ✅ commit message 格式: `feat/fix/refactor: 中文描述`\n"
-    )
-
-    review_rules = (
-        "\n### 提交前自审查\n"
-        "- ✅ 执行 `cd /home/administrator/session-launcher && codex review --uncommitted -c model=\"9router_hermes\"`\n"
-        "- ✅ 逐问题修复 → 重新运行 → 连续两轮零问题才可提交\n"
-        "- ✅ 审查结论以 `# Review: <结论>` 写入 commit message\n"
-    )
-
-    knowledge_block = (
-        f"\n\n<!-- KNOWLEDGE:START -->\n"
-        f"# 契约 — {role.get('title', name)}\n\n"
-        f"角色知识由 Skill 和 prompt 注入提供。CLAUDE.md 仅保留身份契约。\n"
-        f"{contract}\n"
-        f"{sec_redlines}\n"
-        f"{git_rules}\n"
-        f"{review_rules}\n"
-        f"<!-- KNOWLEDGE:END -->\n"
-    )
+    # 优先使用 role_assembler 输出（含 base.md + 角色 prompt + driver mixin）
+    assembled = _role_assembler_output(name, role)
+    if assembled:
+        knowledge_block = (
+            f"\n\n<!-- KNOWLEDGE:START -->\n"
+            f"{assembled}\n"
+            f"<!-- KNOWLEDGE:END -->\n"
+        )
+    else:
+        # 回退: 仅 contract + base.md（旧路径）
+        contract = _contract_block(role)
+        base_path = Path(os.environ.get('SESSION_ROLES_ROOT',
+                          str(Path.home() / 'hermes-session-roles'))) / 'prompts' / 'base.md'
+        base_content = base_path.read_text(encoding='utf-8') if base_path.exists() else _fallback_base_content()
+        knowledge_block = (
+            f"\n\n<!-- KNOWLEDGE:START -->\n"
+            f"# 契约 — {role.get('title', name)}\n\n"
+            f"{contract}\n"
+            f"{base_content}\n"
+            f"<!-- KNOWLEDGE:END -->\n"
+        )
 
     injected = 0
     for claude_md in ws_paths:
@@ -442,6 +414,33 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         injected += 1
 
     return f"injected ({injected} workspace(s))"
+
+def _fallback_base_content() -> str:
+    """base.md 不可用时的回退（旧硬编码通用规则）。"""
+    sec = (
+        "\n### 安全红线（全员通用）\n"
+        "- ❌ 禁止硬编码凭据、密钥、令牌——使用环境变量或密钥管理注入\n"
+        "- ❌ 禁止 `shell=True` + 字符串拼接（用 `subprocess.run([...])` 代替）\n"
+        "- ❌ 禁止 SQL 字符串拼接（用参数化查询或 ORM）\n"
+        "- ✅ 所有外部输入必须验证类型、范围、格式\n"
+        "- ✅ 文件路径使用 `os.path.realpath()` 规范化防路径遍历\n"
+    )
+    git = (
+        "\n### Git 操作规范（本地即生产）\n"
+        "- ❌ 禁止切分支（`git switch`、`git checkout <branch>`、`git checkout -b`）——本地是生产环境\n"
+        "- ❌ 禁止 git checkout <文件> 或 git stash——会破坏其他 session 的未提交更改\n"
+        "- ❌ 禁止 `git commit --no-verify` 跳过 hooks——代码质量最后一道防线\n"
+        "- ✅ 每次变更后必须 `git add → git commit → git push`，不 push = 变更丢失\n"
+        "- ✅ commit message 格式: `feat/fix/refactor: 中文描述`\n"
+    )
+    review = (
+        "\n### 提交前自审查\n"
+        "- ✅ 执行 `cd /home/administrator/session-launcher && codex review --uncommitted -c model=\"9router_hermes\"`\n"
+        "- ✅ 逐问题修复 → 重新运行 → 连续两轮零问题才可提交\n"
+        "- ✅ 审查结论以 `# Review: <结论>` 写入 commit message\n"
+    )
+    return sec + git + review
+
 
 def _validate_role_name(name: str) -> bool:
     """角色名仅允许字母、数字、下划线、连字符。"""
