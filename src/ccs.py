@@ -128,7 +128,7 @@ def main():
     p_send = sub.add_parser("send", help="向 CCS 发消息")
     p_send.add_argument("role", help="角色名")
     p_send.add_argument("message", help="消息内容")
-    p_send.add_argument("--from", dest="from_role", default="",
+    p_send.add_argument("--from", dest="from_role", default="cli",
                         help="来源角色名（三源验证用）")
     p_send.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
