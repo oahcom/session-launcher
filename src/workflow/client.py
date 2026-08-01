@@ -380,6 +380,22 @@ class WorkflowClient:
         self._log(wf_id=wf_id, action="archived")
         return True
 
+    def find_zombies(self, minutes: int = 120, limit: int = 50) -> list[dict]:
+        """僵尸检测: running > minutes 分钟且无 timeout_count 的工作流。"""
+        now = time.time()
+        rows = self._conn.execute(
+            "SELECT * FROM workflow_instances WHERE status='running' "
+            "AND ? - created_at > ? "
+            "AND step_results NOT LIKE '%timeout_count%' ORDER BY created_at LIMIT ?",
+            (now, minutes * 60, limit),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["running_minutes"] = round((now - d["created_at"]) / 60, 1)
+            out.append(d)
+        return out
+
     def list_all(self, status: str = None, limit: int = 50) -> list[dict]:
         query = "SELECT * FROM workflow_instances WHERE 1=1"
         params = []

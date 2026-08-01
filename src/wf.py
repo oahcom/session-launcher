@@ -57,6 +57,11 @@ def main():
     sub.add_parser("kanban", help="看板视图")
     sub.add_parser("stats", help="统计")
 
+    p_cleanup = sub.add_parser("cleanup", help="列出/取消僵尸工作流")
+    p_cleanup.add_argument("--minutes", type=int, default=120, help="running 超时阈值(分钟)")
+    p_cleanup.add_argument("--limit", type=int, default=50)
+    p_cleanup.add_argument("--yes", action="store_true", help="执行取消(默认 dry-run)")
+
     args = p.parse_args()
     role = args.role or os.getenv("CCS_ROLE", "")
     if not args.cmd:
@@ -145,6 +150,25 @@ def main():
                 print(f"\n## {lane['lane']} ({lane['count']})")
                 for item in lane['items'][:5]:
                     print(f"  {item.get('instance_id','?'):24s} {item.get('current_step_id',''):6s} {item.get('assignee','')}")
+
+    elif args.cmd == "cleanup":
+        r = role or input("role: ")
+        with WorkflowClient(r) as wf:
+            zombies = wf.find_zombies(args.minutes, args.limit)
+            if not zombies:
+                print("无僵尸工作流")
+                return
+            for z in zombies:
+                print(f"  {z['instance_id']} | {z['template_id']} | {z['assignee']} | "
+                      f"step={z['current_step_id']} | running={z['running_minutes']:.0f}min")
+            if args.yes:
+                for z in zombies:
+                    wf.cancel(z["instance_id"], "zombie cleanup")
+                    print(f"  已取消: {z['instance_id']}")
+                wf.notify("architecture", "wf cleanup 已取消 {len(zombies)} 个僵尸工作流",
+                          evidence="\n".join(z["instance_id"] for z in zombies))
+            else:
+                print(f"\n--dry-run: {len(zombies)} 个候选，加 --yes 执行取消")
 
     elif args.cmd == "stats":
         r = role or input("role: ")
