@@ -381,12 +381,21 @@ class WorkflowClient:
         return True
 
     def find_zombies(self, minutes: int = 120, limit: int = 50) -> list[dict]:
-        """僵尸检测: running > minutes 分钟且无 timeout_count 的工作流。"""
+        """僵尸检测: running > minutes 分钟的工作流。
+
+        两种情况算僵尸：
+        1. 无 timeout_count 追踪（完全无人管理）
+        2. timeout_count=0（追踪启动但没有实际回收动作）
+        ponytail: 纯 SQL LIKE 匹配 timeout_count 值；若 step_results JSON 结构
+        变更（如 timeout_count 不再是 int），需要改为 json_extract。
+        """
         now = time.time()
         rows = self._conn.execute(
             "SELECT * FROM workflow_instances WHERE status='running' "
             "AND ? - created_at > ? "
-            "AND step_results NOT LIKE '%timeout_count%' ORDER BY created_at LIMIT ?",
+            "AND (step_results NOT LIKE '%timeout_count%' "
+            "OR step_results LIKE '%\"timeout_count\": 0%') "
+            "ORDER BY created_at LIMIT ?",
             (now, minutes * 60, limit),
         ).fetchall()
         out = []
