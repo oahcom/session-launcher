@@ -290,6 +290,12 @@ class WorkflowClient:
         self._log(wf_id=wf_id, action="started", detail=f"step={step_id}")
 
     def complete(self, wf_id: str, summary: str, files: list = None):
+        # 防重闭合守卫：已 completed 的工作流不允许被 wf complete 打回 step_done_ready
+        cur = self._conn.execute(
+            "SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)
+        ).fetchone()
+        if cur and cur["status"] == "completed":
+            return None  # 已完成，不覆写
         import uuid
         files_str = ", ".join(files) if files else ""
         confirm_token = uuid.uuid4().hex[:16]
