@@ -74,21 +74,20 @@ def connect() -> socket.socket:
 def _inject_to_tmux(tmux_target: str, event: dict):
     """将 feed 消息注入到 tmux 会话。
 
-    task_spec / workflow 消息发送 task 触发指令。
-    其他消息发送 /goal context。
+    不再使用 /goal 命令注入——tmux send-keys 非原子，与 Claude CLI 竞态
+    会产生 /goal [] 畸形（bus #141691 根因）。改为发送普通文本，由角色
+    通过 bus consume 消费消息。
     """
     msg = event.get("msg", event)
     cat = msg.get("cat", "")
     title = msg.get("title", "")
-    text = msg.get("text", "")
     body = msg.get("evidence", "") or msg.get("body", "")
-    if cat in ("task_spec", "workflow", "scheduler"):
-        snippet = (body or title)[:200]
-        payload = f"/goal [{cat}] 新任务: {title}\n{snippet}\n请立即: wf check → 执行 → wf complete"
-    else:
-        payload = f"/goal [{cat}] {title}"
-        if body:
-            payload += f"\n{body[:200]}"
+    # 空消息防御：无内容的 feed 事件不注入，避免 [feed:] 噪音
+    if not (cat or title or body):
+        return
+    # ponytail: 不用 /goal，避免 tmux 竞态导致空目标死循环。升级路径：用 ccs send 的 unix socket 接口替代 tmux send-keys
+    snippet = (body or title)[:200]
+    payload = f"[feed:{cat}] {title}\n{snippet}" if snippet else f"[feed:{cat}] {title}"
     try:
         subprocess.run(
             ["tmux", "send-keys", "-t", tmux_target, payload, "Enter"],
