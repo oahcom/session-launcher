@@ -165,7 +165,7 @@ def main():
                 for z in zombies:
                     wf.cancel(z["instance_id"], "zombie cleanup")
                     print(f"  已取消: {z['instance_id']}")
-                wf.notify("architecture", "wf cleanup 已取消 {len(zombies)} 个僵尸工作流",
+                wf.notify("architecture", f"wf cleanup 已取消 {len(zombies)} 个僵尸工作流",
                           evidence="\n".join(z["instance_id"] for z in zombies))
             else:
                 print(f"\n--dry-run: {len(zombies)} 个候选，加 --yes 执行取消")
