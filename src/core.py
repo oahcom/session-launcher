@@ -322,6 +322,17 @@ def start(role: str, title: str = "", detach: bool = False,
         if not init_prompt:
             init_prompt = _build_role_prompt(role_def)
             print(f"📋 已构建角色 prompt ({len(init_prompt)} 字符)")
+        # bus_track 推导：调用方未显式指定时，取 role_def 第一个 type=bus 且
+        # spec.category 非空的 category 作为默认死锁检测分类。
+        # 否则 systemd ccs@.service 路径启动的 CCS 死锁检测永不启动 (bus_age=-1)。
+        if not bus_track:
+            for sig in role_def.get("input_signals", []) or []:
+                if sig.get("type") == "bus" and sig.get("spec", {}).get("category"):
+                    bus_track = sig["spec"]["category"]
+                    print(f"📋 已推导 bus_track={bus_track}（来自 role_def.input_signals）")
+                    break
+            if not bus_track:
+                print(f"⚠ 未能推导 bus_track：{role} 无 type=bus 的 input_signals，死锁检测不启动")
     elif not init_prompt:
         print(f"⚠ 未找到 {role} 角色定义（{SESSION_ROLES_ROOT}），使用空 prompt 启动")
 
@@ -424,15 +435,17 @@ def start(role: str, title: str = "", detach: bool = False,
                           instance_id=instance_id)
             print(f"✅ 守护线程: 监控 {p} 存活")
 
-        if bus_track:
-            start_tracker(role, bus_track, timeout_sec=bus_timeout,
-                          interval=10, partners=partners,
-                          instance_id=instance_id)
-            print(f"✅ 轮次追踪: 监控 {bus_track} 死锁 (超时 {bus_timeout}s)")
-
         if feed_cat:
             _start_feed_listener(role, feed_cat)
             print(f"✅ feed listener: 实时监控 {feed_cat} 分类")
+
+    # 9.1 bus 死锁追踪：detach 模式或已指定/推导 bus_track 时启动。
+    # systemd 路径 (ccs_monitor.py 长驻监控进程, detach=False) 也生效 → 修复 bus_age=-1。
+    if bus_track:
+        start_tracker(role, bus_track, timeout_sec=bus_timeout,
+                      interval=10, partners=partners,
+                      instance_id=instance_id)
+        print(f"✅ 轮次追踪: 监控 {bus_track} 死锁 (超时 {bus_timeout}s)")
 
     # 10. 启动 feed_listener 子进程（将 bus 实时消息注入 tmux）
     if drive not in ("ondemand",):
@@ -440,8 +453,6 @@ def start(role: str, title: str = "", detach: bool = False,
         # 将 bus 实时消息注入到 tmux session 供 Claude 消费。
         _start_feed_subprocess(tmux_name)
         print(f"✅ feed 子进程: 实时消息注入 {tmux_name}")
-    elif partners or bus_track:
-        print(f"⚠ 非 detach 模式，监控线程不会启动（需要 --no-attach）")
 
     result = {
         "success": True, "role": role, "instance_id": instance_id,

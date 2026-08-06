@@ -16,11 +16,12 @@ from hermes_bus.config import (
     BUS_CLIENT, BUS_PROTOCOL,
     SISTER_BUS_CCS_SOCK, SISTER_BUS_FEED_SOCK,
     SISTER_BUS_DKK_SOCK, SISTER_BUS_SSK_SOCK,
-    SESSION_PIPELINE_SRC as _SESSION_PIPELINE_SRC,
-    SESSION_ROLES_ROOT,
-    CCS_WORKSPACES,
-    LIFECYCLE_SENTINEL_DIR,
 )
+# ── 路径常量：由本项目自行管理，不依赖 bus config ──
+_SESSION_PIPELINE_SRC = Path(_HOME / "session-pipeline" / "src")
+SESSION_ROLES_ROOT = Path(_HOME / "hermes-session-roles")
+CCS_WORKSPACES = Path(_HOME / "ccs-workspaces")
+LIFECYCLE_SENTINEL_DIR = Path(_HOME / ".hermes" / "run" / "ccs-sentinels")
 
 # ── 数据目录 ──
 HERMES_STATE = _HOME / ".hermes" / "state"
