@@ -20,6 +20,10 @@ if _GW_SRC not in sys.path:
 
 from workflow.gateway import Gate  # noqa: E402
 
+# Gate 已导入到本模块作用域，移除 worktree src 防止污染后续测试的 import workflow.*
+if _GW_SRC in sys.path:
+    sys.path.remove(_GW_SRC)
+
 
 # ── fixtures ──────────────────────────────────────────
 

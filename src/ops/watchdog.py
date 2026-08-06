@@ -7,6 +7,7 @@ watchdog.py — 伙伴存活守护线程
 """
 __all__ = [
     'start_watchdog',
+    'stop_watchdog',
     'check_auto_continue',
     'AUTO_CONTINUE_THRESHOLD',
 ]
@@ -99,18 +100,74 @@ def _restart_partner(partner_role: str, instance_id: int = 0):
 
 
 def _run(this_role: str, partner_role: str, auto_restart: bool,
-         interval: int, restart_delay: int, instance_id: int = 0):
-    """守护线程主循环。异常不退出，记录后继续。"""
+         interval: int, restart_delay: int, instance_id: int = 0,
+         stop_event: threading.Event = None):
+    """守护线程主循环。异常不退出，记录后继续。
+
+    stop_event 置位时退出循环，回收线程（stop() 调用）。
+    Event.wait 替代 time.sleep 保证及时响应停止请求。
+    """
     tag = f"watchdog:{this_role}[{instance_id}]"
 
     from tmux_ops import make_tmux_name
     partner_tmux = make_tmux_name(partner_role, instance_id)
     self_tmux = make_tmux_name(this_role, instance_id)
     _restarting_self = False
+    if stop_event is None:
+        stop_event = threading.Event()  # 永不置位 → 保持旧行为
 
-    while True:
+    while not stop_event.is_set():
         try:
-            time.sleep(interval)
+            if stop_event.wait(interval):
+                break
+
+            # 检查伙伴存活
+            alive = _is_alive(partner_tmux)
+
+            # 更新本方哨兵的健康状态
+            update_health(this_role, instance_id=instance_id,
+                          last_watchdog_check=time.time(),
+                          watchdog_ok=alive)
+
+            if not alive:
+                _log_info(tag, f"partner {partner_role} 已死")
+
+                if not auto_restart:
+                    _audit_monitor("伙伴死亡-不重启",
+                        f"{this_role} 检测到 {partner_role} 死亡，auto_restart=False 跳过")
+                    _log_info(tag, "未配置 auto-restart，跳过")
+                    continue
+
+                _audit_monitor("伙伴死亡-自动重启",
+                    f"{this_role} 检测到 {partner_role} 死亡，正在自动重启",
+                    src=this_role)
+                _log_info(tag, f"正在重启 {partner_role}...")
+                if stop_event.wait(restart_delay):
+                    break
+                _restart_partner(partner_role, instance_id=instance_id)
+
+                # 更新本方 restart_count
+                s = read_sentinel(this_role, instance_id)
+                if s:
+                    s.health.restart_count += 1
+                    write_sentinel(s)
+
+            # 自体存活检查：本方 CCS 进程是否还在
+            if _restarting_self:
+                continue  # 正在自愈中，跳过本轮
+            self_alive = _is_alive(self_tmux)
+            if not self_alive:
+                _log_info(tag, f"自身 CCS {self_tmux} 已死，尝试重启")
+                _audit_monitor("自体死亡-自动重启",
+                    f"watchdog 检测到自身 CCS {self_tmux} 死亡，发起重启",
+                    src=this_role)
+                _restarting_self = True
+                _restart_partner(this_role, instance_id=instance_id)
+                _restarting_self = False
+        except Exception as e:
+            _log_info(tag, f"异常: {e}，等待下一轮重试")
+            if stop_event.wait(interval):
+                break
 
             # 检查伙伴存活
             alive = _is_alive(partner_tmux)
@@ -195,17 +252,37 @@ def check_auto_continue(role: str, instance_id: int = 0) -> bool:
     except Exception as e:
         _log.warning("[auto-continue:%s] 失败: %s", key, e)
         return False
+# 注册表：role[instance] -> (thread, stop_event)。stop() 时按哨兵遍历回收。
+_WATCHDOG_THREADS: dict[str, tuple[threading.Thread, threading.Event]] = {}
+
+
+def _wd_key(this_role: str, instance_id: int) -> str:
+    return f"{this_role}[{instance_id}]"
+
+
 def start_watchdog(this_role: str, partner_role: str,
                    auto_restart: bool = False,
                    interval: int = 30,
                    restart_delay: int = 5,
                    instance_id: int = 0) -> threading.Thread:
     """启动守护线程。instance_id 决定监控哪个实例的 tmux session。"""
+    stop_event = threading.Event()
     t = threading.Thread(
         target=_run,
-        args=(this_role, partner_role, auto_restart, interval, restart_delay, instance_id),
+        args=(this_role, partner_role, auto_restart, interval, restart_delay, instance_id, stop_event),
         daemon=False,
         name=f"watchdog:{this_role}:{partner_role}:{instance_id}",
     )
     t.start()
+    _WATCHDOG_THREADS[_wd_key(this_role, instance_id)] = (t, stop_event)
     return t
+
+
+def stop_watchdog(this_role: str, instance_id: int = 0) -> None:
+    """停止并回收指定角色的 watchdog 线程（幂等）。join 限时 5s 防阻塞。"""
+    entry = _WATCHDOG_THREADS.pop(_wd_key(this_role, instance_id), None)
+    if entry is None:
+        return
+    t, stop_event = entry
+    stop_event.set()
+    t.join(timeout=5)

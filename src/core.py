@@ -284,6 +284,25 @@ def start(role: str, title: str = "", detach: bool = False,
         return {"success": True, "role": role, "instance_id": instance_id,
                 "mode": "ondemand", "workspace": str(ws_path)}
 
+    # 0.5 dry-run：只打印将执行的动作，不实际执行
+    if dry_run:
+        role_def_dr = get_role(role)
+        _role_prompt_len = len(_build_role_prompt(role_def_dr)) if role_def_dr else 0
+        actions = [
+            f"tmux new-session -d -s {tmux_name} -c {ws_path}",
+            "注入角色 prompt" + (f" ({_role_prompt_len} 字符)" if _role_prompt_len else ""),
+            f"写哨兵 {role}[{instance_id}]",
+        ]
+        if partners:
+            actions.append(f"启动 watchdog 监控 {partners}")
+        if bus_track:
+            actions.append(f"启动 tracker 监控 {bus_track}")
+        print(f"📋 [dry-run] {role}[{instance_id}] 将执行:")
+        for a in actions:
+            print(f"  - {a}")
+        return {"success": True, "dry_run": True, "role": role,
+                "instance_id": instance_id, "planned_actions": actions}
+
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
         if not detach:
@@ -297,6 +316,72 @@ def start(role: str, title: str = "", detach: bool = False,
     if err:
         return {"success": False, "error": err}
 
+    # 3-4.5 工作空间准备：创建 + 实例注册 + 角色注入 + drive/bus_track 推导 + MCP settings
+    role_def, drive, init_prompt, bus_track = _prepare_workspace(
+        role, ws_path, ws_name, instance_id, workspace, drive, init_prompt, bus_track)
+
+    # 5-6 启动 tmux + claude 并等待就绪
+    launch_err = _launch_tmux(tmux_name, ws_path)
+    if launch_err:
+        return {"success": False, "error": launch_err}
+
+    # 6.5 技能自动发现：skills 已由 deploy_role_skills.sh 部署到
+    # ~/.claude/skills/ 目录，Claude Code 启动时自动扫描。无需 /skills load。
+    # 见 ~/session-launcher/scripts/deploy_role_skills.sh
+
+    # 7-7.5 注入 prompt + auto_send 批量发送
+    _inject_prompt_and_autosend(tmux_name, role, role_def, init_prompt, no_auto_send)
+
+    # 8. 写哨兵
+    pid = _find_claude_pid(tmux_name)
+    print(f"📋 pid: {pid}")
+    s = CcsSentinel(
+        role=role,
+        title=title or role,
+        instance_id=instance_id,
+        tmux_session=tmux_name,
+        pid=pid,
+        started_at=time.time(),
+        lifecycle="infinite",
+        partners=partners,
+        bus_track=bus_track,
+        bus_timeout=bus_timeout,
+        session_id="",
+    )
+    write_sentinel(s)
+
+    # 9-10 守护线程编排：watchdog/tracker/feed listener/feed 子进程
+    _start_monitoring_threads(role, tmux_name, partners, instance_id,
+                              detach, auto_restart, feed_cat, drive,
+                              bus_track, bus_timeout)
+
+    result = {
+        "success": True, "role": role, "instance_id": instance_id,
+        "tmux_session": tmux_name,
+        "pid": pid, "partners": partners or [], "bus_track": bus_track or None,
+    }
+
+    if not detach:
+        if sys.stdin and sys.stdin.isatty():
+            print(f"🎯 进入 {tmux_name} (Ctrl+B D 退出)")
+            os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
+        else:
+            print(f"🎯 非交互环境，后台运行 (tmux attach -t {tmux_name} 进入)")
+    else:
+        print(f"🎯 后台运行 (tmux attach -t {tmux_name} 进入)")
+
+    return result
+
+
+# ── start() 拆分出的阶段函数（保持 print/返回值与原先内联逻辑一致）──
+
+def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
+                       workspace: str, drive: str, init_prompt: str,
+                       bus_track: str) -> tuple[dict | None, str, str, str]:
+    """步骤 3-4.5：workspace 创建 + 实例注册 + 角色注入 + drive/bus_track 推导 + MCP settings。
+
+    返回更新后的 (role_def, drive, init_prompt, bus_track)。
+    """
     # 3. 确保工作空间存在
     if instance_id and not workspace:
         # 扩展实例：在 role workspace 下创建 instances/{id}/ 子目录
@@ -341,8 +426,12 @@ def start(role: str, title: str = "", detach: bool = False,
 
     # 4.5 写入角色专属 settings.json（MCP 隔离）
     _write_mcp_settings(ws_path, role_def)
+    return role_def, drive, init_prompt, bus_track
 
-    # 5. 启动 tmux + claude — 权限由 workspace settings.json permissions.allow 控制
+
+def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
+    """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
+    # 权限由 workspace settings.json permissions.allow 控制
     _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
     cmd = (
         "claude --bare --model 9router_hermes"
@@ -357,13 +446,13 @@ def start(role: str, title: str = "", detach: bool = False,
             "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
         ], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
-        return {"success": False, "error": "tmux 未安装或不在 PATH 中"}
+        return "tmux 未安装或不在 PATH 中"
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "tmux 启动超时 (10s)"}
+        return "tmux 启动超时 (10s)"
     except Exception as e:
-        return {"success": False, "error": f"tmux 启动异常: {e}"}
+        return f"tmux 启动异常: {e}"
     if r.returncode != 0:
-        return {"success": False, "error": f"tmux 启动失败: {r.stderr.strip()}"}
+        return f"tmux 启动失败: {r.stderr.strip()}"
 
     # 6. 等 claude 就绪
     for _ in range(_CCS_READY_RETRIES):
@@ -378,11 +467,12 @@ def start(role: str, title: str = "", detach: bool = False,
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
     time.sleep(1)
+    return None
 
-    # 6.5 技能自动发现：skills 已由 deploy_role_skills.sh 部署到
-    # ~/.claude/skills/ 目录，Claude Code 启动时自动扫描。无需 /skills load。
-    # 见 ~/session-launcher/scripts/deploy_role_skills.sh
 
+def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None,
+                                init_prompt: str, no_auto_send: bool) -> None:
+    """步骤 7-7.5：注入 prompt + auto_send 批量发送。"""
     # 7. 注入 prompt（自动构建的 role prompt 或用户提供的 init_prompt）
     if init_prompt:
         _tmux_send(tmux_name, init_prompt)
@@ -410,24 +500,12 @@ def start(role: str, title: str = "", detach: bool = False,
                 if i < len(auto_msgs):
                     time.sleep(interval)
 
-    # 8. 写哨兵
-    pid = _find_claude_pid(tmux_name)
-    print(f"📋 pid: {pid}")
-    s = CcsSentinel(
-        role=role,
-        title=title or role,
-        instance_id=instance_id,
-        tmux_session=tmux_name,
-        pid=pid,
-        started_at=time.time(),
-        lifecycle="infinite",
-        partners=partners,
-        bus_track=bus_track,
-        bus_timeout=bus_timeout,
-        session_id="",
-    )
-    write_sentinel(s)
 
+def _start_monitoring_threads(role: str, tmux_name: str, partners: list[str],
+                              instance_id: int, detach: bool, auto_restart: bool,
+                              feed_cat: str, drive: str, bus_track: str,
+                              bus_timeout: int) -> None:
+    """步骤 9-10：watchdog/tracker/feed listener/feed 子进程编排。"""
     # 9. 启动守护线程 + feed listener（仅 detach 模式）
     if detach:
         for p in partners:
@@ -454,30 +532,22 @@ def start(role: str, title: str = "", detach: bool = False,
         _start_feed_subprocess(tmux_name)
         print(f"✅ feed 子进程: 实时消息注入 {tmux_name}")
 
-    result = {
-        "success": True, "role": role, "instance_id": instance_id,
-        "tmux_session": tmux_name,
-        "pid": pid, "partners": partners or [], "bus_track": bus_track or None,
-    }
-
-    if not detach:
-        if sys.stdin and sys.stdin.isatty():
-            print(f"🎯 进入 {tmux_name} (Ctrl+B D 退出)")
-            os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
-        else:
-            print(f"🎯 非交互环境，后台运行 (tmux attach -t {tmux_name} 进入)")
-    else:
-        print(f"🎯 后台运行 (tmux attach -t {tmux_name} 进入)")
-
-    return result
 
 @validate_role
 def stop(role: str, instance_id: int = 0,
          dry_run: bool = False) -> dict:
-    """终止 CCS 并清理哨兵。"""
+    """终止 CCS 并清理哨兵。同时回收 watchdog/tracker 守护线程防累积。"""
     from tmux_ops import make_tmux_name
     tmux_name = make_tmux_name(role, instance_id)
     was_alive = _is_alive(tmux_name)
+    # 回收守护线程：set_event + join(timeout=5)，幂等
+    try:
+        from ops.watchdog import stop_watchdog
+        from ops.tracker import stop_tracker
+        stop_watchdog(role, instance_id)
+        stop_tracker(role, instance_id)
+    except Exception as e:
+        _log.warning("stop 回收守护线程异常: %s", e)
     _tmux_kill(tmux_name)
     delete_sentinel(role, instance_id)
     if not was_alive:

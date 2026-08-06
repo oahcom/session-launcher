@@ -82,11 +82,11 @@ def test_safe_commands_allowed():
     assert _check_shell({"command": "cat /etc/hostname"}, "")
 
 
-def test_python3_whitelisted():
-    """python3 应在白名单中"""
+def test_python3_not_whitelisted():
+    """python3/bash 已从白名单移除（承载 -c/-m 任意代码执行风险），应被拒绝"""
     body = _extract_security_lines()
-    assert '"python3"' in body, "python3 应位于 _safe_cmds 白名单"
-    assert '"bash"' in body, "bash 应位于 _safe_cmds 白名单"
+    assert '"python3"' not in body, "python3 不应位于 _safe_cmds 白名单"
+    assert '"bash"' not in body, "bash 不应位于 _safe_cmds 白名单"
     assert '"tmux"' in body, "tmux 应位于 _safe_cmds 白名单"
 
 

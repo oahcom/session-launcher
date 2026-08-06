@@ -9,6 +9,7 @@ tracker.py — 轮次追踪 + 死锁检测
 """
 __all__ = [
     'start_tracker',
+    'stop_tracker',
 ]
 
 import logging
@@ -56,14 +57,23 @@ def _audit_monitor(decision: str, detail: str, src: str = ""):
 
 
 def _run(this_role: str, bus_cat: str, timeout_sec: int,
-         interval: int, partners: list[str], instance_id: int = 0):
-    """轮次追踪主循环。异常不退出，记录后继续。"""
+         interval: int, partners: list[str], instance_id: int = 0,
+         stop_event: threading.Event = None):
+    """轮次追踪主循环。异常不退出，记录后继续。
+
+    stop_event 置位时退出循环，回收线程（stop() 调用）。
+    time.sleep 保持可被测试 patch 中断；sleep 后检查 stop_event 决定退出。
+    """
     tag = f"tracker:{this_role}[{instance_id}]"
     last_reminder = 0.0
+    if stop_event is None:
+        stop_event = threading.Event()  # 永不置位 → 保持旧行为
 
-    while True:
+    while not stop_event.is_set():
         try:
             time.sleep(interval)
+            if stop_event.is_set():
+                break
 
             latest = _bus_read_latest(bus_cat)
             if not latest:
@@ -127,6 +137,16 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
         except Exception as e:
             _log.warning("%s: 异常 %s，等待下一轮重试", tag, e)
             time.sleep(interval)
+            if stop_event.is_set():
+                break
+
+
+# 注册表：role[instance] -> (thread, stop_event)。stop() 时按哨兵遍历回收。
+_TRACKER_THREADS: dict[str, tuple[threading.Thread, threading.Event]] = {}
+
+
+def _tr_key(this_role: str, instance_id: int) -> str:
+    return f"{this_role}[{instance_id}]"
 
 
 def start_tracker(this_role: str, bus_cat: str,
@@ -135,11 +155,23 @@ def start_tracker(this_role: str, bus_cat: str,
                   partners: Optional[list[str]] = None,
                   instance_id: int = 0) -> threading.Thread:
     """启动轮次追踪线程。daemon=False 保持存活。"""
+    stop_event = threading.Event()
     t = threading.Thread(
         target=_run,
-        args=(this_role, bus_cat, timeout_sec, interval, partners or [], instance_id),
+        args=(this_role, bus_cat, timeout_sec, interval, partners or [], instance_id, stop_event),
         daemon=False,
         name=f"tracker:{this_role}:{bus_cat}:{instance_id}",
     )
     t.start()
+    _TRACKER_THREADS[_tr_key(this_role, instance_id)] = (t, stop_event)
     return t
+
+
+def stop_tracker(this_role: str, instance_id: int = 0) -> None:
+    """停止并回收指定角色的 tracker 线程（幂等）。join 限时 5s 防阻塞。"""
+    entry = _TRACKER_THREADS.pop(_tr_key(this_role, instance_id), None)
+    if entry is None:
+        return
+    t, stop_event = entry
+    stop_event.set()
+    t.join(timeout=5)
