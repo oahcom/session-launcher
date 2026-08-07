@@ -20,7 +20,6 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_THIS_DIR)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
-from ops.sentinel import read_sentinel, SENTINEL_DIR
+from ops.sentinel import read_sentinel
 # core imports are lazy (inside functions) to break circular dependency
 
 # ── lazy core import helper (break circular) ──
@@ -234,7 +233,6 @@ class PartnerClient:
         from tmux_ops import make_tmux_name
         sentinel = read_sentinel(role, instance_id)
         alive = is_ccs_running(role, instance_id)
-        tmux_alive = alive
 
         # PID
         pid = sentinel.pid if sentinel else None

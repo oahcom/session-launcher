@@ -34,7 +34,6 @@ from core import (
     health_check,
 )
 from routing.roles import _action_templates as action_templates, _ensure_bus_aliases_in_bashrc
-# ponytail: _action_templates is private, rename when routing.roles publishes API
 
 # 常量
 from core import (
@@ -54,6 +53,27 @@ from ops.sentinel import SENTINEL_DIR as CCS_SENTINEL_DIR
 # 旧名兼容别名
 exec_codex = run_codex_task
 
+# re-exports：launcher.py 是兼容层，以下符号对外提供
+__all__ = [
+    "load_roles", "get_role", "_invalidate_role_cache",
+    "_forbidden_list", "check_wake_permission", "_build_role_prompt",
+    "inject_role_knowledge_into_workspace", "force_start_ccs", "wake_ccs",
+    "write_lifecycle_sentinel", "check_ondemand_timeout", "cleanup_stale_sentinels",
+    "start_codex_session", "run_codex_task", "cdx_status",
+    "register", "workspace_create", "workspace_list",
+    "_find_claude_pid", "_find_codex_pid", "_is_alive", "_tmux_send", "_tmux_output", "_tmux_kill",
+    "start_ccs", "stop_ccs", "ccs_status", "send_to_ccs", "ccs_capture_output", "health_check",
+    "action_templates", "_ensure_bus_aliases_in_bashrc",
+    "CCS_TMUX_PREFIX", "CODEX_TMUX_PREFIX",
+    "BUS_CLIENT", "SESSION_ROLES_ROOT",
+    "_FORBIDDEN_MAP", "_FORBIDDEN_DISPLAY", "_WAKE_PERMISSION_MAP",
+    "_WS_MARKER_START", "_WS_MARKER_END",
+    "SESSION_MARKER_START", "SESSION_MARKER_END",
+    "CLAUDE_MD", "LIFECYCLE_SENTINEL_DIR",
+    "CODEX_SENTINEL_DIR", "CCS_SENTINEL_DIR",
+    "exec_codex",
+]
+
 try:
     from events.signals import check_signal
 except Exception:
@@ -61,7 +81,6 @@ except Exception:
 
 
 def ccs_capture_output_raw(tmux_name: str, tail: int = 10) -> str:
-    from core import _tmux_output
     return _tmux_output(tmux_name, tail=tail)
 
 

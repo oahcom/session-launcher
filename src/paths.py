@@ -17,6 +17,11 @@ from hermes_bus.config import (
     SISTER_BUS_CCS_SOCK, SISTER_BUS_FEED_SOCK,
     SISTER_BUS_DKK_SOCK, SISTER_BUS_SSK_SOCK,
 )
+
+# re-exports：各模块从 paths 导入以上常量
+__all__ = ["BUS_CLIENT", "BUS_PROTOCOL",
+           "SISTER_BUS_CCS_SOCK", "SISTER_BUS_FEED_SOCK",
+           "SISTER_BUS_DKK_SOCK", "SISTER_BUS_SSK_SOCK"]
 # ── 路径常量：由本项目自行管理，不依赖 bus config ──
 _SESSION_PIPELINE_SRC = Path(_HOME / "session-pipeline" / "src")
 SESSION_ROLES_ROOT = Path(_HOME / "hermes-session-roles")

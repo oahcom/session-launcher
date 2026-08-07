@@ -214,7 +214,7 @@ class CrossRoleRouter:
         # 1. 工作群组校验: 非矩阵角色发 🔴 消息被拦截
         if "*" not in allowed_targets and target not in allowed_targets:
             self._log_violation(source, target, message,
-                                f"not in workgroup matrix, red message blocked")
+                                "not in workgroup matrix, red message blocked")
             return False
 
         # 2. 审计上限: 每小时超过5条 🔴 消息 → 强制拦截, 提示创建task

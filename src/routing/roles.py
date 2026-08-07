@@ -36,7 +36,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 
 from pathlib import Path
 from typing import Optional
@@ -214,7 +213,7 @@ def _action_templates(role: dict) -> str:
         lines.append(f'  bus_write {cat} "{cat.upper()}: 【标题】" "【内容/路径】"')
     consume_targets = consume[:3]
     if consume_targets:
-        lines.append(f"\n读消息")
+        lines.append("\n读消息")
         for cat in consume_targets:
             lines.append(f"  bus_read {cat} 5")
 
@@ -263,7 +262,7 @@ def _contract_block(role: dict) -> str:
     if cron_schedule:
         lines.append(f"- 定时调度: {cron_schedule} (由 cron-worker 触发)")
     else:
-        lines.append(f"- 定时调度: 无 (事件驱动)")
+        lines.append("- 定时调度: 无 (事件驱动)")
     if auto_msgs:
         lines.append(f"- 自动发送: {', '.join(auto_msgs[:3])}{'...' if len(auto_msgs)>3 else ''}")
 

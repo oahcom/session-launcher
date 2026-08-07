@@ -1,10 +1,8 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
-import os
 import sqlite3
 import time
-import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -540,7 +538,7 @@ class WorkflowClient:
     def advance_pipeline(self, wf_id: str, summary: str) -> dict:
         """推进多步骤流水线：当前步骤完成后自动派发下一个 handoff 角色的子工作流。
         返回下一个步骤信息或 None（流程结束）。"""
-        import json, uuid
+        import json
         inst = self.get(wf_id)
         if not inst:
             return {"advanced": False, "reason": "实例不存在"}

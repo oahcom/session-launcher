@@ -16,7 +16,6 @@ import os
 import re
 import urllib.request
 import warnings
-from pathlib import Path
 
 from paths import BUS_CLIENT
 BUS_CLIENT_STR = str(BUS_CLIENT)

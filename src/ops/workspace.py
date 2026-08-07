@@ -2,7 +2,6 @@
 
 import time
 from pathlib import Path
-from typing import Optional
 
 from tmux_ops import _find_claude_pid, _is_alive
 from role_manager import _WS_MARKER_START, _WS_MARKER_END, _validate_role_name

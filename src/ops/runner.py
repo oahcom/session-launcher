@@ -1,14 +1,8 @@
 """ops/runner.py — 运行循环 + 健康仪表板（从 core.py 提取）"""
 
 import logging
-import os
 import subprocess
-import sys
 import time
-import socket
-import json
-import threading
-from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +99,6 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
 
     def _run():
         nonlocal s
-        tag = f"feed:{role}"
         while True:
             if not _connect():
                 time.sleep(5)

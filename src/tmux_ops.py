@@ -27,10 +27,8 @@ __all__ = [
 #!/usr/bin/env python3
 """Auto-generated: tmux_ops.py — extracted from core.py"""
 
-import json
 import logging
 import threading
-import os
 import re
 import subprocess
 import time

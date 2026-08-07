@@ -6,8 +6,6 @@
     from workflow.schema import init_db, SCHEMA_SQL
 """
 import sqlite3
-from pathlib import Path
-from paths import WORKFLOWS_DB as DB_PATH
 
 SCHEMA_SQL = """
     CREATE TABLE IF NOT EXISTS workflow_templates (

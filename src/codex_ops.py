@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """Auto-generated: codex_ops.py — extracted from core.py"""
 
-import json
-import logging
 import os
 import re
 import shlex
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
 
 # ── Import all dependencies needed from sibling modules ──
 # From role_manager (imported directly to avoid circular dep via core)
@@ -19,7 +15,6 @@ from role_manager import (
     get_role,
     _validate_role_name,
     _build_role_prompt,
-    SESSION_ROLES_ROOT,
 )
 
 # From tmux_ops
@@ -29,19 +24,16 @@ from tmux_ops import (
     _active_codex_session_count,
     _wait_codex_ready,
     _tmux_output,
-    TMUX_PREFIX,
     CODEX_TMUX_PREFIX,
     CODEX_SESSION_MAX,
     CODEX_LOOP_DELAY,
     CODEX_OUTPUT_MAX,
     CODEX_ERROR_MAX,
-    CODEX_READY_RETRIES,
-    CODEX_READY_INTERVAL,
 )
 
 # 统一哨兵：Codex session 写入 /tmp/ccs-sentinels 而非独立目录
 # ponytail: 未来 engine 字段可扩展为 "codex-v2" 等版本标识
-from ops.sentinel import CcsSentinel, write_sentinel, list_sentinels, delete_sentinel
+from ops.sentinel import CcsSentinel, write_sentinel, list_sentinels
 
 
 __all__ = [

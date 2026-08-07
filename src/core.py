@@ -3,8 +3,6 @@
 core.py — 生命周期编排（从 tmux_ops/role_manager/codex_ops 导入）
 """
 
-_start_feed_subprocess = None  # defined at module end
-
 # feed 子进程注册表：tmux_name -> Popen。stop() 时 kill+wait 防进程泄漏。
 # 注解用字符串形式：模块顶部 subprocess 尚未导入。
 _FEED_PROCS: dict[str, "subprocess.Popen"] = {}
@@ -87,39 +85,31 @@ def _trigger_hooks(event: str, **kwargs) -> None:
 # ── 路由策略（实现在 routing/policy.py，此处 re-export 兼容旧导入）──
 from routing.policy import set_routing_policy, get_routing_policy, route_target
 
-from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claude_session_id,
+from tmux_ops import (_check_memory_before_launch, _find_claude_pid,
     _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid,
-    _active_codex_session_count, _wait_codex_ready,
-    TMUX_PREFIX, CODEX_TMUX_PREFIX,
-    CODEX_LOOP_DELAY, CODEX_OUTPUT_MAX, CODEX_ERROR_MAX, CODEX_SESSION_MAX,
-    CODEX_READY_RETRIES, CODEX_READY_INTERVAL, _MEM_FREE_MIN_MB, _CCS_LAUNCH_INTERVAL)
+    TMUX_PREFIX)
 
-from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ensure_bus_aliases_in_bashrc, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, SESSION_MARKER_START, SESSION_MARKER_END, _FORBIDDEN_MAP, _FORBIDDEN_DISPLAY, _WAKE_PERMISSION_MAP, _CLAUDE_MD
+from routing.roles import load_roles, get_role, _invalidate_role_cache, _forbidden_list, check_wake_permission, _action_templates, _build_role_prompt, _resolve_ws_paths, inject_role_knowledge_into_workspace, _validate_role_name, _ROLE_NAME_RE, SESSION_ROLES_ROOT, _WS_MARKER_START, _WS_MARKER_END, _FORBIDDEN_MAP, _WAKE_PERMISSION_MAP, _CLAUDE_MD
 
 from ops.validators import validate_role
 
-from codex_ops import start_codex_session, _build_codex_runner_script, run_codex_task, cdx_status, _active_codex_session_count, _wait_codex_ready, CODEX_SESSION_MAX, CODEX_TMUX_PREFIX, CODEX_LOOP_DELAY
+from codex_ops import start_codex_session, run_codex_task, cdx_status
 
 import json
 import logging
 import os
-import re
-import shlex
-import socket
 import subprocess
 import sys
-import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
 
 # ── 统一日志初始化（任何模块首次导入 core 时生效）──
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 _log = logging.getLogger("core")
 
-from ops.sentinel import CcsSentinel, CcsHealth, write_sentinel, read_sentinel, delete_sentinel, list_sentinels, SENTINEL_DIR
+from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels
 
 from ops.watchdog import start_watchdog
 from ops.tracker import start_tracker

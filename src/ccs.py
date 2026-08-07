@@ -14,7 +14,7 @@ import sys
 
 from core import (
     start, stop, status, send, output, health_check, register,
-    workspace_create, workspace_list, force_start_ccs, wake_ccs,
+    workspace_create, workspace_list, wake_ccs,
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
     list_roles, get_config_value,
@@ -468,7 +468,7 @@ def main():
 
     # ═══════════ config 命令 ═══════════
     elif args.command == "config":
-        from ops.ccs_config import load as _cfg_load, set_value as _cfg_set, _path as _cfg_path
+        from ops.ccs_config import set_value as _cfg_set, _path as _cfg_path
         if args.config_command == "get":
             v = get_config_value(args.key)
             if v is None:

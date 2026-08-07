@@ -15,17 +15,14 @@ __all__ = [
 import logging
 import os
 import subprocess
-import sys
 import threading
 import time
-from datetime import datetime
-from typing import Optional
 
 _log = logging.getLogger("watchdog")
 
 from ops.sentinel import (
-    CcsSentinel, read_sentinel, write_sentinel, delete_sentinel,
-    update_health, SENTINEL_DIR,
+    read_sentinel, write_sentinel, delete_sentinel,
+    update_health,
 )
 # 延迟导入，避免 watchdog → launcher 循环依赖
 # 实际导入在 _restart_partner() 内部

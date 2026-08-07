@@ -8,11 +8,7 @@ Signal Checkers — 所有 input_signals 的检查逻辑。
 """
 import logging
 import subprocess
-import shlex
-import os
-import warnings
 import re
-import urllib.request
 from pathlib import Path
 
 LOG = logging.getLogger("signals")

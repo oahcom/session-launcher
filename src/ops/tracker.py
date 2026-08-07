@@ -15,7 +15,6 @@ __all__ = [
 import logging
 import threading
 import time
-from datetime import datetime
 from typing import Optional
 
 from ops.sentinel import update_health
