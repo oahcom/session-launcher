@@ -11,11 +11,22 @@ from pathlib import Path
 
 import pytest
 
-# workflow.gateway.Gate 已合入 main，从 src/ 导入即可
-# 若 worktree stale 会从 hermes_bus.config 拉到不存在的符号导致 ImportError
+# 从 worktree 源码导入 Gateway（当前 main 分支尚未合入）
 import sys
 
+_GW_SRC = str(Path(__file__).resolve().parent.parent / ".claude" / "worktrees" / "fix-hardening" / "src")
+if _GW_SRC not in sys.path:
+    sys.path.insert(0, _GW_SRC)
+
 from workflow.gateway import Gate  # noqa: E402
+
+# Gate 已导入到本模块作用域。移除 worktree src 并清空 workflow 包缓存，
+# 否则 sys.modules['workflow'].__path__ 仍指向 worktree，后续测试的
+# import workflow.client 会解析到 worktree 版（无 find_zombies）。
+if _GW_SRC in sys.path:
+    sys.path.remove(_GW_SRC)
+for _m in [k for k in list(sys.modules) if k == "workflow" or k.startswith("workflow.")]:
+    del sys.modules[_m]
 
 
 # ── fixtures ──────────────────────────────────────────
@@ -30,7 +41,9 @@ def _base_schema() -> str:
         steps_json TEXT NOT NULL,
         steps_mermaid TEXT,
         created_at REAL NOT NULL,
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        allowed_initiators TEXT,
+        allowed_executors TEXT
     );
     CREATE TABLE IF NOT EXISTS workflow_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
