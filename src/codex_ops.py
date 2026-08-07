@@ -112,6 +112,12 @@ def start_codex_session(role_name: str) -> dict:
     runner_script = _build_codex_runner_script(role)
 
     import tempfile
+
+    def _cleanup_tmp_script(path: str):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass  # 已删除/不存在
     try:
         fd, tmp_script = tempfile.mkstemp(suffix='.sh', prefix=f'cdx-runner-{role_name}_', dir='/tmp')
         os.write(fd, runner_script.encode())
@@ -128,9 +134,13 @@ def start_codex_session(role_name: str) -> dict:
     try:
         result = subprocess.run(tmux_cmd, capture_output=True, text=True, timeout=10)
     except subprocess.TimeoutExpired:
+        _cleanup_tmp_script(tmp_script)
         return {"success": False, "error": "tmux new-session 超时"}
     if result.returncode != 0:
+        _cleanup_tmp_script(tmp_script)
         return {"success": False, "error": f"tmux 启动失败: {result.stderr.strip()}"}
+    # 脚本已被 tmux 内 bash fork 执行（new-session 成功即已读取），可安全删除
+    _cleanup_tmp_script(tmp_script)
 
     # P1-4/6: 主动轮询 readiness 替代 sleep(3)
     ready = _wait_codex_ready(tmux_name, timeout=15)

@@ -869,20 +869,3 @@ def _register_instance_in_workspace(role: str, instance_id: int, ws_path: Path) 
             reg_path.write_text(content.rstrip() + "\n" + entry)
     else:
         reg_path.write_text(f"# Instance Registry — {role}\n\n{entry}")
-
-
-# ── dev 环境隔离（DESIGN-dev-environment.md） ──
-_ENV_PREFIX = {"dev": "dev:", "staging": "test:", "prod": ""}
-
-def _get_env() -> str:
-    """从 CCS_ROLE 解析环境后缀: engineer+dev → dev"""
-    role = os.environ.get("CCS_ROLE", "")
-    if "+" in role:
-        return role.split("+", 1)[1]
-    m = re.search(r'\+(dev|staging|prod)\b', role)
-    return m.group(1) if m else "prod"
-
-def _env_path(base: str) -> str:
-    """环境感知路径: ~/workspace/ → ~/workspace+dev/"""
-    env = _get_env()
-    return f"{base}+{env}" if env != "prod" else base
