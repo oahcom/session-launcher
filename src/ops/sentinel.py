@@ -31,6 +31,18 @@ from typing import Optional
 
 LOG = logging.getLogger("sentinel")
 
+
+def _get_role_json(role: str) -> Optional[dict]:
+    """按名称获取角色定义（统一走 routing.roles.get_role）。
+
+    与 roles.py 共用 shared_loader 加载管线，避免哨兵独立 glob 导致
+    解析逻辑分叉（曾在此处直接读 persona JSON）。
+    延迟导入防循环依赖：partner → sentinel → roles，模块级导入会打结。
+    """
+    from routing.roles import get_role as _gr
+    return _gr(role)
+
+
 # 延迟导入 parse_tmux_name（在 _role_name_from_tmux 和 list_sentinels 中用到）
 # 在模块级别不导入，避免循环依赖
 
@@ -163,11 +175,6 @@ class CcsSentinel:
         )
 
 
-# ── TMUX 工具（内部）──
-_SESSION_ROLES_JSON = Path(os.environ.get(
-    "SESSION_ROLES_ROOT", str(Path.home() / "hermes-session-roles")
-)) / "personas" / "session-roles"
-
 
 def _list_tmux_sessions() -> set[str]:
     """返回当前所有 tmux session 名（ccs-*/cdx-*）。"""
@@ -205,21 +212,6 @@ def _parse_tmux_name(tmux_name: str) -> tuple[str, int]:
 
 def _engine_from_tmux(tmux_name: str) -> str:
     return "codex" if tmux_name.startswith("cdx-") else "ccs"
-
-
-def _get_role_json(role: str) -> Optional[dict]:
-    if not _SESSION_ROLES_JSON.exists():
-        return None
-    for f in sorted(_SESSION_ROLES_JSON.glob("*.json")):
-        if f.name.startswith("_"):
-            continue
-        try:
-            data = json.loads(f.read_text())
-            if data.get("name") == role:
-                return data
-        except (json.JSONDecodeError, OSError):
-            continue
-    return None
 
 
 def _get_pid(tmux_session: str) -> Optional[int]:

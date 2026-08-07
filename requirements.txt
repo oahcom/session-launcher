@@ -1,0 +1,6 @@
+# 纯 stdlib 项目：src/ 下所有模块仅使用 Python 标准库
+# （os/sys/json/sqlite3/subprocess/socket/urllib/argparse/ast/asyncio 等），
+# 无第三方运行时依赖，无需安装。
+#
+# 开发/运行测试需要 pytest（仅 tests/ 目录使用）：
+#   pip install pytest

@@ -37,12 +37,24 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolate_roles_state():
-    """重置 roles.py 的全局缓存和锁状态，隔离每轮测试。"""
+    """重置 roles.py 的全局缓存和锁状态，隔离每轮测试。
+
+    同时清空 hermes-session-roles registry 的模块级缓存，
+    避免 registry._LOADED_AT（5s TTL）导致测试间数据串扰。
+    """
     import routing.roles as _roles
     with _roles._lock:
         _roles._ROLE_CACHE.clear()
         _roles._LOADED_ALL_ROLES = None
         _roles._SHARED_LOADER_CHECKED = False
+    # 清空 registry 全局状态，防止前一轮缓存残留
+    try:
+        from registry import _ROLES, _LOADED_AT
+        _ROLES.clear()
+        import registry as _reg
+        _reg._LOADED_AT = 0.0
+    except (ImportError, AttributeError):
+        pass
 
 
 @pytest.fixture
@@ -147,43 +159,49 @@ class TestLoadRoles:
     """P2: load_roles — 加载/缓存/空/损坏"""
 
     def test_first_call_loads_json_files(self, roles_tmpdir):
-        """P2a: 首次调用从 JSON 加载"""
+        """P2a: 首次调用从 shared_loader 加载"""
         import routing.roles as _roles
-        pd = roles_tmpdir["personas_dir"]
-        (pd / "persona_engineer.json").write_text(json.dumps({"name": "engineer"}))
-        (pd / "persona_qa.json").write_text(json.dumps({"name": "qa"}))
-        result = _roles.load_roles()
-        assert len(result) == 2
-        names = {r["name"] for r in result}
-        assert names == {"engineer", "qa"}
+        fake_roles = [
+            {"name": "engineer", "system_prompt": "", "eval_criteria": [],
+             "input_signals": [], "output_targets": []},
+            {"name": "qa", "system_prompt": "", "eval_criteria": [],
+             "input_signals": [], "output_targets": []},
+        ]
+        with patch.object(_roles, '_sl_load_roles', return_value=fake_roles):
+            result = _roles.load_roles()
+            assert len(result) == 2
+            names = {r["name"] for r in result}
+            assert names == {"engineer", "qa"}
 
     def test_second_call_uses_cache(self, roles_tmpdir):
-        """P2b: 第二次调用返回缓存的列表"""
+        """P2b: 第二次调用返回缓存的列表（不重新调 shared_loader）"""
         import routing.roles as _roles
-        pd = roles_tmpdir["personas_dir"]
-        (pd / "persona_engineer.json").write_text(json.dumps({"name": "engineer"}))
-        first = _roles.load_roles()
-        # 删掉文件再调，应仍返回缓存
-        (pd / "persona_engineer.json").unlink()
-        second = _roles.load_roles()
+        fake_roles = [{"name": "engineer", "system_prompt": "", "eval_criteria": [],
+                       "input_signals": [], "output_targets": []}]
+        mock_fn = MagicMock(return_value=fake_roles)
+        with patch.object(_roles, '_sl_load_roles', mock_fn):
+            first = _roles.load_roles()
+            second = _roles.load_roles()
         assert second is first  # 同一对象引用
         assert len(second) == 1
+        assert mock_fn.call_count == 1  # 只调用一次（第二次命中缓存）
 
     def test_empty_directory_returns_empty_list(self, roles_tmpdir):
         """P2c: 无 JSON 文件 → []"""
         import routing.roles as _roles
-        result = _roles.load_roles()
-        assert result == []
+        with patch.object(_roles, '_sl_load_roles', return_value=[]):
+            result = _roles.load_roles()
+            assert result == []
 
     def test_corrupted_json_skipped(self, roles_tmpdir):
-        """P2d: 损坏 JSON 文件被跳过"""
+        """P2d: 损坏 JSON 文件被跳过（mock 模拟 filtered 结果）"""
         import routing.roles as _roles
-        pd = roles_tmpdir["personas_dir"]
-        (pd / "persona_ok.json").write_text(json.dumps({"name": "ok"}))
-        (pd / "persona_bad.json").write_text("{corrupt!!")
-        result = _roles.load_roles()
-        assert len(result) == 1
-        assert result[0]["name"] == "ok"
+        ok_role = {"name": "ok", "system_prompt": "", "eval_criteria": [],
+                   "input_signals": [], "output_targets": []}
+        with patch.object(_roles, '_sl_load_roles', return_value=[ok_role]):
+            result = _roles.load_roles()
+            assert len(result) == 1
+            assert result[0]["name"] == "ok"
 
     def test_shared_loader_called_once_on_first_load(self, roles_tmpdir):
         """P2e: 首次 load 调用 shared_loader 验证，后续不再调用"""
@@ -480,16 +498,16 @@ class TestBuildRolePrompt:
     """P10: _build_role_prompt — 四种驱动模式"""
 
     def test_feed_drive(self):
-        """P10a: feed 驱动模式"""
+        """P10a: feed 已废弃，等效 ondemand"""
         import routing.roles as _roles
         role = _sample_role("engineer", "Engineer")
         role["drive"] = "feed"
         result = _roles._build_role_prompt(role)
-        assert "feed（事件驱动）" in result
-        assert "空闲时定期自检" in result
+        # feed 已在 38dad4b 移除，回退到默认 ondemand
+        assert "ondemand（按需启动）" in result
 
     def test_loop_drive(self):
-        """P10b: loop 驱动模式"""
+        """P10b: loop 已废弃，等效 ondemand"""
         import routing.roles as _roles
         role = _sample_role("engineer", "Engineer")
         role["drive"] = "loop"
@@ -505,11 +523,11 @@ class TestBuildRolePrompt:
         assert "ondemand（按需启动）" in result
 
     def test_unknown_drive(self):
-        """P10d: 未知驱动模式 → 直接显示"""
+        """P10d: 未识别驱动模式 → 走 ondemand 默认路径"""
         import routing.roles as _roles
         role = {"name": "custom", "title": "Custom", "drive": "hybrid"}
         result = _roles._build_role_prompt(role)
-        assert "驱动模式: hybrid" in result
+        assert "ondemand（按需启动）" in result
 
 
 # ===================================================================
@@ -565,11 +583,12 @@ class TestInjectRoleKnowledge:
         assert result == "skipped (no workspace)"
 
     def test_replaces_existing_knowledge_block(self, tmp_path):
-        """P12b: 已有 KNOWLEDGE 区块 → 替换"""
+        """P12b: 已有 KNOWLEDGE 区块 → 替换（走 contract_block 回退路径）"""
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("header\n<!-- KNOWLEDGE:START -->old stuff<!-- KNOWLEDGE:END -->\nfooter")
-        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=""):
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("injected")
         content = md_path.read_text()
@@ -583,7 +602,8 @@ class TestInjectRoleKnowledge:
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("before\n<!-- WORKSPACE_SYS:END -->\nafter")
-        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=""):
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("injected")
         content = md_path.read_text()
@@ -596,7 +616,8 @@ class TestInjectRoleKnowledge:
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("just some text")
-        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=""):
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("injected")
         content = md_path.read_text()
@@ -604,15 +625,16 @@ class TestInjectRoleKnowledge:
         assert "产出分类:" in content
 
     def test_injects_security_redlines(self, tmp_path):
-        """P12e: 注入内容包含安全红线"""
+        """P12e: 注入内容包含通用红线（base.md 回退路径）"""
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("content")
-        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=""):
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         content = md_path.read_text()
-        assert "安全红线" in content
-        assert "禁止硬编码凭据" in content
+        # 回退路径注入 base.md（含角色职责红线）或 _fallback_base_content（含安全红线）
+        assert ("安全红线" in content) or ("角色职责红线" in content)
 
 
 # ===================================================================
@@ -834,8 +856,9 @@ class TestValidateCcsExecution:
     def test_task_action_no_role_print_warning(self, roles_tmpdir, capsys):
         """P17e: role 既无 JSON 又无缓存 → 打印警告"""
         import routing.roles as _roles
-        # engineer 的 JSON 不存在，get_role 返回 None
-        _roles.validate_ccs_execution("engineer", "task:run")
+        # 模拟角色不存在：load_roles 返回空列表（shared_loader 路径被 mock）
+        with patch.object(_roles, '_sl_load_roles', return_value=[]):
+            _roles.validate_ccs_execution("engineer", "task:run")
         captured = capsys.readouterr()
         assert "CCS-RULE: role 'engineer' not found" in captured.err
 

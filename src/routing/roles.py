@@ -44,6 +44,17 @@ from typing import Optional
 from paths import BUS_CLIENT, ensure_paths as _ensure_paths
 _ensure_paths()
 
+# ── shared_loader 导入：统一角色数据入口 ──
+# hermes-session-roles/src/shared_loader.py 是角色加载和 produce/consume
+# 解析的单一权威来源。直接 import 复用 registry.load_all 的加载管线
+# （含 prompt_refs 渲染、旧格式兼容），避免两套解析逻辑不同步。
+_shared_src = str(Path.home() / "hermes-session-roles" / "src")
+if _shared_src not in sys.path:
+    sys.path.insert(0, _shared_src)
+from shared_loader import load_roles as _sl_load_roles  # noqa: E402
+from shared_loader import parse_produce_categories as _sl_produce  # noqa: E402
+from shared_loader import parse_consume_categories as _sl_consume  # noqa: E402
+
 _FORBIDDEN_MAP: dict[str, list[str]] = {
     "pg": ["run_tests", "edit_config", "deploy", "start_ccs",
            "edit_persona_json", "write_other_workspace"],
@@ -120,9 +131,9 @@ _LOADED_ALL_ROLES: list[dict] | None = None
 def load_roles() -> list[dict]:
     """读取角色 JSON 文件（验证网关 + 缓存）。
 
-    验证：首次加载时通过 shared_loader --validate 确认角色定义完整性。
-    数据源：仍直接读 JSON（需要 raw dict 注入 workspace），
-    但 produce/consume 解析已统一至 shared_loader 的 roles_export.json。
+    数据源：优先调用 shared_loader.load_roles()（含 prompt_refs 渲染、
+    旧格式兼容），回退到直接 glob。两条路径共享 registry 的加载管线，
+    确保 name/category/output_targets/input_signals 等字段语义一致。
     """
     global _LOADED_ALL_ROLES, _SHARED_LOADER_CHECKED
     _need_validate = False
@@ -134,13 +145,17 @@ def load_roles() -> list[dict]:
     if _need_validate:
         _run_shared_loader_validate()
         _SHARED_LOADER_CHECKED = True
-    roles = []
-    for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
-        try:
-            with open(f) as fp:
-                roles.append(json.load(fp))
-        except (json.JSONDecodeError, OSError):
-            continue
+    try:
+        roles = _sl_load_roles()
+    except Exception:
+        # fallback: 直接 glob 读 JSON（shared_loader 不可用时的降级路径）
+        roles = []
+        for f in sorted(SESSION_ROLES_ROOT.glob("personas/session-roles/persona_*.json")):
+            try:
+                with open(f) as fp:
+                    roles.append(json.load(fp))
+            except (json.JSONDecodeError, OSError):
+                continue
     with _lock:
         _LOADED_ALL_ROLES = roles
     return roles
@@ -188,21 +203,9 @@ def check_wake_permission(actor: str, target: str) -> bool:
 def _action_templates(role: dict) -> str:
     """生成角色对应的动作填空模板，含跨角色协作示例。"""
     name = role.get("name", "")
-    output_targets = role.get("output_targets", [])
-    input_signals = role.get("input_signals", [])
-
-    produce = []
-    for t in output_targets:
-        m = re.search(r"bus cat=(\w+)", t)
-        if m:
-            produce.append(m.group(1))
-
-    consume = []
-    for s in input_signals:
-        if s.get("type") == "bus":
-            cat = s.get("spec", {}).get("category", "")
-            if cat and cat != "*":
-                consume.append(cat)
+    produce = _sl_produce(role.get("output_targets", []))
+    # 消费分类与 shared_loader 一致（排除 "*" + 去重）
+    consume = [c for c in _sl_consume(role.get("input_signals", [])) if c != "*"]
 
     lines = ["## 动作模板（填空即执行）"]
     lines.append("# bus_write/bus_read/bus_unread/bus_search 是 system alias（定义在 .bashrc）")
@@ -241,18 +244,8 @@ def _action_templates(role: dict) -> str:
 
 def _contract_block(role: dict) -> str:
     """从角色定义构建 ## 契约 区块（产出/消费分类、协作组、验证标准、驱动方式）。"""
-    produce = []
-    for t in role.get("output_targets", []):
-        m = re.search(r"bus cat=(\w+)", t)
-        if m:
-            produce.append(m.group(1))
-
-    consume = []
-    for s in role.get("input_signals", []):
-        if s.get("type") == "bus":
-            cat = s.get("spec", {}).get("category", "")
-            if cat and cat != "*":
-                consume.append(cat)
+    produce = _sl_produce(role.get("output_targets", []))
+    consume = [c for c in _sl_consume(role.get("input_signals", [])) if c != "*"]
 
     workgroup = role.get("workgroup", [])
     drive = role.get("drive", "")

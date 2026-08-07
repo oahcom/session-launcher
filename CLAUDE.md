@@ -58,19 +58,40 @@ python3 src/ecosystem_health.py --check
 ## 代码布局
 ```
 src/
-  core.py           ── 生命周期编排
-  ccs.py            ── CLI 入口
-  ccs_socket.py     ── CCS 直接通信（Unix Socket）
-  ecosystem_health.py ── 三项目健康检查
-  paths.py          ── 路径管理
-  codex_ops.py      ── Codex 集成
+  core.py              ── 生命周期编排
+  ccs.py               ── CLI 入口
+  ccs_socket.py        ── CCS 直接通信（Unix Socket）
+  ecosystem_health.py  ── 三项目健康检查
+  paths.py             ── 路径管理
+  codex_ops.py         ── Codex 集成
+  tmux_ops.py          ── tmux 操作封装
+  role_manager.py      ── 角色管理
+  workflow_client.py   ── CCS 工作流客户端
+  wf.py                ── CLI 快捷入口
+  lifecycle_manager.py ── backward-compat 重导出（实际在 pipeline lifecycle.manager）
+  events/
+    signals.py         ── 信号常量 + input_signals 检查逻辑
+    parser.py          ── 信号解析器
   ops/
-    sentinel.py     ── 哨兵文件读写
-    ccs_config.py   ── 配置中心
+    sentinel.py        ── 哨兵文件读写（CcsSentinel）
+    lifecycle_sentinel.py ── 生命周期哨兵写入/超时检查/清理
+    ccs_config.py      ── 配置中心
+    mcp_settings.py    ── MCP 设置
+    tracker.py         ── 轮次追踪
+    watchdog.py        ── 伙伴存活守护
+    runner.py          ── 执行器
+    validators.py      ── 参数校验
+    workspace.py       ── Workspace 管理
   routing/
-    roles.py        ── 角色加载 + workspace 注入
-    gatekeeper.py   ── 门禁系统
-    partner.py      ── 伙伴客户端
+    roles.py           ── 角色加载 + workspace 注入 + 权限
+    gatekeeper.py      ── 门禁系统 + CrossRoleRouter
+    partner.py         ── 伙伴客户端
+  workflow/
+    client.py          ── WorkflowClient
+    db.py              ── DB 连接
+    schema.py          ── Schema 定义
+  migration/
+    scripts.py         ── 迁移脚本
 ```
 
 ## 测试命令

@@ -85,7 +85,7 @@ class TestInjectConvergence:
         )
 
     def test_inject_only_contract_block(self):
-        """KNOWLEDGE 块内容只含'契约'（不含 prompt dump 关键词）"""
+        """KNOWLEDGE 块含契约与角色定义（role_assembler 注入），不出现模板占位符"""
         _rmod.inject_role_knowledge_into_workspace(_minimal_role())
         content = self.claude_md_path.read_text(encoding="utf-8")
         assert "<!-- KNOWLEDGE:START -->" in content
@@ -94,10 +94,12 @@ class TestInjectConvergence:
         end = content.index("<!-- KNOWLEDGE:END -->") + len("<!-- KNOWLEDGE:END -->")
         block = content[start:end]
 
-        dump_keywords = ["行为约束", "输入信号", "输出目标", "评估标准", "动作模板"]
-        for kw in dump_keywords:
-            assert kw not in block, f"KNOWLEDGE 块不应包含 '{kw}'"
+        # 契约内容必须注入
         assert "契约" in block
+        # 若 role_assembler 成功注入完整角色定义（含 base.md 章节），不再断言"不含"行为约束
+        # 仅拒绝渲染残留占位符（template 未展开的痕迹）
+        for kw in ["{{", "}}"]:
+            assert kw not in block, f"KNOWLEDGE 块不应包含未展开占位符 '{kw}'"
 
     def test_inject_idempotent(self):
         """连续两次注入同一个角色，CLAUDE.md 中只出现一次 KNOWLEDGE marker"""
@@ -146,7 +148,7 @@ class TestInjectConvergence:
         content = self.claude_md_path.read_text(encoding="utf-8")
         assert content.rstrip().endswith("<!-- KNOWLEDGE:END -->")
         assert "契约" in content
-        assert "安全红线" in content
+        assert "角色职责红线" in content
 
 
 # ════════════════════════════════════════════════════════════
@@ -180,18 +182,13 @@ class TestLayerPollution:
                     errors.append(f"项目引用段内标题 '{hl.strip()}' 不应包含 '{kw}'")
         assert not errors, "\n".join(errors)
 
-    def test_basemd_no_global_rules(self):
-        """base.md 不含全球规则段标题"""
+    def test_basemd_has_role_contract_core(self):
+        """base.md 是角色知识注入的核心来源，必须包含角色职责红线与自审查指令"""
         path = Path.home() / "hermes-session-roles" / "prompts" / "base.md"
         assert path.exists(), "base.md 不存在"
-        headings = [l for l in _lines_outside_code_blocks(path.read_text(encoding="utf-8").splitlines()) if _HEADING_RE.match(l)]
-
-        errors = []
-        for kw in ["验证协议", "诚信准则", "代码质量", "安全准则", "输出风格", "AI 行为约束", "中文思考"]:
-            for hl in headings:
-                if kw in hl:
-                    errors.append(f"段落标题 '{hl.strip()}' 不应包含全球规则关键词 '{kw}'")
-        assert not errors, "\n".join(errors)
+        content = path.read_text(encoding="utf-8")
+        for kw in ["角色职责红线", "自审查指令", "绝对禁止", "允许做的事"]:
+            assert kw in content, f"base.md 应包含 '{kw}'"
 
     def test_all_projects_have_claudemd(self):
         """三个项目的 CLAUDE.md 都存在且非空"""
