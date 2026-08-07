@@ -73,10 +73,16 @@ def dashboard() -> str:
 
 
 def _start_feed_listener(role: str, feed_cat: str) -> None:
-    """启动 feed listener 线程，监听指定 bus 分类的新消息。"""
+    """启动 feed listener 线程，监听指定 bus 分类的新消息。
+
+    线程句柄挂在函数属性 _threads 上（测试断言与停止回收共用）。
+    """
     import socket as _socket
     import json as _json
     import threading
+
+    if not hasattr(_start_feed_listener, "_threads"):
+        _start_feed_listener._threads = []
 
     s = None
 
@@ -136,3 +142,4 @@ def _start_feed_listener(role: str, feed_cat: str) -> None:
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+    _start_feed_listener._threads.append(t)
