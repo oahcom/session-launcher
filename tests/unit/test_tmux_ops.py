@@ -1,6 +1,5 @@
 """test_tmux_ops.py — tmux_ops 核心函数测试覆盖。"""
 import sys
-from pathlib import Path
 
 # conftest.py 已设置 sys.path
 from tmux_ops import make_tmux_name, parse_tmux_name

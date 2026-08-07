@@ -32,7 +32,6 @@ from ops.sentinel import (
     get_cross_session_memory,
     get_all_cross_session_memories,
     record_cross_session_action,
-    _MEMORY_DIR,
 )
 
 
@@ -306,7 +305,6 @@ class TestListSentinels:
 
     def test_tmux_supplements_file_data(self):
         """tmux session 有 PID 但无文件 → 合并到结果。"""
-        import ops.sentinel as _sent
 
         def fake_parse(name):
             return ("qa", 0)

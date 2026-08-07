@@ -23,9 +23,8 @@
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent.parent / "src" / "ops"))
@@ -49,9 +48,8 @@ def isolate_roles_state():
         _roles._SHARED_LOADER_CHECKED = False
     # 清空 registry 全局状态，防止前一轮缓存残留
     try:
-        from registry import _ROLES, _LOADED_AT
-        _ROLES.clear()
         import registry as _reg
+        _reg._ROLES.clear()
         _reg._LOADED_AT = 0.0
     except (ImportError, AttributeError):
         pass
@@ -631,7 +629,7 @@ class TestInjectRoleKnowledge:
         md_path.write_text("content")
         with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
              patch.object(_roles, "_role_assembler_output", return_value=""):
-            result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         content = md_path.read_text()
         # 回退路径注入 base.md（含角色职责红线）或 _fallback_base_content（含安全红线）
         assert ("安全红线" in content) or ("角色职责红线" in content)

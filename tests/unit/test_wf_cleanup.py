@@ -55,7 +55,7 @@ with WorkflowClient("engineer") as wf:
     ids = {z["instance_id"] for z in zombies}
     assert "wf_zombie1" in ids, f"wf_zombie1 未检出: {ids}"
     assert "wf_zombie0" in ids, f"wf_zombie0(timeout_count=0) 未检出: {ids}"
-    assert "wf_old1" not in ids, f"wf_old1 应被过滤(有 timeout_count)"
+    assert "wf_old1" not in ids, "wf_old1 应被过滤(有 timeout_count)"
     assert "wf_done" not in ids, "completed 不应出现"
 
     zombies60 = wf.find_zombies(minutes=60)

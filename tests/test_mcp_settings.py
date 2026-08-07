@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test `_write_mcp_settings` — MCP 隔离写入逻辑。"""
 
-import importlib.util, json, sys, os
+import json, sys, os
 from pathlib import Path
 
 _launcher_src = Path(__file__).resolve().parent.parent / "src"

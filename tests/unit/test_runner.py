@@ -9,11 +9,9 @@
   S5  _start_feed_listener socket close 异常 → 不冒泡
 """
 import json
-import os
 import sys
-import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from subprocess import TimeoutExpired
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))

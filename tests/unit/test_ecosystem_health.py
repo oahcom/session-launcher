@@ -1,9 +1,8 @@
 """test_ecosystem_health.py — 健康检查模型 + 检查函数测试覆盖。"""
 import json
 import sys
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

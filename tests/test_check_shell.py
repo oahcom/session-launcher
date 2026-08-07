@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test _check_shell 安全验证逻辑（白盒：不执行命令，只测验证规则）。"""
 
-import importlib.util, sys, os, re
+import importlib.util, sys
 from pathlib import Path
 
 # ── 直接加载 events.parser 模块 ──

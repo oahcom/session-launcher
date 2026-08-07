@@ -7,7 +7,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent.parent / "src" / "ops"))
 
-import pytest
 from routing.partner import PartnerClient
 
 

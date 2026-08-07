@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
@@ -13,11 +13,8 @@ import pytest
 # 需要测试的函数
 from core import (
     start, stop, status, send, output, health_check,
-    _is_alive, _find_claude_pid, _tmux_send,
-    _LIFECYCLE_SENTINEL_DIR, _CLAUDE_MD,
-    TMUX_PREFIX, BUS_CLIENT, FEED_LISTENER,
-    _check_memory_before_launch, _validate_role_name,
-    _resolve_ws_paths, _action_templates,
+    _validate_role_name,
+    _resolve_ws_paths,
 )
 
 
