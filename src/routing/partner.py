@@ -154,7 +154,8 @@ class PartnerClient:
 
             time.sleep(5)
 
-        # 超时
+        # 超时（elapsed 可能在异常路径下未赋值，默认 timeout 兜底）
+        elapsed = timeout
         task = self._get_task(task_id)
         alive = is_ccs_running(target_role)
         if alive:

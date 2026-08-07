@@ -189,6 +189,7 @@ def _find_claude_session_id(role: str = "") -> Optional[str]:
 
 
 def _is_alive(tmux_name: str) -> bool:
+    """单检：仅验证 tmux session 存在。供 core/runner/codex_ops 等快速路径使用。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],

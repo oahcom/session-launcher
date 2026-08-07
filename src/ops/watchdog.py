@@ -34,7 +34,10 @@ from ops.sentinel import (
 
 
 def _is_alive(tmux_name: str) -> bool:
-    """双检：tmux session 存在 + pane 内 claude 进程存活。"""
+    """双检：tmux session 存在 + pane 内 claude 进程存活。
+
+    与 tmux_ops._is_alive（单检）不同：watchdog 需判断 claude 进程是否真实存活，
+    而非仅 tmux session 存在（tmux session 可在 claude 退出后仍留）。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],
@@ -162,6 +165,8 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
                     f"watchdog 检测到自身 CCS {self_tmux} 死亡，发起重启",
                     src=this_role)
                 _restarting_self = True
+                # 先移除本线程的注册表条目，防止 stop() 回收到已自愈的旧线程
+                _WATCHDOG_THREADS.pop(_wd_key(this_role, instance_id), None)
                 _restart_partner(this_role, instance_id=instance_id)
                 _restarting_self = False
         except Exception as e:

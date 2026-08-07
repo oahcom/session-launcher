@@ -5,6 +5,10 @@ core.py — 生命周期编排（从 tmux_ops/role_manager/codex_ops 导入）
 
 _start_feed_subprocess = None  # defined at module end
 
+# feed 子进程注册表：tmux_name -> Popen。stop() 时 kill+wait 防进程泄漏。
+# 注解用字符串形式：模块顶部 subprocess 尚未导入。
+_FEED_PROCS: dict[str, "subprocess.Popen"] = {}
+
 __all__ = [
     'start',
     'register_hook',
@@ -80,28 +84,9 @@ def _trigger_hooks(event: str, **kwargs) -> None:
         except Exception as e:
             _log.info("[hooks:%s] %s error: %s", event, fn.__name__, e)
 
-# ── 路由策略状态（MCP Gateway 模式）──
-# sticky: 同角色消息路由到同一 CCS session
-# round-robin: 轮询分发
-# priority: 按消息优先级路由
-_ROUTING_POLICIES: dict[str, str] = {}  # role -> policy
+# ── 路由策略（实现在 routing/policy.py，此处 re-export 兼容旧导入）──
+from routing.policy import set_routing_policy, get_routing_policy, route_target
 
-def set_routing_policy(role: str, policy: str = "sticky") -> None:
-    if policy not in ("sticky", "round-robin", "priority"):
-        policy = "sticky"
-    _ROUTING_POLICIES[role] = policy
-
-def get_routing_policy(role: str) -> str:
-    return _ROUTING_POLICIES.get(role, "sticky")
-
-def route_target(role: str, candidates: list[str]) -> str:
-    policy = get_routing_policy(role)
-    if policy == "sticky":
-        return candidates[0] if candidates else role
-    elif policy == "round-robin":
-        idx = hash(role + str(int(__import__("time").time() / 60))) % max(len(candidates), 1)
-        return candidates[idx] if candidates else role
-    return candidates[0] if candidates else role
 from tmux_ops import (_check_memory_before_launch, _find_claude_pid, _find_claude_session_id,
     _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid,
     _active_codex_session_count, _wait_codex_ready,
@@ -242,6 +227,21 @@ def start(role: str, title: str = "", detach: bool = False,
           no_auto_send: bool = False,
           instance_id: int = 0,
           dry_run: bool = False) -> dict:
+    """创建一个 CCS 并写入哨兵。
+
+    自动从 hermes-session-roles 加载角色定义（如存在），
+    构建 system prompt 并注入专业知识到 workspace CLAUDE.md。
+
+    参数可省略说明（由 _prepare_workspace 自动推导）:
+      drive: 省略时从 persona JSON 的 drive 字段读取，JSON 无值则默认 "ondemand"。
+      bus_track: 省略时自动从 role_def.input_signals 中 type=bus 的 category 推导，
+                 推导失败则 bus_age=-1（死锁检测不启动）。
+
+    参数:
+      instance_id: 实例编号。
+        0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
+        >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
+    """
     """创建一个 CCS 并写入哨兵。
 
     自动从 hermes-session-roles 加载角色定义（如存在），
@@ -548,6 +548,15 @@ def stop(role: str, instance_id: int = 0,
         stop_tracker(role, instance_id)
     except Exception as e:
         _log.warning("stop 回收守护线程异常: %s", e)
+    # 回收 feed_listener 子进程：kill + wait，防每次 stop 泄漏一个 Python 进程
+    proc = _FEED_PROCS.pop(tmux_name, None)
+    if proc and proc.poll() is None:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+            _log.info("feed 子进程已回收: %s", tmux_name)
+        except Exception as e:
+            _log.warning("feed 子进程回收异常 %s: %s", tmux_name, e)
     _tmux_kill(tmux_name)
     delete_sentinel(role, instance_id)
     if not was_alive:
@@ -821,12 +830,16 @@ from ops.workspace import register, workspace_create, workspace_list
 
 
 def _start_feed_subprocess(tmux_name: str) -> None:
-    """启动 feed_listener.py 子进程，实时接收 bus 消息并注入到 tmux 会话。"""
+    """启动 feed_listener.py 子进程，实时接收 bus 消息并注入到 tmux 会话。
+
+    记录 Popen 句柄进 _FEED_PROCS，stop() 时按 tmux 名 kill+wait 回收。
+    """
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, str(FEED_LISTENER), "--tmux-target", tmux_name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        _FEED_PROCS[tmux_name] = proc
         _log.info("feed 子进程已启动: %s -> %s", FEED_LISTENER, tmux_name)
     except (OSError, json.JSONDecodeError) as e:
         _log.warning("feed 子进程启动失败: %s", e)
