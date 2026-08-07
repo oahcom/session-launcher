@@ -224,7 +224,7 @@ def start_watchdog(this_role: str, partner_role: str,
     t = threading.Thread(
         target=_run,
         args=(this_role, partner_role, auto_restart, interval, restart_delay, instance_id, stop_event),
-        daemon=False,
+        daemon=True,
         name=f"watchdog:{this_role}:{partner_role}:{instance_id}",
     )
     t.start()

@@ -223,7 +223,7 @@ class TestStartTracker:
 
     @patch("ops.tracker.threading.Thread")
     def test_start_tracker_creates_thread(self, mock_thread_cls):
-        """P12: start_tracker 创建 daemon=False 线程并 start。"""
+        """P12: start_tracker 创建 daemon=True 线程并 start。"""
         mock_thread = MagicMock()
         mock_thread_cls.return_value = mock_thread
 
@@ -234,7 +234,7 @@ class TestStartTracker:
 
         mock_thread_cls.assert_called_once()
         kwargs = mock_thread_cls.call_args
-        assert kwargs[1]["daemon"] is False
+        assert kwargs[1]["daemon"] is True
         assert "role_a" in kwargs[1]["name"]
         assert "work" in kwargs[1]["name"]
         assert "1" in kwargs[1]["name"]

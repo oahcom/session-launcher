@@ -1,10 +1,19 @@
 """test_ecosystem_health.py — 健康检查模型 + 检查函数测试覆盖。"""
 import json
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# src/ecosystem_health.py 导入 paths.py 会将 ~/.hermes/scripts 插入 sys.path 首位，
+# 覆盖 conftest 插入的 src/ → import 解析到全局脚本版（无 CheckItem）。
+# 此处重置顺序，确保 src/ 优先。
+_src = str(Path(__file__).resolve().parent.parent.parent / "src")
+if _src in sys.path:
+    sys.path.remove(_src)
+sys.path.insert(0, _src)
 
 from ecosystem_health import (
     CheckItem, HealthReport, check_all,

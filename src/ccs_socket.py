@@ -24,8 +24,8 @@ from typing import Callable, Optional
 log = logging.getLogger("ccs-socket")
 
 # 复用 sister_bus socket server（由 systemd 管理）
-from paths import CCS_SOCKET_PATH
-SISTER_BUS_SOCK = CCS_SOCKET_PATH
+from paths import SISTER_BUS_CCS_SOCK
+SISTER_BUS_SOCK = SISTER_BUS_CCS_SOCK
 
 
 class CCSClient:

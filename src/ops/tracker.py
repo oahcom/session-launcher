@@ -154,12 +154,12 @@ def start_tracker(this_role: str, bus_cat: str,
                   interval: int = 10,
                   partners: Optional[list[str]] = None,
                   instance_id: int = 0) -> threading.Thread:
-    """启动轮次追踪线程。daemon=False 保持存活。"""
+    """启动轮次追踪线程。daemon=True — 主进程退出时自动终止，不阻塞 join(5)。"""
     stop_event = threading.Event()
     t = threading.Thread(
         target=_run,
         args=(this_role, bus_cat, timeout_sec, interval, partners or [], instance_id, stop_event),
-        daemon=False,
+        daemon=True,
         name=f"tracker:{this_role}:{bus_cat}:{instance_id}",
     )
     t.start()
