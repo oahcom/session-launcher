@@ -20,9 +20,13 @@ if _GW_SRC not in sys.path:
 
 from workflow.gateway import Gate  # noqa: E402
 
-# Gate 已导入到本模块作用域，移除 worktree src 防止污染后续测试的 import workflow.*
+# Gate 已导入到本模块作用域。移除 worktree src 并清空 workflow 包缓存，
+# 否则 sys.modules['workflow'].__path__ 仍指向 worktree，后续测试的
+# import workflow.client 会解析到 worktree 版（无 find_zombies）。
 if _GW_SRC in sys.path:
     sys.path.remove(_GW_SRC)
+for _m in [k for k in list(sys.modules) if k == "workflow" or k.startswith("workflow.")]:
+    del sys.modules[_m]
 
 
 # ── fixtures ──────────────────────────────────────────
