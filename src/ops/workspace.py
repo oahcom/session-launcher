@@ -44,6 +44,8 @@ def workspace_create(name: str) -> dict:
     若 CLAUDE.md 已存在，会替换最后一组 WORKSPACE_SYS marker 内容，
     避免多次调用产生重复 block（T-C1 修复）。
     """
+    if not _validate_role_name(name):
+        raise ValueError(f"非法角色名: {name!r}")
     ws_path = _WS_ROOT / name
     created = not ws_path.exists()
     ws_path.mkdir(parents=True, exist_ok=True)

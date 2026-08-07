@@ -161,7 +161,8 @@ class WorkflowClient:
         # ponytail: Gate was YAGNI'd. Gate.validate_create_task inlined as _validate_create_task.
         self._validate_create_task(template_id, initiator_role or self.role, assignee)
 
-        wf_id = f"wf_{int(time.time()*1000) % 100000000}"
+        import uuid
+        wf_id = f"wf_{uuid.uuid4().hex[:12]}"
         now = time.time()
         self._conn.execute("""
             INSERT OR IGNORE INTO workflow_instances (instance_id, template_id, task_id,
@@ -232,7 +233,8 @@ class WorkflowClient:
 
     def create(self, assignee: str, task_description: str,
                workflow_json: dict = None, task_id: str = None) -> str:
-        wf_id = f"wf_{int(time.time()*1000) % 100000000}"
+        import uuid
+        wf_id = f"wf_{uuid.uuid4().hex[:12]}"
         now = time.time()
         if not task_id:
             task_id = f"task_{int(now * 1000) % 100000000}"
