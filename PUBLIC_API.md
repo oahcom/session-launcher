@@ -35,7 +35,6 @@ src/
 │   └── parser.py       # 信号解析器（signal_parser）
 ├── ops/                # 基础设施
 │   ├── sentinel.py     # CcsSentinel 哨兵文件读写
-│   ├── lifecycle_sentinel.py  # 生命周期哨兵写入/超时检查/清理
 │   ├── ccs_config.py   # 配置中心
 │   ├── mcp_settings.py # MCP 设置
 │   ├── runner.py       # Runner 执行器
@@ -95,7 +94,9 @@ backward-compat 重导出，实际实现位于 `session-pipeline/src/lifecycle/m
 | `delete_sentinel(key_or_role, instance_id=0)` | str, int? | `bool` |
 | `update_health(role, instance_id=0, **kwargs)` | str, int? | `bool` |
 
-## LifecycleSentinel (`ops/lifecycle_sentinel.py`)
+## LifecycleSentinel (`core.py`)
+
+生命周期哨兵写入/超时检查/清理（内联在 core.py，无独立模块）。
 
 | 函数 | 参数 | 返回 |
 |------|------|------|

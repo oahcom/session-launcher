@@ -74,7 +74,6 @@ src/
     parser.py          ── 信号解析器
   ops/
     sentinel.py        ── 哨兵文件读写（CcsSentinel）
-    lifecycle_sentinel.py ── 生命周期哨兵写入/超时检查/清理
     ccs_config.py      ── 配置中心
     mcp_settings.py    ── MCP 设置
     tracker.py         ── 轮次追踪
