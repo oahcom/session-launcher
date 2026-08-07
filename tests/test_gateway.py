@@ -90,15 +90,15 @@ def gate():
     # 插入测试模板
     conn.execute(
         "INSERT INTO workflow_templates "
-        "(template_id, name, description, steps_json, is_active, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "(template_id, name, description, steps_json, is_active, created_at, allowed_initiators, allowed_executors) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ("TPL-A", "模板A", "描述足够长的测试模板描述内容",
          json.dumps([{"step_id": "s1", "title": "步骤1", "type": "handoff",
                        "target_role": "reviewer",
                        "prompt_template": "做什么：测试\n怎么做：运行\n验收标准：通过",
                        "failure_patterns": ["错误模式1", "错误模式2"],
                        "estimated_hours": 1.0}]),
-         1, time.time()),
+         1, time.time(), json.dumps(["pm", "coordinator"]), json.dumps(["pg"])),
     )
     conn.execute(
         "INSERT INTO workflow_templates "
