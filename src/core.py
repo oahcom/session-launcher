@@ -242,16 +242,6 @@ def start(role: str, title: str = "", detach: bool = False,
         0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
         >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
     """
-    """创建一个 CCS 并写入哨兵。
-
-    自动从 hermes-session-roles 加载角色定义（如存在），
-    构建 system prompt 并注入专业知识到 workspace CLAUDE.md。
-
-    参数:
-      instance_id: 实例编号。
-        0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
-        >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
-    """
     from tmux_ops import make_tmux_name
     tmux_name = make_tmux_name(role, instance_id)
     partners = partners or []
