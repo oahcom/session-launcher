@@ -450,6 +450,21 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
     return None
 
 
+def _auto_send_msgs_from_signals(role_def: dict | None) -> list[str]:
+    """从 persona input_signals 生成精确的 auto_send 消息。
+
+    每个 type=bus 的 input_signal 生成一条"检查待处理 {category}"消息，
+    比 ccs_config.json 中千篇一律的"加载待处理 task_spec"更贴合角色职责。
+    """
+    msgs = []
+    for sig in (role_def or {}).get("input_signals", []) or []:
+        if sig.get("type") != "bus":
+            continue
+        cat = sig.get("spec", {}).get("category", "")
+        if cat:
+            msgs.append(f"检查待处理 {cat} 信号")
+    return msgs
+
 def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None,
                                 init_prompt: str, no_auto_send: bool) -> None:
     """步骤 7-7.5：注入 prompt + auto_send 批量发送。"""
@@ -460,14 +475,14 @@ def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None
 
     # 7.5 自动发送消息（auto_send）
     if not no_auto_send and is_auto_send_enabled():
-        # 从 persona JSON 读取角色级 auto_send_messages
+        # 优先级: 信号生成 > persona auto_send_messages > 配置兜底
+        signal_msgs = _auto_send_msgs_from_signals(role_def)
         role_auto_msgs = (role_def or {}).get("auto_send_messages", [])
-        # 从 ccs_config.json 读取
         config_auto_msgs = get_auto_send_messages(role)
-        # 合并且去重: persona 优先, 配置补充
+        # 合并且去重（保序）: 信号消息在前, persona/配置消息补充
         seen = set()
         auto_msgs = []
-        for m in role_auto_msgs + config_auto_msgs:
+        for m in signal_msgs + role_auto_msgs + config_auto_msgs:
             if m not in seen:
                 seen.add(m)
                 auto_msgs.append(m)
@@ -499,7 +514,9 @@ def _start_monitoring_threads(role: str, tmux_name: str, partners: list[str],
 
     # 9.1 bus 死锁追踪：detach 模式或已指定/推导 bus_track 时启动。
     # systemd 路径 (ccs_monitor.py 长驻监控进程, detach=False) 也生效 → 修复 bus_age=-1。
-    if bus_track:
+    # 无伙伴时启动无意义：tracker 仅对协作关系报死锁，solo 角色的 bus 超时
+    # 由引擎 _ensure_role_alive 处理（不启动 tracker 可避免热循环空转 + 假死锁噪音）
+    if bus_track and partners:
         start_tracker(role, bus_track, timeout_sec=bus_timeout,
                       interval=10, partners=partners,
                       instance_id=instance_id)
