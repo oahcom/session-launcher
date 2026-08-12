@@ -98,6 +98,12 @@ def _run(this_role: str, bus_cat: str, timeout_sec: int,
             if now - last_reminder < 1800:
                 continue
 
+            # R4 drift 修复: 无伙伴(partners=[])时跳过死锁检测——
+            # 空 partners 循环不执行 → partner_alive 恒 False → 误报"伙伴死亡"
+            # （maintainer 36 条 + archivist 20 条假死锁漂移根因，drift 分析确认）
+            if not partners:
+                continue
+
             # 交叉检查伙伴存活（所有 instance）
             partner_alive = False
             for p in partners:
