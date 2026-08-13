@@ -221,8 +221,10 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3, retry_delay: floa
             time.sleep(0.05)
             for i in range(0, len(message), 500):
                 chunk = message[i:i + 500]
+                # -l: literal mode，防止 prompt 中出现 q/C-c/Space 等 tmux 特殊键名时
+                # 被解释为按键指令而非文本输入（bus #141691, D3 P0 审查检出）
                 r = subprocess.run(
-                    ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", chunk],
+                    ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", chunk],
                     capture_output=True, timeout=3,
                 )
                 if r.returncode != 0:

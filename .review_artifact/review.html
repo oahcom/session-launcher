@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>session-launcher 工作区 diff 审查（max effort）— 2026-08-08</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafafa; --fg:#1a1a1a; --muted:#666; --card:#fff; --border:#e2e2e2; --sev0:#b3261e; --sev1:#c96a00; --sev2:#7a5c00; --sev3:#1f6f4a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#121212; --card:#1c1c1c; --fg:#e8e8e8; --muted:#9a9a9a; --border:#333; --sev0:#f2b8b5; --sev1:#ffc96b; --sev2:#e3d18a; --sev3:#93d4ac; } }
+  :root[data-theme="dark"] { --bg:#121212; --card:#1c1c1c; --fg:#e8e8e8; --muted:#9a9a9a; --border:#333; --sev0:#f2b8b5; --sev1:#ffc96b; --sev2:#e3d18a; --sev3:#93d4ac; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }
+  main { max-width:980px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:24px; margin:0 0 4px; } h2 { font-size:19px; margin:36px 0 12px; }
+  .sub { color:var(--muted); font-size:14px; margin-bottom:24px; }
+  .stat { display:flex; gap:20px; flex-wrap:wrap; margin:18px 0 26px; }
+  .stat div { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px 18px; }
+  .stat b { display:block; font-size:22px; }
+  .finding { background:var(--card); border:1px solid var(--border); border-left:4px solid var(--sev0); border-radius:8px; padding:14px 18px; margin:12px 0; }
+  .finding.sev1 { border-left-color:var(--sev1); } .finding.sev2 { border-left-color:var(--sev2); } .finding.sev3 { border-left-color:var(--sev3); }
+  .lvl { display:inline-block; font-size:11px; font-weight:700; letter-spacing:.5px; padding:2px 8px; border-radius:10px; background:var(--sev0); color:#fff; vertical-align:middle; }
+  .sev1 .lvl { background:var(--sev1); } .sev2 .lvl { background:var(--sev2); } .sev3 .lvl { background:var(--sev3); }
+  .loc { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:var(--muted); }
+  .fi { color:var(--fg); font-weight:600; margin:6px 0 2px; }
+  code { background:rgba(128,128,128,.12); padding:1px 5px; border-radius:4px; font-family:ui-monospace,Consolas,monospace; font-size:13px; }
+  .note { color:var(--muted); font-size:13.5px; margin:8px 0 0; }
+  .vd { border-left:1px dashed var(--border); padding-left:12px; margin-top:8px; color:var(--muted); font-size:13.5px; }
+  .vd b { color:var(--fg); }
+  .ok { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin:8px 0; color:var(--muted); }
+</style>
+</head>
+<body data-theme="system">
+<main>
+  <h1>session-launcher 工作区 diff 审查报告</h1>
+  <div class="sub">分支 main · 6 个变更文件 · 189 行 diff · 审查级别 max（10 个 finder 角度 + 经验验证 + sweep）· 2026-08-08</div>
+
+  <div class="stat">
+    <div><b>10</b>findings</div>
+    <div><b>2</b>高严重度</div>
+    <div><b>4</b>中严重度</div>
+    <div><b>4</b>低严重度</div>
+  </div>
+
+  <div class="note">
+    本次 diff 是一轮「路径引导集中化 + partner 包装器签名刻板化 + tracker 死锁告警守卫」重构：<code>lifecycle_manager.py</code> 和
+    <code>runner.py</code> 把原先手工计算的 <code>session-pipeline/src</code> 路径引导换成 <code>paths</code> 模块；
+    <code>partner.py</code> 把 <code>*a/**kw</code> 透传包装器换成显式签名；<code>tracker.py</code> 为无人值守角色新增跳过死锁告警的守卫。
+    核心问题是路径引导的三处改动在子进程/interpreter 语境下并不等价，以及签名显式化留下了静默丢参的陷阱。
+  </div>
+
+  <h2>发现清单（按严重度排序）</h2>
+
+  <div class="finding">
+    <span class="lvl">高</span>
+    <div class="loc">src/ops/runner.py:45-50</div>
+    <div class="summary">dashboard() 的 python -c 子进程引导改为 <code>from paths import ensure_paths; ensure_paths()</code>，新旧两种写法在 -c 上下文里都注定失败：旧版引用 <code>__file__</code>，在 -c 中直接 NameError；新版依赖 cwd 恰好是 src/ 目录，然后又会撞上 launcher/src/routing 遮蔽 pipeline 的 routing.router —— 结果同一段代码从一种失败换成另一种，路由拓扑段从未正常工作</div>
+    <div class="vd">
+      验证：三种 cwd 实测新字符串全部 rc=1。cwd=仓库根 → <code>ModuleNotFoundError: No module named 'paths'</code>；cwd=src/ → <code>ModuleNotFoundError: No module named 'routing.router'</code>
+      （<code>ensure_paths()</code> 只把 launcher/src + pipeline/src + .hermes/scripts 加入 sys.path，但 <code>python -c</code> 的 cwd 目录是 '' 不是 src/，且引入顺序把 launcher/routing 放到 pipeline/routing 之前；launcher 的 <code>src/routing/__init__.py</code> 没有 <code>router</code> 子模块）。旧代码同样死在这个位置 —— <code>python3 -c</code> 里 <code>__file__</code> 未定义。
+      触发：<code>python3 src/ccs.py dashboard</code>（任意 cwd）→ routing 拓扑段永远显示"路由拓扑不可用"，<code>ast.literal_eval</code> 分支永不执行</div>
+  </div>
+
+  <div class="finding sev1">
+    <span class="lvl">高</span>
+    <div class="loc">src/routing/partner.py:54-56</div>
+    <div class="summary"><code>_force_start</code> 显式签名声明了 <code>init_prompt: str = ""</code> 参数，但调用 <code>_core().force_start_ccs(role_name, by_role=by_role)</code> 时静默丢弃 —— 包装器契约与实现不一致</div>
+    <div class="vd">验证：core.force_start_ccs 签名（src/core.py:673-676）确认含 <code>init_prompt</code> 并传给 <code>start(role, init_prompt=...)</code>（core.py:698 附近 start 同样接受）。silent drop 比 TypeError 更危险：任何按签名传 init_prompt 的调用者（未来代码）都会拿到默认 prompt 启动的 CCS，无任何报错。修复：转发 init_prompt 或删除该参数（<code>git grep</code> 确认当前仓库零调用者，删除是最小修复）。</div>
+  </div>
+
+  <div class="finding sev2">
+    <span class="lvl">中</span>
+    <div class="loc">src/lifecycle_manager.py:3-8</div>
+    <div class="summary">把 <code>sys.path.append</code> 从绝对路径改为 <code>from paths import SESSION_PIPELINE_SRC</code>，路径一致性已核实（launcher/src/paths.py 常量为 ~/session-pipeline/src），但新引导只追加不前置，与 <code>ensure_paths()</code> 的 insert(0) 语义分叉</div>
+    <div class="vd">验证：若 launcher/src 中出现了与 pipeline 同名的 <code>lifecycle</code> 模块，append 会让错误的包胜出（launcher 模块应优先于 pipeline，按 ensure_paths 的设计是反序 insert）。此 shim 是兼容层，diff 未触及 ensure_paths 的正向路径（runner.py 模块级 _ensure_paths() 仍在），主要风险是低概率导入遮蔽。</div>
+  </div>
+
+  <div class="finding sev2">
+    <span class="lvl">中</span>
+    <div class="loc">src/ops/tracker.py:101-103</div>
+    <div class="summary">新增守卫 <code>if not partners: continue</code> 让 partners 为空的角色（solo 角色 + bus_track 组合）在任何 bus 超时下完全静默，不再产生 monitor_audit 死锁审计记录</div>
+    <div class="vd">验证：_run 循环里该 `continue` 之后的代码只做伙伴存活检查 + _bus_write + _audit_monitor + last_reminder 更新；守卫不跳过其他必需逻辑。但 partner_alive=False 分支的 _audit_monitor（死锁-伙伴死亡）被短路 —— 之前 solo 角色超时时会产生 monitor_audit 记录（供外部审计/监控消费，如 cc-worker 或运营脚本），操作监控若依赖该记录会漏报。</div>
+  </div>
+
+  <div class="finding sev2">
+    <span class="lvl">中</span>
+    <div class="loc">src/ops/runner.py:47-48</div>
+    <div class="summary">子进程 -c 字符串里残留 <code>import sys; from pathlib import Path</code> 死导入，且这条引导字符串与 runner.py 模块级 <code>_ensure_paths()</code>（13 行）各编译一份，日后 ensure_paths 变更时协调风险</div>
+    <div class="vd">触发：cleanup —— 若 ensure_paths 添加新路径条目，子进程字符串不跟进只坏 dashboard 一处且被 try/except 吞掉，极难定位。删掉死导入即可。</div>
+  </div>
+
+  <div class="finding sev2">
+    <span class="lvl">中</span>
+    <div class="loc">src/ops/tracker.py:102/164</div>
+    <div class="summary">守卫与 <code>partners or []</code> 互不矛盾，但注释声称「partners 为空 = 无协作关系」与 core.py 的 bus_track 推导路径不同 —— core.py 对未显式指定 bus_track 的角色也会自动推导并空 partners 启动 tracker</div>
+    <div class="vd">触发：solo 角色 bus 超时（搭档崩溃）的提醒彻底消失，事前无告警，只有 watchdog 兜底重启。若依赖 tracker 的死锁告警作为第一道防线，这是静默降级。</div>
+  </div>
+
+  <div class="finding sev2">
+    <span class="lvl">中</span>
+    <div class="src">src/routing/partner.py:50-52,61-63</div>
+    <div class="summary">其他包装器（_wake_ccs / _output / _send / _check_wake / _find_pid）签名与 core 函数完全一致（已逐一验证），但这种方式复制了 core 的签名知识 —— _force_start 的 init_prompt 丢弃已证明该模式会漂移</div>
+    <div class="vd">验证：全部调用点（partner.py:282/303/317/344）与 cli_* 的 Namespace 属性均匹配。风险是签名漂移的类 bug 会再次发生；发布前建议删除 _force_start 的死参数。</div>
+  </div>
+
+  <div class="finding sev3">
+    <span class="lvl">低</span>
+    <div class="src">src/cc.py:354（文档）</div>
+    <div class="summary">ccs.py docstring 将协作能力标记为「已废弃，由 workflow 引擎取代」，但 tracker.py 的守卫注释与此意图存在行为层面不一致（solo 角色不再发提醒），文档与实现需要对齐</div>
+  </div>
+
+  <div class="finding sev3">
+    <span class="lvl">低</span>
+    <div class="src">src/lifecycle_manager.py:4</div>
+    <div class="summary">多余 <code>str()</code> 包一层的赋值：<code>_pipeline_src_str = str(_pipeline_src)</code> —— sys.path.append 可以直接吃 Path 对象，多一行无收益</div>
+  </div>
+
+  <div class="finding sev3">
+    <span class="lvl">低</span>
+    <div class="src">src/ops/tracker.py:101-103</div>
+    <div class="summary">守卫的语义应下沉到「是否有协作关系」谓词，避免每个循环写死 partners 判空；且 partners 字段来自调用方（core.py:503 start_tracker 传入空列表没问题）</div>
+  </div>
+
+  <div class="finding sev3">
+    <span class="lvl">低</span>
+    <div class="src">src/routing/partner.py:39-42</div>
+    <div class="summary"><code>def _core() -> ModuleType</code> 每次调用重复 import core；预加载在 launcher 入口调用一次或模块级缓存即可</div>
+  </div>
+
+  <div class="finding sev3">
+    <span class="lvl">低</span>
+    <div class="src">.gitignore:12</div>
+    <div class="summary">新增 <code>workflows.db</code> 忽略 —— 仅当该文件是仓库生成的数据库时成立；确认它不会被误用来忽略目录</div>
+  </div>
+
+  <h2>验证摘要</h2>
+  <div class="ok">
+    <div class="summary">已逐一核对无问题的点：</div>
+    <ul>
+      <li><code>_output/_send/_check_wake/_wake_ccs/_find_pid</code> 的全部仓库内调用点与显式签名匹配（partner.py:282/303/317/344）</li>
+      <li><code>cli_*</code> 全部由 main() 的真实 argparse.Namespace 调用且属性齐全</li>
+      <li><code>from paths import SESSION_PIPELINE_SRC</code> 在 launcher 语境可导入，常量值正确（~session-pipeline/src 存在）</li>
+      <li>tracker 守卫不跳过循环中任何其他必需逻辑（else 分支的审计缺失是有意为之）</li>
+    </ul>
+  </div>
+
+  <h2>关键决策建议</h2>
+  <ul>
+    <li><code>runner.py:48</code> —— 显式插入 <code>Path</code> 计算（或保留子进程 -c 里的绝对路径），否则 dashboard 路由拓扑永远不可用</li>
+    <li><code>partner.py:54-56</code> —— 删除 <code>init_prompt</code> 参数（YAGNI 符合规范）或转发</li>
+    <li><code>tracker.py:101-103</code> —— 若审计链路重要，可保留守卫但补一条 <code>_audit_monitor</code> 记录；或确认该角色无监控依赖后维持现状</li>
+  </ul>
+</main>
+</body>
+</html>

@@ -45,7 +45,7 @@ def dashboard() -> str:
             ["python3", "-c",
              "import logging, os; logging.disable(logging.CRITICAL); "
              "import sys; from pathlib import Path; "
-             "sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'session-pipeline' / 'src')); "
+             "from paths import ensure_paths; ensure_paths(); "
              "from routing.router import get_router; r = get_router(); print(r.routing)"],
             capture_output=True, text=True, timeout=10,
         )

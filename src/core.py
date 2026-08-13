@@ -10,9 +10,6 @@ _FEED_PROCS: dict[str, "subprocess.Popen"] = {}
 __all__ = [
     'start',
     'register_hook',
-    'set_routing_policy',
-    'get_routing_policy',
-    'route_target',
     'stop',
     'status',
     'send',
@@ -81,9 +78,6 @@ def _trigger_hooks(event: str, **kwargs) -> None:
             fn(**kwargs)
         except Exception as e:
             _log.info("[hooks:%s] %s error: %s", event, fn.__name__, e)
-
-# ── 路由策略（实现在 routing/policy.py，此处 re-export 兼容旧导入）──
-from routing.policy import set_routing_policy, get_routing_policy, route_target
 
 from tmux_ops import (_check_memory_before_launch, _find_claude_pid,
     _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid,

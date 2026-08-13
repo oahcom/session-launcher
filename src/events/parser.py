@@ -62,8 +62,9 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
     # 安全约束：所有检查在规范化后的字符串上执行
     _normalized = cmd.replace("${", "").replace("$((", "").replace("$(", "").replace("`", "")
     _normalized = re.sub(r'\$[A-Za-z_][A-Za-z0-9_]*', '', _normalized)
-    # 若原 cmd 含 shell 执行符($(`)但规范化后变了 → 拒绝
-    if _normalized != cmd and _normalized != re.sub(r'\$[A-Za-z_][A-Za-z0-9_]*', '', cmd):
+    # 若原 cmd 含 shell 变量($VAR/${})但规范化后变了 → 变量剥离后不一致即拒绝
+    # （D2 P1 修复：旧写法第二项恒等于 _normalized，整个条件恒 False）
+    if _normalized != cmd:
         return False
     _danger_words = ["rm ", "mkfs", "| tee", "chmod", "chown",
                      "format", "fdisk", "mke2fs", "shred ", "wipefs",
@@ -101,7 +102,7 @@ def _check_shell(spec: dict, filter_str: str, timeout: int = 10) -> bool:
                   "find", "test", "[", "echo", "printf", "date", "which", "whoami",
                   "ps", "stat", "df", "du", "free", "id", "pgrep", "systemctl",
                   "journalctl", "awk", "sed", "diff", "comm", "md5sum",
-                  "sha256sum", "curl", "wget", "tmux"}
+                  "sha256sum", "tmux"}
     # 检查所有管道段命令均在白名单中（防止 cp | rm 等单段检查绕过）
     pipeline_cmds = cmd.split("|")
     for seg in pipeline_cmds:

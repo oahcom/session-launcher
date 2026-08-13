@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from tmux_ops import _find_claude_pid, _is_alive
-from role_manager import _WS_MARKER_START, _WS_MARKER_END, _validate_role_name
+from routing.roles import _WS_MARKER_START, _WS_MARKER_END, _validate_role_name
 from ops.sentinel import CcsSentinel, write_sentinel
 
 # ── 常量 ──

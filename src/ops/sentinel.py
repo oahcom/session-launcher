@@ -58,7 +58,7 @@ def record_cross_session_action(role: str, action: str, summary: str = "") -> No
     data = {"last_action": action, "last_ts": time.time(), "summary": summary}
     path = _MEMORY_DIR / f"{role}.json"
     with _MEMORY_LOCK:
-        path.write_text(json.dumps(data))
+        _atomic_write(path, json.dumps(data))
 
 def get_cross_session_memory(role: str) -> dict:
     path = _MEMORY_DIR / f"{role}.json"
@@ -251,13 +251,22 @@ def _health_file_path(key: str) -> Path:
     return _HEALTH_DIR / f"{key}.json"
 
 
+def _atomic_write(path: Path, data: str) -> None:
+    """原子写入 + 0600 权限（D2/D3 修复：tempfile+rename 防并发写半截，chmod 防同机泄露）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(data)
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
 def write_sentinel(s: CcsSentinel) -> Path:
     """写入哨兵文件（线程安全）。
     instance_id=0 → {role}.json，>0 → {role}-{id}.json。
     """
     path = _sentinel_file_path(s.sentinel_key)
     with _SENTINEL_LOCK:
-        path.write_text(json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
+        _atomic_write(path, json.dumps(s.to_dict(), ensure_ascii=False, indent=2))
     return path
 
 
@@ -426,5 +435,5 @@ def update_health(role: str, instance_id: int = 0, **kwargs) -> bool:
             except (json.JSONDecodeError, OSError) as _e:
                 LOG.warning("update_health read existing health for %s failed: %s", key, _e)
         health.update(kwargs)
-        path.write_text(json.dumps(health))
+        _atomic_write(path, json.dumps(health))
         return True

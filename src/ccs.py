@@ -31,19 +31,19 @@ def main():
   auto-send list/add/rm  管理角色的自动发送消息
   roles [--available]    列出所有可启动角色
 
-协作模式示例:
-  # 主从模式：verifier 守护 rebutter
-  ccs.py start verifier --partner rebutter --auto-restart --no-attach
-
-  # 对等模式：两个 CCS 互相追踪 bus debate
-  ccs.py start pro --bus-track debate --no-attach
-  ccs.py start rebutter --bus-track debate --no-attach
-
-  # 组合模式：既守护伙伴又追踪轮次
-  ccs.py start verifier --partner rebutter --auto-restart --bus-track debate --no-attach
-
-  # 仲裁模式：监控者守护两个 CCS
-  ccs.py start monitor --partner verifier --partner rebutter --bus-track debate --no-attach
+协作模式（已废弃，由 workflow 引擎取代）:
+  # 协作能力（伙伴守护/轮次追踪/返工门禁/循环审计）已全部收编到
+  # session-pipeline pipeflow 引擎：
+  #   - 角色存活守护 → 引擎每 tick _ensure_role_alive 自动拉起
+  #   - bus 轮次追踪   → 模板 exit_condition 精确匹配推进
+  #   - 超时防死锁     → timeout_count 重推 + coordinator 升级 + auto-cancel
+  #   - 返工门禁       → review 步骤被拒 → 自动创建 rework subflow
+  #   - 循环审计       → loop.producer_roles + value_gate
+  # 使用方式：定义 workflow 模板（~/.hermes/workflows/*.json），
+  # 见 session-pipeline/docs/collab-modes-to-workflow.md
+  #
+  # 旧参数（--partner/--bus-track/--auto-restart）保留兼容但不再推荐，
+  # 守护线程随 CLI 进程退出失效，请改用 workflow 模板。
 
 启动优化:
   ccs.py start <role>              启动 CCS 后自动发送 ccs_config.json 配置的消息

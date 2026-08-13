@@ -156,6 +156,16 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
             if _restarting_self:
                 continue  # 正在自愈中，跳过本轮
             self_alive = _is_alive(self_tmux)
+
+            # 伙伴存活但可能 idle（tmux 活着但已 120s 无输出）：
+            # 不发重启而是发 /continue 温和唤醒，避免上下文丢失
+            # （check_auto_continue 自带节流与存活检查，false 表示本轮无需动作）
+            if alive:
+                try:
+                    check_auto_continue(partner_role, instance_id=instance_id)
+                except Exception as e:
+                    _log_info(tag, f"auto-continue 检查异常: {e}")
+
             if not self_alive:
                 _log_info(tag, f"自身 CCS {self_tmux} 已死，尝试重启")
                 _audit_monitor("自体死亡-自动重启",

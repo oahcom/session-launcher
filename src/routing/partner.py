@@ -20,7 +20,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,29 +34,35 @@ from ops.sentinel import read_sentinel
 # core imports are lazy (inside functions) to break circular dependency
 
 # ── lazy core import helper (break circular) ──
-def _core() -> Any:
+from types import ModuleType
+
+def _core() -> ModuleType:
     import core as _m
     return _m
 
-def _output(*a: Any, **kw: Any) -> None:
-    return _core().output(*a, **kw)
+def _output(role: str, tail: int = 20, instance_id: int = 0,
+            dry_run: bool = False) -> str:
+    return _core().output(role, tail=tail, instance_id=instance_id, dry_run=dry_run)
 
-def _check_wake(*a: Any, **kw: Any) -> Any:
-    return _core().check_wake_permission(*a, **kw)
+def _check_wake(role: str, target: str) -> bool:
+    return _core().check_wake_permission(role, target)
 
-def _wake_ccs(*a: Any, **kw: Any) -> Any:
-    return _core().wake_ccs(*a, **kw)
+def _wake_ccs(role_name: str, context: str = "",
+              by_role: str = "") -> dict:
+    return _core().wake_ccs(role_name, context=context, by_role=by_role)
 
-def _force_start(*a: Any, **kw: Any) -> Any:
-    return _core().force_start_ccs(*a, **kw)
+def _force_start(role_name: str, by_role: str = "",
+                 init_prompt: str = "") -> dict:
+    return _core().force_start_ccs(role_name, by_role=by_role)
 
-def _find_pid(*a: Any, **kw: Any) -> Any:
-    return _core()._find_claude_pid(*a, **kw)
+def _find_pid(tmux_name: str, process_name: str = "claude") -> int | None:
+    return _core()._find_claude_pid(tmux_name, process_name)
 
-def _send(*a: Any, **kw: Any) -> Any:
-    return _core().send(*a, **kw)
+def _send(role: str, message: str, source: str = "",
+          instance_id: int = 0, dry_run: bool = False) -> dict:
+    return _core().send(role, message, source=source, instance_id=instance_id, dry_run=dry_run)
 
-def _bus_client() -> Any:
+def _bus_client():
     return _core().BUS_CLIENT
 
 def is_ccs_running(role_name: str, instance_id: int = 0) -> bool:
@@ -353,12 +359,12 @@ class PartnerClient:
 # CLI 入口
 # ════════════════════════════════════════════════════════════
 
-def cli_resolve(args: Any) -> dict:
+def cli_resolve(args: argparse.Namespace) -> dict:
     """resolve <role> — 查询角色状态。"""
     pc = PartnerClient(args.as_role or "unknown")
     status = pc.resolve(args.role)
     print(json.dumps(status, ensure_ascii=False, indent=2))
-def cli_wake(args: Any) -> dict:
+def cli_wake(args: argparse.Namespace) -> dict:
     """wake <role> --as <actor> --context <...> — 唤醒角色。"""
     if not args.as_role:
         print(json.dumps({"success": False, "error": "需要 --as 参数指定调用方角色"},
@@ -369,7 +375,7 @@ def cli_wake(args: Any) -> dict:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result.get("success"):
         sys.exit(1)
-def cli_confirm(args: Any) -> dict:
+def cli_confirm(args: argparse.Namespace) -> dict:
     """confirm <task_id> <role> [--timeout N] — 确认交付。"""
     actor = args.as_role or "unknown"
     pc = PartnerClient(actor)
@@ -377,7 +383,7 @@ def cli_confirm(args: Any) -> dict:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result.get("confirmed"):
         sys.exit(1)
-def cli_send(args: Any) -> dict:
+def cli_send(args: argparse.Namespace) -> dict:
     """send-safe <role> <message> — 安全发送消息（自动唤醒）。"""
     if not args.as_role:
         print(json.dumps({"success": False, "error": "需要 --as 参数指定调用方角色"},

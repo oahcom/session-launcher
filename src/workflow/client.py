@@ -298,11 +298,27 @@ class WorkflowClient:
             return None  # 已完成，不覆写
         import uuid
         files_str = ", ".join(files) if files else ""
-        confirm_token = uuid.uuid4().hex[:16]
+        approval_token = uuid.uuid4().hex[:16]
+        # 合并到既有 step_results（保留 approval_token_ttl 等生命周期字段），
+        # 统一字段名 approval_token 与 lifecycle.manager 保持一致
+        import json as _json
+        _cur = self._conn.execute(
+            "SELECT step_results FROM workflow_instances WHERE instance_id=?", (wf_id,)
+        ).fetchone()
+        _step_results = {}
+        if _cur and _cur["step_results"]:
+            _step_results = _json.loads(_cur["step_results"])
+        _step_results.update({
+            "summary": summary,
+            "files": files_str,
+            "approval_token": approval_token,
+            "approval_token_ttl": time.time() + 3600,
+            "approval_consumed_at": None,
+        })
         self._conn.execute(
             "UPDATE workflow_instances SET status='step_done_ready', completed_at=?, "
             "step_results=? WHERE instance_id=?",
-            (time.time(), json.dumps({"summary": summary, "files": files_str, "confirm_token": confirm_token}), wf_id)
+            (time.time(), _json.dumps(_step_results, ensure_ascii=False), wf_id)
         )
         self._conn.commit()
         wf = self.get(wf_id)
@@ -318,7 +334,7 @@ class WorkflowClient:
                       detail=f"审批者={reviewer}, token_written=true")
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
-        return confirm_token
+        return approval_token
 
     def _sync_task_from_workflows(self, task_id: str):
         rows = self._conn.execute(
@@ -458,26 +474,33 @@ class WorkflowClient:
 
     # ── Confirm 密钥验证 ──
 
-        # ponytail: delegates to lifecycle manager; upgrade to full impl with TTL
-    def confirm_step(self, wf_id: str, token: str) -> dict:
-        """用 confirm_token 密钥确认审批。无正确密钥拒绝通过。"""
+        # ponytail: thin wrapper over lifecycle manager; full TTL/consumed-once semantics live there
+    def confirm_step(self, wf_id: str, token: str, reason: str = "assigner approval") -> dict:
+        """审批步骤：按 approval_token 反查 step_id，委托 lifecycle.manager 状态流转。
+        不在此处自行 UPDATE（旧实现字段名/状态值错乱，绕过审批链路）。"""
         import json
         inst = self.get(wf_id)
         if not inst:
             return {"confirmed": False, "reason": f"workflow {wf_id} 不存在"}
         step_results = json.loads(inst.get("step_results", "{}"))
-        stored_token = step_results.get("confirm_token", "")
-        if not stored_token:
-            return {"confirmed": False, "reason": "该步骤未生成 confirm_token，无法审批"}
-        if token != stored_token:
-            return {"confirmed": False, "reason": "confirm_token 不匹配，审批拒绝"}
-        self._conn.execute(
-            "UPDATE workflow_instances SET status='completed', current_step_id=? "
-            "WHERE instance_id=?", ("approved", wf_id)
-        )
-        self._conn.commit()
-        self._log(wf_id=wf_id, action="step_confirmed", detail=f"token={token[:8]}... 审批通过")
-        return {"confirmed": True}
+        hit_step_id = None
+        for step_id, res in step_results.items():
+            if res.get("approval_token") == token:
+                hit_step_id = step_id
+                break
+        if not hit_step_id:
+            return {"confirmed": False, "reason": "approval_token 不匹配，审批拒绝"}
+        # 委托 lifecycle.manager：密钥验证 + _advance_unsafe 推进
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "session-pipeline" / "src"))
+        from lifecycle.manager import LifecycleManager
+        lm = LifecycleManager(role=self.role)
+        ok = lm.confirm_step(wf_id, step_id=hit_step_id, token=token,
+                             approved=True, reason=reason)
+        if ok:
+            self._log(wf_id=wf_id, action="step_confirmed",
+                      detail=f"token={token[:8]}... step={hit_step_id} 审批通过")
+        return {"confirmed": ok}
 
     # ── 子工作流 ──
 

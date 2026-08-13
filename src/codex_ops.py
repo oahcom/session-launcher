@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 # ── Import all dependencies needed from sibling modules ──
-# From role_manager (imported directly to avoid circular dep via core)
-from role_manager import (
+# From routing.roles (imported directly to avoid circular dep via core)
+from routing.roles import (
     get_role,
     _validate_role_name,
     _build_role_prompt,
