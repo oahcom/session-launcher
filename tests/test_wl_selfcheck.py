@@ -67,7 +67,9 @@ if "check_send_permission" in pa:
 # P0-01: 分配者链
 if "def _get_assigner_for_step" not in mg:
     errors.append("WL-P0-01: _get_assigner_for_step missing")
-ab = mg[mg.find("def _get_assigner_for_step"):mg.find("def _get_assigner_for_step")+800]
+_as_start = mg.find("def _get_assigner_for_step")
+_as_end = mg.find('\n    def ', _as_start + 1)
+ab = mg[_as_start:_as_end]
 if 'wf.get("assigner"' not in ab:
     errors.append("WL-P0-01: handoff step1 assigner = wf.assigner")
 if 'steps[i - 1].get("target_role"' not in ab:

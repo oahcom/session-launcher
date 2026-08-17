@@ -309,6 +309,7 @@ def start(role: str, title: str = "", detach: bool = False,
     # 8. 写哨兵
     pid = _find_claude_pid(tmux_name)
     print(f"📋 pid: {pid}")
+    lifecycle = role_def.get("lifecycle", "infinite") if role_def else "infinite"
     s = CcsSentinel(
         role=role,
         title=title or role,
@@ -316,7 +317,7 @@ def start(role: str, title: str = "", detach: bool = False,
         tmux_session=tmux_name,
         pid=pid,
         started_at=time.time(),
-        lifecycle="infinite",
+        lifecycle=lifecycle,
         partners=partners,
         bus_track=bus_track,
         bus_timeout=bus_timeout,

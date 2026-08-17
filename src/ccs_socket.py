@@ -25,6 +25,9 @@ log = logging.getLogger("ccs-socket")
 from paths import SISTER_BUS_CCS_SOCK
 SISTER_BUS_SOCK = SISTER_BUS_CCS_SOCK
 
+# 连接池锁（防止多线程并发修改 _pools）
+_pools_lock = threading.Lock()
+
 
 class CCSClient:
     """CCS Socket 客户端 — 连接 sister_bus_ccs.sock
@@ -51,9 +54,11 @@ class CCSClient:
         import asyncio
         _POOL_IDLE_TIMEOUT = 60.0
         now = time.time()
-        # 尝试复用池中连接
         pool_key = self.role
-        pooled = self._pools.get(pool_key)
+
+        # 尝试复用池中连接（加锁）
+        with _pools_lock:
+            pooled = self._pools.get(pool_key)
         if pooled:
             r, w, ts = pooled
             if not w.is_closing() and (now - ts) < _POOL_IDLE_TIMEOUT:
@@ -66,7 +71,8 @@ class CCSClient:
                 await w.wait_closed()
             except Exception as e:
                 log.warning("connect(%s): 清理过期连接出错: %s", self.role, e)
-            self._pools.pop(pool_key, None)
+            with _pools_lock:
+                self._pools.pop(pool_key, None)
 
         # 新建连接
         for attempt in range(max_retries + 1):
@@ -78,7 +84,8 @@ class CCSClient:
                 data = json.loads(resp.decode().strip())
                 ok = data.get("event") == "subscribed"
                 if ok:
-                    self._pools[pool_key] = (self.reader, self.writer, time.time())
+                    with _pools_lock:
+                        self._pools[pool_key] = (self.reader, self.writer, time.time())
                     return True
                 log.warning("connect(%s): unexpected response %s", self.role, data)
             except (OSError, asyncio.TimeoutError, ConnectionRefusedError) as e:
@@ -129,7 +136,8 @@ class CCSClient:
             except Exception as e:
                 log.warning("close(%s): %s", self.role, e)
             finally:
-                self._pools.pop(self.role, None)
+                with _pools_lock:
+                    self._pools.pop(self.role, None)
                 self.reader = self.writer = None
 
 
