@@ -22,10 +22,10 @@
 - ✅ 创建5个可复用工具
 
 ### Phase B: 生态监测 (当前)
-- ✅ ecosystem_monitor.py — 实时健康检查
-- ✅ ecosystem_self_heal.py — 退化自愈
-- ✅ setup_new_role.py — 新角色上线
-- ✅ bus_classifier.py — 消息分类
+- ✅ ecosystem_monitor.py — 实时健康检查 (脚本已删除，功能并入 src/ecosystem_health.py)
+- ❌ ecosystem_self_heal.py — 退化自愈 (文件已删除，功能未实现)
+- ❌ setup_new_role.py — 新角色上线 (文件已删除，功能未实现)
+- ❌ bus_classifier.py — 消息分类 (文件已删除，功能未实现)
 - ⬜ Cron注册 — 定时自检
 
 ### Phase C: 自动进化 (下一步)
