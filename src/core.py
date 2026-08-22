@@ -9,6 +9,8 @@ _FEED_PROCS: dict[str, "subprocess.Popen"] = {}
 
 __all__ = [
     'start',
+    'StartOptions',
+    '_start_compat',
     'register_hook',
     'stop',
     'status',
@@ -224,7 +226,8 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
               settings_path, list(cfg["mcpServers"].keys()),
               len(cfg["permissions"].get("allow", [])))
 
-def start(req: StartOptions | str,  title: str = "", detach: bool = False,
+@validate_role
+def start(role: StartOptions | str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
@@ -239,20 +242,21 @@ def start(req: StartOptions | str,  title: str = "", detach: bool = False,
     構建 system prompt 並注入专业知识到 workspace CLAUDE.md。
 
     参数:
+      role: 角色名字符串，或 StartOptions 對象（推薦新代碼使用）。
       instance_id: 实例编号。
         0=單实例/主实例（兼容舊行為：ccs-{role} + ~/ccs-workspaces/{role}/），
         >0=擴展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
 
-    向后兼容: 接受位置参数 role:str 或 StartOptions。
-    新代码應调用 start(StartOptions(...))，ccs.py/watchdog.py 仍可使用 kwargs。
+    向后兼容: 接受 role:str 或 StartOptions。
+    新代码應調用 start(StartOptions(...))，ccs.py/watchdog.py 仍可使用 kwargs。
     """
     from tmux_ops import make_tmux_name
     # Backward compat: accept either StartOptions or positional role string
-    if isinstance(req, StartOptions):
-        o = req
+    if isinstance(role, StartOptions):
+        o = role
     else:
         o = StartOptions(
-            role=req, title=title, detach=detach, init_prompt=init_prompt,
+            role=role, title=title, detach=detach, init_prompt=init_prompt,
             partners=partners, auto_restart=auto_restart, bus_track=bus_track,
             bus_timeout=bus_timeout, drive=drive, feed_cat=feed_cat,
             workspace=workspace, no_auto_send=no_auto_send,
@@ -285,50 +289,51 @@ def start(req: StartOptions | str,  title: str = "", detach: bool = False,
         if role_def:
             inject_role_knowledge_into_workspace(role_def)
         s = CcsSentinel(
-            role=role, title=title or role, tmux_session="",
+            role=o.role, title=o.title or o.role, tmux_session="",
             pid=0, started_at=time.time(), lifecycle="ondemand",
-            instance_id=instance_id,
+            instance_id=o.instance_id,
         )
         write_sentinel(s)
-        print(f"📋 {role}[{instance_id}] (ondemand) — 已写 workspace + 哨兵")
-        return {"success": True, "role": role, "instance_id": instance_id,
+        print(f"📋 {o.role}[{o.instance_id}] (ondemand) — 已写 workspace + 哨兵")
+        return {"success": True, "role": o.role, "instance_id": o.instance_id,
                 "mode": "ondemand", "workspace": str(ws_path)}
 
     # 0.5 dry-run：只打印将执行的动作，不实际执行
     if o.dry_run:
-        role_def_dr = get_role(role)
+        role_def_dr = get_role(o.role)
         _role_prompt_len = len(_build_role_prompt(role_def_dr)) if role_def_dr else 0
         actions = [
             f"tmux new-session -d -s {tmux_name} -c {ws_path}",
             "注入角色 prompt" + (f" ({_role_prompt_len} 字符)" if _role_prompt_len else ""),
-            f"写哨兵 {role}[{instance_id}]",
+            f"写哨兵 {o.role}[{o.instance_id}]",
         ]
-        if partners:
-            actions.append(f"启动 watchdog 监控 {partners}")
-        if bus_track:
-            actions.append(f"启动 tracker 监控 {bus_track}")
-        print(f"📋 [dry-run] {role}[{instance_id}] 将执行:")
+        if o.partners:
+            actions.append(f"启动 watchdog 监控 {o.partners}")
+        if o.bus_track:
+            actions.append(f"启动 tracker 监控 {o.bus_track}")
+        print(f"📋 [dry-run] {o.role}[{o.instance_id}] 将执行:")
         for a in actions:
             print(f"  - {a}")
-        return {"success": True, "dry_run": True, "role": role,
-                "instance_id": instance_id, "planned_actions": actions}
+        return {"success": True, "dry_run": True, "role": o.role,
+                "instance_id": o.instance_id, "planned_actions": actions}
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
         if not o.detach:
             os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
         print(f"📋 {tmux_name} 已在运行")
-        return {"success": True, "role": role, "tmux_session": tmux_name,
-                "instance_id": instance_id}
+        return {"success": True, "role": o.role, "tmux_session": tmux_name,
+                "instance_id": o.instance_id}
 
     # 2. 内存守卫：确认有足够资源启动新 CCS 进程
-    err = _check_memory_before_launch(role)
+    err = _check_memory_before_launch(o.role)
     if err:
         return {"success": False, "error": err}
 
     # 3-4.5 工作空间准备：创建 + 实例注册 + 角色注入 + drive/bus_track 推导 + MCP settings
     role_def, drive, init_prompt, bus_track = _prepare_workspace(
-        role, ws_path, ws_name, instance_id, workspace, drive, init_prompt, bus_track)
+        o.role, ws_path, ws_name, o.instance_id, o.workspace,
+        o.drive, o.init_prompt, o.bus_track)
 
     # 5-6 启动 tmux + claude 并等待就绪
     launch_err = _launch_tmux(tmux_name, ws_path)
@@ -340,36 +345,36 @@ def start(req: StartOptions | str,  title: str = "", detach: bool = False,
     # 见 ~/session-launcher/scripts/deploy_role_skills.sh
 
     # 7-7.5 注入 prompt + auto_send 批量发送
-    _inject_prompt_and_autosend(tmux_name, role, role_def, init_prompt, no_auto_send)
+    _inject_prompt_and_autosend(tmux_name, o.role, role_def, init_prompt, o.no_auto_send)
 
     # 8. 写哨兵
     pid = _find_claude_pid(tmux_name)
     print(f"📋 pid: {pid}")
     lifecycle = role_def.get("lifecycle", "infinite") if role_def else "infinite"
     s = CcsSentinel(
-        role=role,
-        title=title or role,
-        instance_id=instance_id,
+        role=o.role,
+        title=o.title or o.role,
+        instance_id=o.instance_id,
         tmux_session=tmux_name,
         pid=pid,
         started_at=time.time(),
         lifecycle=lifecycle,
-        partners=partners,
+        partners=o.partners,
         bus_track=bus_track,
-        bus_timeout=bus_timeout,
+        bus_timeout=o.bus_timeout,
         session_id="",
     )
     write_sentinel(s)
 
     # 9-10 守护线程编排：watchdog/tracker/feed listener/feed 子进程
-    _start_monitoring_threads(role, tmux_name, partners, instance_id,
-                              detach, auto_restart, feed_cat, drive,
-                              bus_track, bus_timeout)
+    _start_monitoring_threads(o.role, tmux_name, o.partners, o.instance_id,
+                              o.detach, o.auto_restart, o.feed_cat, drive,
+                              bus_track, o.bus_timeout)
 
     result = {
-        "success": True, "role": role, "instance_id": instance_id,
+        "success": True, "role": o.role, "instance_id": o.instance_id,
         "tmux_session": tmux_name,
-        "pid": pid, "partners": partners or [], "bus_track": bus_track or None,
+        "pid": pid, "partners": o.partners, "bus_track": bus_track or None,
     }
 
     if not o.detach:
@@ -746,24 +751,33 @@ def wake_ccs(role_name: str, context: str = "",
     return force_start_ccs(role_name, by_role=by_role)
 
 def write_lifecycle_sentinel(role: dict) -> None:
-    """为 ondemand 角色写生命周期哨兵文件。"""
-    _LIFECYCLE_SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
-    sentinel = _LIFECYCLE_SENTINEL_DIR / f"{role['name']}.active"
-    sentinel.write_text(json.dumps({
-        "role": role["name"],
-        "title": role["title"],
-        "lifecycle": role.get("lifecycle", "infinite"),
-        "pid": os.getpid(),
-        "max_minutes": role.get("max_minutes", 30) if role.get("lifecycle") == "ondemand" else None,
-        "started_at": time.time(),
-    }))
+    """为 ondemand 角色写生命周期哨兵文件（使用 CcsSentinel .json 格式）。
+
+    该函数為死碼：start(ondemand) 直接調用 write_sentinel，從不走此函數。
+    僅在 launcher.py re-export 供外部引用。修復後改用 CcsSentinel 格式，
+    保持與 check_ondemand_timeout / cleanup_stale_sentinels 的契約一致。
+    """
+    s = CcsSentinel(
+        role=role.get("name", ""),
+        title=role.get("title", role.get("name", "")),
+        pid=os.getpid(),
+        started_at=time.time(),
+        lifecycle=role.get("lifecycle", "infinite"),
+        instance_id=0,
+    )
+    write_sentinel(s)
 
 def check_ondemand_timeout(max_minutes: int = 30) -> list[str]:
-    """检查 ondemand 角色是否超时。"""
-    if not _LIFECYCLE_SENTINEL_DIR.exists():
+    """检查 ondemand 角色是否超时（讀取 SENTINEL_DIR 的 .json 哨兵）。
+
+    契約修復: 原 glob *.active 檔案從未被 write_lifecycle_sentinel 實際調用，
+    導致永遠返回空列表。現改為讀取 CcsSentinel .json 格式，與 start() 一致。
+    """
+    from ops.sentinel import SENTINEL_DIR
+    if not SENTINEL_DIR.exists():
         return []
     timed_out = []
-    for f in sorted(_LIFECYCLE_SENTINEL_DIR.glob("*.active")):
+    for f in sorted(SENTINEL_DIR.glob("*.json")):
         try:
             data = json.loads(f.read_text())
             if data.get("lifecycle") != "ondemand":
@@ -785,11 +799,16 @@ def check_ondemand_timeout(max_minutes: int = 30) -> list[str]:
     return timed_out
 
 def cleanup_stale_sentinels() -> list[str]:
-    """清理孤儿哨兵文件。"""
-    if not _LIFECYCLE_SENTINEL_DIR.exists():
+    """清理孤儿哨兵文件（讀取 SENTINEL_DIR 的 .json 哨兵）。
+
+    契約修復: 原 glob *.active 檔案從未被 write_lifecycle_sentinel 實際調用。
+    現改為讀取 CcsSentinel .json 格式，與 start() 一致。
+    """
+    from ops.sentinel import SENTINEL_DIR
+    if not SENTINEL_DIR.exists():
         return []
     cleaned = []
-    for f in sorted(_LIFECYCLE_SENTINEL_DIR.glob("*.active")):
+    for f in sorted(SENTINEL_DIR.glob("*.json")):
         try:
             data = json.loads(f.read_text())
             pid = data.get("pid")

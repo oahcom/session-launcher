@@ -17,7 +17,7 @@ from core import (
     workspace_create, workspace_list, wake_ccs,
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
-    list_roles, get_config_value,
+    list_roles, get_config_value, StartOptions,
 )
 
 
@@ -227,7 +227,7 @@ def main():
 
     if args.command == "start":
         if args.dry_run:
-            result = start(
+            result = start(StartOptions(
                 role=args.role,
                 title=args.title,
                 detach=args.no_attach,
@@ -242,13 +242,13 @@ def main():
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,
                 dry_run=True,
-            )
+            ))
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.instances > 0:
             # 批量启动 N 个实例
             results = []
             for i in range(1, args.instances + 1):
-                result = start(
+                result = start(StartOptions(
                     role=args.role,
                     title=f"{args.title or args.role}#{i}",
                     detach=True,
@@ -262,7 +262,7 @@ def main():
                     workspace=args.workspace,
                     no_auto_send=args.no_auto_send,
                     instance_id=i,
-                )
+                ))
                 results.append(result)
                 if not result.get("success"):
                     print(f"⚠ 实例 {i} 启动失败: {result.get('error')}")
@@ -270,7 +270,7 @@ def main():
             successes = sum(1 for r in results if r.get("success"))
             print(f"启动 {successes}/{args.instances} 个实例")
         else:
-            result = start(
+            result = start(StartOptions(
                 role=args.role,
                 title=args.title,
                 detach=args.no_attach,
@@ -284,7 +284,7 @@ def main():
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,
-            )
+            ))
             print(json.dumps(result, ensure_ascii=False, indent=2))
             if not result.get("success"):
                 sys.exit(1)

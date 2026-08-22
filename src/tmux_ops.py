@@ -128,6 +128,10 @@ def _check_memory_before_launch(role: str) -> str | None:
 def _find_claude_pid(tmux_name: str, process_name: str = "claude") -> Optional[int]:
     """从 tmux pane 中找到子进程 PID。
 
+    使用 pgrep -x 精确匹配，避免 -f 模糊匹配可能誤匹配其他過程
+    (例如 'claude' 字符串出現在命令行參數中的其他程序)。
+    若精確匹配失敗，回退到 pane_pid。
+
     Args:
         tmux_name: tmux session name
         process_name: 要查找的进程名（默认 'claude'，codex 场景传 'codex'）
@@ -139,20 +143,13 @@ def _find_claude_pid(tmux_name: str, process_name: str = "claude") -> Optional[i
         )
         pane_pid = r.stdout.strip()
         if pane_pid.isdigit():
-            # 先精确匹配指定进程名
+            # 精確匹配指定进程名 (P1 fix: 移除 -f 模糊匹配回退)
             r2 = subprocess.run(
                 ["pgrep", "-P", pane_pid, "-x", process_name],
                 capture_output=True, text=True, timeout=3
             )
             if r2.stdout.strip():
                 return int(r2.stdout.strip().split("\n")[0])
-            # 回退到模糊匹配（兼容旧版 claude 在不同环境的进程名差异）
-            r3 = subprocess.run(
-                ["pgrep", "-P", pane_pid, "-f", process_name],
-                capture_output=True, text=True, timeout=3
-            )
-            if r3.stdout.strip():
-                return int(r3.stdout.strip().split("\n")[0])
             return int(pane_pid)
     except Exception:
         pass

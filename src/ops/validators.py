@@ -21,18 +21,30 @@ if _SESSION_ROLES_ROOT.exists():
 
 
 def validate_role(func):
-    """装饰器：函数第一个位置参数为 role，自动校验合法性。
+    """装饰器：函數第一個位置参数為 role 或 StartOptions，自動校驗合法性。
 
-    校验失败返回 {"success": False, "error": "非法角色名: {role}"}。
+    支持兩種調用方式:
+      start("engineer", ...)        → role 為位置字符串
+      start(StartOptions(role="engineer", ...)) → role 在 StartOptions 內
+
+    校驗失敗返回 {"success": False, "error": "非法角色名: {role}"}。
     """
     @wraps(func)
-    def wrapper(role, *args, **kwargs):
+    def wrapper(*args, **kwargs):
+        # 提取 role 名稱來校驗 (支持 str 或 StartOptions)
+        first_arg = args[0] if args else kwargs.get('role')
+        if first_arg is None:
+            return {"success": False, "error": "缺少 role 参数"}
+        if hasattr(first_arg, 'role'):
+            role = first_arg.role
+        else:
+            role = first_arg
         role = str(role)
         if not _ROLE_NAME_RE.match(role):
             return {"success": False, "error": f"非法角色名: {role}"}
         if _KNOWN_ROLES and role not in _KNOWN_ROLES:
             return {"success": False, "error": f"角色 {role} 不在注册表中 (known: {sorted(_KNOWN_ROLES)})"}
-        return func(role, *args, **kwargs)
+        return func(*args, **kwargs)
     return wrapper
 
 
