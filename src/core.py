@@ -7,6 +7,8 @@ core.py — 生命周期编排（从 tmux_ops/role_manager/codex_ops 导入）
 # 注解用字符串形式：模块顶部 subprocess 尚未导入。
 _FEED_PROCS: dict[str, "subprocess.Popen"] = {}
 
+from pathlib import Path
+
 __all__ = [
     'start',
     'StartOptions',
@@ -58,9 +60,45 @@ __all__ = [
     '_register_instance_in_workspace',
 ]
 
+# ── 跨轮次 3 连败门槛（红线 3 对齐）持久化存储 ──
+# 用于 send() fallback 关口的跨进程 3 连败门槛，解决 subprocess 隔离导致状态丢失
+_SEND_FAIL_STREAK_FILE = Path.home() / ".hermes" / "run" / "send_fail_streak.json"
+_MAX_SEND_FAIL_STREAK = 3
 
+def _load_send_fail_streak() -> dict[str, int]:
+    """读取持久化的 send 失败连续计数。"""
+    try:
+        if _SEND_FAIL_STREAK_FILE.exists():
+            with open(_SEND_FAIL_STREAK_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
+def _save_send_fail_streak(streak: dict[str, int]) -> None:
+    """原子写入持久化的 send 失败连续计数。"""
+    try:
+        _SEND_FAIL_STREAK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SEND_FAIL_STREAK_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(streak, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_SEND_FAIL_STREAK_FILE)
+    except Exception:
+        pass
 
+def _inc_send_fail_streak(role: str) -> int:
+    """增加 role 的 send 失败连续计数，返回当前计数。"""
+    streak = _load_send_fail_streak()
+    n = streak.get(role, 0) + 1
+    streak[role] = n
+    _save_send_fail_streak(streak)
+    return n
+
+def _reset_send_fail_streak(role: str) -> None:
+    """重置 role 的 send 失败连续计数（成功送达时调用，或手动清理）。"""
+    streak = _load_send_fail_streak()
+    if role in streak:
+        del streak[role]
+        _save_send_fail_streak(streak)
 
 # ── 生命周期钩子（NeMo-Relay 模式）──
 _LIFECYCLE_HOOKS: dict[str, list] = {
@@ -94,6 +132,7 @@ from codex_ops import start_codex_session, run_codex_task, cdx_status
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -445,6 +484,43 @@ def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
     return role_def, drive, init_prompt, bus_track
 
 
+# 9Router 路由 env 单一事实源（被 _router_env 读取；可 patch 用于测试兜底）
+_ROUTER_ENV_FILE = Path.home() / ".claude" / "9router-env.sh"
+
+
+# 匹配 `export ANTHROPIC_BASE_URL="http://..."` 或 `export ANTHROPIC_API_KEY=xxx`
+_ROUTER_ENV_RE = re.compile(r'^export\s+(ANTHROPIC_(?:BASE_URL|API_KEY))=("?)(.*?)\2\s*$')
+
+
+def _router_env() -> dict[str, str]:
+    """从 _ROUTER_ENV_FILE 单一事实源读取 9Router 路由 env。
+
+    tmux non-login shell 不执行 .bashrc，故不能靠 source 自动导出；
+    systemd ccs@.service 里的 Environment= 亦会被 tmux server 的
+    update-environment (默认不含 ANTHROPIC_*) 丢弃。
+    因此在 new-session -e 里显式传递，覆盖两条启动路径。
+
+    D3: 纯 Python 解析 export 行，不 `source` 整文件 —— 避免执行文件内任意命令。
+
+    红线: 本函数不可删除——删则所有 headless/systemd 角色 claude
+    缺失 ANTHROPIC_* 而卡在 /login（e5d5ccf 回归）。
+    """
+    env: dict[str, str] = {}
+    try:
+        for line in _ROUTER_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            m = _ROUTER_ENV_RE.match(line.strip())
+            if m:
+                env[m.group(1)] = m.group(3)
+    except Exception as e:
+        _log.debug("读取 9Router env 失败: %s", e)
+    # 空/纯空白值视为缺失（文件被截断或损坏）→ 回落默认值，
+    # 否则 claude 会带空 key 启动、静默卡 /login（原 bug 回归）。
+    env = {k: v for k, v in env.items() if v and v.strip()}
+    env.setdefault("ANTHROPIC_BASE_URL", "http://localhost:20128/v1")
+    env.setdefault("ANTHROPIC_API_KEY", "9router-local")
+    return env
+
+
 def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
     # 权限由 workspace settings.json permissions.allow 控制
@@ -454,11 +530,14 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
         f"{_PERM_FLAGS}"
         " --effort max"
     )
+    r_env = _router_env()
     try:
         r = subprocess.run([
             "tmux", "new-session", "-d", "-s", tmux_name,
             "-c", str(ws_path),
             "-e", "FORCE_PERSONA=0",
+            "-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
+            "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
             "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
         ], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
@@ -483,7 +562,46 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
     time.sleep(1)
+
+    # 7. 大声自检：claude 进程必须带路由 env，否则它会静默卡在 /login 而非报错。
+    #    e5d5ccf 曾删掉 env 注入 → 所有 headless 角色静默失效，无日志可见。
+    _assert_router_env_in_pane(tmux_name)
     return None
+
+
+def _assert_router_env_in_pane(tmux_name: str) -> None:
+    """启动后校验 claude 进程已继承 ANTHROPIC_*；缺失则 loud error（不静默）。
+
+    --bare 模式下 tmux pane_pid 有时就是 claude 主进程本身（bash wrapper 已退出），
+    故需同时检查 pane_pid 自身与其直接子进程。
+    """
+    try:
+        pane_pid = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=3
+        ).stdout.strip()
+        if not pane_pid.isdigit():
+            return  # pane 尚未就绪，交给上层 ready 轮询，不在此报错
+        # pane 自身 + 直接子进程，任一带齐路由 env 即 OK
+        candidates = [pane_pid] + subprocess.run(
+            ["pgrep", "-P", pane_pid], capture_output=True, text=True, timeout=3
+        ).stdout.split()
+        for cpid in candidates:
+            if not cpid.isdigit():
+                continue
+            env = subprocess.run(
+                ["bash", "-c", f"tr '\\0' '\\n' < /proc/{cpid}/environ"],
+                capture_output=True, text=True, timeout=3
+            ).stdout
+            if "ANTHROPIC_BASE_URL=" in env and "ANTHROPIC_API_KEY=" in env:
+                return  # 至少一个进程带齐路由 env，OK
+        _log.error(
+            "⚠ %s 启动后 claude 进程未继承 ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY "
+            "→ 将卡在 /login。检查 _router_env 与 new-session -e 注入。",
+            tmux_name
+        )
+    except Exception as e:
+        _log.debug("路由 env 自检跳过 %s: %s", tmux_name, e)
 
 
 def _auto_send_msgs_from_signals(role_def: dict | None) -> list[str]:
@@ -658,7 +776,15 @@ def send(role: str, message: str, source: str = "",
 
     tmux_name = make_tmux_name(role, instance_id)
     if not _is_alive(tmux_name):
-        _write_bus_notice(role, message, source, "CCS未运行")
+        # 跨轮次 3 连败门槛（红线 3 对齐）：
+        # 单次 tmux has-session 失败可能是 socket 抖动，不立即写 fallback；
+        # 连续 3 次失败才写 [ccs_send_fallback] 并升级。
+        streak = _inc_send_fail_streak(role)
+        if streak < _MAX_SEND_FAIL_STREAK:
+            return {"success": False,
+                    "error": f"CCS {role}[{instance_id}] 探测失败 {streak}/{_MAX_SEND_FAIL_STREAK}（暂缓 fallback，防抖动误报）"}
+        _reset_send_fail_streak(role)
+        _write_bus_notice(role, message, source, "CCS未运行(3连败确认)")
         return {"success": False, "error": f"CCS {role}[{instance_id}] 未运行"}
 
     # CCS-RULE: send 前校验
@@ -668,10 +794,55 @@ def send(role: str, message: str, source: str = "",
     except (subprocess.TimeoutExpired, OSError) as e:
         _log.warning("validate_ccs_execution %s send 降级: %s", role, e)
 
-    _tmux_send(tmux_name, message)
+    # 红线1 代码化：send 前拦截 gateway 重启指令（防 SIGKILL 中断长连接）
+    try:
+        from gateway_guard import guard_command
+        _allowed, _reason = guard_command(message)
+        if not _allowed:
+            _log.error("红线1 拦截: %s", _reason)
+            try:
+                subprocess.run(
+                    [str(BUS_CLIENT), "write", "security",
+                     f"[gateway_guard] 拦截 gateway 重启指令 → {role}",
+                     "--evidence", f"{_reason} | source={source}",
+                     "--src", "core.send"],
+                    capture_output=True, timeout=5)
+            except Exception:
+                pass
+            return {"success": False, "blocked_by": "redline1_gateway",
+                    "reason": _reason}
+    except Exception as _ge:  # 校验异常绝不可阻断正常投递
+        _log.debug("gateway_guard 校验异常（不阻塞）: %s", _ge)
+
+    # 用户意图提醒：仅人类来源(user/cli)注入，pipeline/daemon 自动化排除防递归
+    # 包裹 try/except：提醒注入失败绝不可吞掉原始消息（P1a 回归防护）
+    send_message = message
+    injected = False
+    if source in ("user", "cli"):
+        try:
+            from user_intent_reminder import inject_reminder
+            send_message = inject_reminder(message, source)
+            injected = send_message != message
+        except Exception as _e:  # noqa: BLE001 - 注入失败绝不可丢失用户原始消息
+            send_message = message  # 降级：原样投递
+            _log.warning("user_intent_reminder 注入失败，降级原样投递: %s", _e)
+        # 可观测痕迹：每次注入写一条 code_fix bus 证据（REQUIREMENT #6）。
+        # 独立 guard：bus I/O 故障不得影响消息投递或被注入失败混淆（resilience P1）
+        if injected:
+            try:
+                subprocess.run(
+                    [str(BUS_CLIENT), "write", "code_fix",
+                     f"[user_intent_reminder] 已注入意图提醒 → {role}",
+                     "--evidence", f"source={source} role={role}",
+                     "--src", "core.send"],
+                    capture_output=True, timeout=5)
+            except Exception as _be:  # noqa: BLE001
+                _log.warning("user_intent_reminder bus 证据写失败（不影响投递）: %s", _be)
+    _tmux_send(tmux_name, send_message)
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
-    _trigger_hooks("after_send", role=role, message=message, source=source)
-    return {"success": True, "sent_chars": len(message)}
+    _trigger_hooks("after_send", role=role, message=send_message, source=source)
+    _reset_send_fail_streak(role)  # 成功送达清零连败计数
+    return {"success": True, "sent_chars": len(send_message)}
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
     """降级时写一条 [ccs_send_fallback] 通知到 bus。
