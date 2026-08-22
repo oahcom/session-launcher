@@ -7,8 +7,10 @@ launcher.py — 兼容层（全部委托给 core.py）
 """
 import sys
 from pathlib import Path
+import logging
 
 _THIS_DIR = Path(__file__).resolve().parent
+LOGGER = logging.getLogger("launcher")
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
@@ -81,15 +83,20 @@ except Exception:
     def check_signal(*a, **kw): return None
 
 
-def ccs_capture_output_raw(tmux_name: str, tail: int = 10) -> str:
-    return _tmux_output(tmux_name, tail=tail)
-
-
 def is_ccs_running(role_name: str) -> bool:
     """检查 CCS 是否在运行（兼容层）。"""
     return _is_alive(f"ccs-{role_name}")
 
 
 def main():
+    # 红线1 代码化：gateway 重启禁令（仿真自检，确认 guard 可用）
+    try:
+        from gateway_guard import is_forbidden_command
+        _probe = "hermes gateway restart"  # 测试性探针，不实际执行
+        if is_forbidden_command(_probe):
+            LOGGER.warning("红线1 guard 已加载：检测到 gateway 重启指令将被拦截")
+    except Exception as _gg:
+        LOGGER.debug("gateway_guard 自检异常（不阻塞启动）: %s", _gg)
+
     from ccs import main as _ccs_main
     _ccs_main()

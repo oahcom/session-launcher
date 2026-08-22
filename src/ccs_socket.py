@@ -103,7 +103,13 @@ class CCSClient:
         await self.writer.drain()
 
     async def send_to(self, target_role: str, text: str) -> bool:
-        """发送消息给另一个 CCS。target_role 是角色名（不含 ccs- 前缀）。"""
+        """发送消息给另一个 CCS。target_role 是角色名（不含 ccs- 前缀）。
+
+        注：role→role IPC 的意图对齐未在此处注入。PUBLISH 消息经 sister_bus
+        socket server 服务端落盘到目标 tmux，注入点在该 server 层（跨 repo，不在
+        session-launcher）。此处仅承载纯角色协商（_from_role=本角色），不携带用户
+        意图，故无提醒注入——保持与 Round1 SCOPE_BOUNDARY.md 一致，避免死代码 opt-in。
+        """
         target = f"ccs-{target_role}"
         await self._send({
             "cmd": "PUBLISH",

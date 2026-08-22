@@ -55,20 +55,20 @@ python3 src/ecosystem_health.py --check
 - ❌ 重启 hermes-gateway（SIGKILL 中断长连接）
 - ❌ 跨 worktree 修改文件
 
-## 代码布局
+## 代码布局（2026-08-23 实测）
 ```
 src/
   core.py              ── 生命周期编排
   ccs.py               ── CLI 入口
+  launcher.py          ── CCS 启动编排（start/detach/partner 实际入口）
   ccs_socket.py        ── CCS 直接通信（Unix Socket）
   ecosystem_health.py  ── 三项目健康检查
   paths.py             ── 路径管理
   codex_ops.py         ── Codex 集成
   tmux_ops.py          ── tmux 操作封装
-  role_manager.py      ── 角色管理
   workflow_client.py   ── CCS 工作流客户端
   wf.py                ── CLI 快捷入口
-  lifecycle_manager.py ── backward-compat 重导出（实际在 pipeline lifecycle.manager）
+  user_intent_reminder.py ── 用户输入意图提醒（deamon 重复提醒 ccs 是否真解决用户问题）
   events/
     signals.py         ── 信号常量 + input_signals 检查逻辑
     parser.py          ── 信号解析器
@@ -92,6 +92,8 @@ src/
   migration/
     scripts.py         ── 迁移脚本
 ```
+注：`role_manager.py` / `lifecycle_manager.py` 已于 git f6c19ae 删除（YAGNI 收敛），
+其职责并入 core.py / pipeline lifecycle.manager，此处不再列出。
 
 ## 测试命令
 ```bash

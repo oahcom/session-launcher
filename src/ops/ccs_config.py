@@ -40,7 +40,6 @@ def _defaults() -> dict:
     return {
         "version": 1,
         "auto_send": {"enabled": True, "interval_sec": 2.0, "messages": {"default": [], "roles": {}}},
-        "routing": {"default_policy": "sticky", "overrides": {}},
         "defaults": {"drive": "ondemand", "bus_timeout": 300, "bus_track": "", "feed_cat": ""},
     }
 
@@ -52,11 +51,6 @@ def save() -> None:
         with open(p, "w") as f:
             json.dump(_CONFIG_CACHE or _defaults(), f, indent=2, ensure_ascii=False)
             f.write("\n")
-
-
-def invalidate_cache() -> None:
-    global _CONFIG_CACHE
-    _CONFIG_CACHE = None
 
 
 # ── auto_send 查询 ──
@@ -87,10 +81,6 @@ def is_auto_send_enabled() -> bool:
 
 def get_interval_sec() -> float:
     return float(load().get("auto_send", {}).get("interval_sec", 2.0))
-
-
-def get_default(key: str, fallback=""):
-    return load().get("defaults", {}).get(key, fallback)
 
 
 # ── 修改操作 ──

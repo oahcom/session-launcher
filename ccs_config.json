@@ -63,10 +63,6 @@
       }
     }
   },
-  "routing": {
-    "default_policy": "sticky",
-    "overrides": {}
-  },
   "defaults": {
     "drive": "ondemand",
     "bus_timeout": 300,
