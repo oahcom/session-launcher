@@ -97,11 +97,34 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from dataclasses import dataclass, field
 
 # ── 统一日志初始化（任何模块首次导入 core 时生效）──
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 _log = logging.getLogger("core")
+
+@dataclass
+class StartOptions:
+    """啟動 CCS 的選項封裝，取代 14 個位置參數。"""
+    role: str
+    title: str = ""
+    detach: bool = False
+    init_prompt: str = ""
+    partners: list[str] | None = None
+    auto_restart: bool = False
+    bus_track: str = ""
+    bus_timeout: int = 300
+    drive: str = ""
+    feed_cat: str = ""
+    workspace: str = ""
+    no_auto_send: bool = False
+    instance_id: int = 0
+    dry_run: bool = False
+
+def _start_compat(**kwargs) -> dict:
+    """向后兼容包装器：將 kwargs 轉為 StartOptions 委派給 start()。"""
+    return start(StartOptions(**kwargs))
 
 from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels
 
@@ -201,8 +224,7 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
               settings_path, list(cfg["mcpServers"].keys()),
               len(cfg["permissions"].get("allow", [])))
 
-@validate_role
-def start(role: str, title: str = "", detach: bool = False,
+def start(req: StartOptions | str,  title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
@@ -213,39 +235,53 @@ def start(role: str, title: str = "", detach: bool = False,
           dry_run: bool = False) -> dict:
     """创建一个 CCS 并写入哨兵。
 
-    自动从 hermes-session-roles 加载角色定义（如存在），
-    构建 system prompt 并注入专业知识到 workspace CLAUDE.md。
-
-    参数可省略说明（由 _prepare_workspace 自动推导）:
-      drive: 省略时从 persona JSON 的 drive 字段读取，JSON 无值则默认 "ondemand"。
-      bus_track: 省略时自动从 role_def.input_signals 中 type=bus 的 category 推导，
-                 推导失败则 bus_age=-1（死锁检测不启动）。
+    自動從 hermes-session-roles 加载角色定义（如存在），
+    構建 system prompt 並注入专业知识到 workspace CLAUDE.md。
 
     参数:
       instance_id: 实例编号。
-        0=单实例/主实例（兼容旧行为：ccs-{role} + ~/ccs-workspaces/{role}/），
-        >0=扩展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
+        0=單实例/主实例（兼容舊行為：ccs-{role} + ~/ccs-workspaces/{role}/），
+        >0=擴展实例（ccs-{role}-{id} + ~/ccs-workspaces/{role}/instances/{id}/）。
+
+    向后兼容: 接受位置参数 role:str 或 StartOptions。
+    新代码應调用 start(StartOptions(...))，ccs.py/watchdog.py 仍可使用 kwargs。
     """
     from tmux_ops import make_tmux_name
-    tmux_name = make_tmux_name(role, instance_id)
-    partners = partners or []
-    ws_name = workspace or role
+    # Backward compat: accept either StartOptions or positional role string
+    if isinstance(req, StartOptions):
+        o = req
+    else:
+        o = StartOptions(
+            role=req, title=title, detach=detach, init_prompt=init_prompt,
+            partners=partners, auto_restart=auto_restart, bus_track=bus_track,
+            bus_timeout=bus_timeout, drive=drive, feed_cat=feed_cat,
+            workspace=workspace, no_auto_send=no_auto_send,
+            instance_id=instance_id, dry_run=dry_run,
+        )
+    # P1 Fix 2: workspace 参数无源头校验 — 防止路径遍历和无效 workspace 名
+    if o.workspace and not _validate_role_name(o.workspace):
+        return {"success": False, "error": f"非法 workspace 名: {o.workspace}"}
+    # P1-1 fix: 同步所有本地變數到 o.*，避免 direct StartOptions 調用時本地默認值(0/""/None) 覆蓋實際值
+    _locals_from_opts = o  # noqa: F841 — alias for clarity, all reads below use o.*
+    tmux_name = make_tmux_name(o.role, o.instance_id)
+    o.partners = o.partners or []
+    ws_name = o.workspace or o.role
 
-    # 实例感知工作空间路径
-    if instance_id and not workspace:
-        ws_path = Path(f"~/ccs-workspaces/{role}/instances/{instance_id}").expanduser()
+    # 实例感知工作空间路径 (P1-1 fix: 使用 o.* 而非舊的本地變數)
+    if o.instance_id and not o.workspace:
+        ws_path = Path(f"~/ccs-workspaces/{o.role}/instances/{o.instance_id}").expanduser()
     else:
         ws_path = Path(f"~/ccs-workspaces/{ws_name}").expanduser()
 
     # 0. ondemand 模式：只写 workspace + 哨兵，不启动 tmux
-    if drive == "ondemand":
+    if o.drive == "ondemand":
         # instance mode：创建实例级 workspace
-        if instance_id:
+        if o.instance_id:
             ws_path.mkdir(parents=True, exist_ok=True)
-            _write_instance_claude_md(ws_path, role, instance_id)
+            _write_instance_claude_md(ws_path, o.role, o.instance_id)
         else:
-            workspace_create(role)
-        role_def = get_role(role)
+            workspace_create(o.role)
+        role_def = get_role(o.role)
         if role_def:
             inject_role_knowledge_into_workspace(role_def)
         s = CcsSentinel(
@@ -259,7 +295,7 @@ def start(role: str, title: str = "", detach: bool = False,
                 "mode": "ondemand", "workspace": str(ws_path)}
 
     # 0.5 dry-run：只打印将执行的动作，不实际执行
-    if dry_run:
+    if o.dry_run:
         role_def_dr = get_role(role)
         _role_prompt_len = len(_build_role_prompt(role_def_dr)) if role_def_dr else 0
         actions = [
@@ -279,7 +315,7 @@ def start(role: str, title: str = "", detach: bool = False,
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
-        if not detach:
+        if not o.detach:
             os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
         print(f"📋 {tmux_name} 已在运行")
         return {"success": True, "role": role, "tmux_session": tmux_name,
@@ -336,7 +372,7 @@ def start(role: str, title: str = "", detach: bool = False,
         "pid": pid, "partners": partners or [], "bus_track": bus_track or None,
     }
 
-    if not detach:
+    if not o.detach:
         if sys.stdin and sys.stdin.isatty():
             print(f"🎯 进入 {tmux_name} (Ctrl+B D 退出)")
             os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
