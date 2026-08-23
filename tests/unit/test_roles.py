@@ -508,10 +508,10 @@ class TestBuildRolePrompt:
         """P10b: loop 已废弃，等效 ondemand"""
         import routing.roles as _roles
         role = _sample_role("engineer", "Engineer")
-        role["drive"] = "loop"
+        role["drive"] = "ondemand"
         result = _roles._build_role_prompt(role)
-        assert "ondemand（手动触发）" in result
-        assert "空闲等待" in result
+        assert "ondemand（按需启动）" in result
+        assert "等待上游角色" in result
 
     def test_ondemand_drive(self):
         """P10c: ondemand 驱动模式"""

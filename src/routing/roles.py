@@ -311,11 +311,7 @@ def _build_role_prompt(role: dict) -> str:
     cron_schedule = role.get("cron_schedule", "")
     msgs = [f"## {title} ({name}) — 已就绪"]
 
-    if drive == "loop":
-        # loop 已淘汰，等效 ondemand
-        msgs.append("驱动模式: ondemand（手动触发）")
-        msgs.append("无待处理任务时进入空闲等待。")
-    elif drive == "cron":
+    if drive == "cron":
         msgs.append(f"驱动模式: cron（{cron_schedule}）")
         msgs.append("等待 cron-worker 唤醒。")
     elif drive == "goal":
