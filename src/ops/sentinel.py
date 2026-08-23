@@ -14,9 +14,6 @@ __all__ = [
     'list_sentinels',
     'update_health',
     'SENTINEL_DIR',
-    'record_cross_session_action',
-    'get_cross_session_memory',
-    'get_all_cross_session_memories',
 ]
 
 import json
@@ -45,41 +42,6 @@ def _get_role_json(role: str) -> Optional[dict]:
 
 # 延迟导入 parse_tmux_name（在 _role_name_from_tmux 和 list_sentinels 中用到）
 # 在模块级别不导入，避免循环依赖
-
-# ── 跨 Session 内存（omux 模式，持久化到哨兵文件）──
-_MEMORY_DIR = Path.home() / ".hermes" / "run" / "ccs-cross-session-memory"
-_MEMORY_LOCK = threading.Lock()
-
-def _ensure_memory_dir():
-    _MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-
-def record_cross_session_action(role: str, action: str, summary: str = "") -> None:
-    _ensure_memory_dir()
-    data = {"last_action": action, "last_ts": time.time(), "summary": summary}
-    path = _MEMORY_DIR / f"{role}.json"
-    with _MEMORY_LOCK:
-        _atomic_write(path, json.dumps(data))
-
-def get_cross_session_memory(role: str) -> dict:
-    path = _MEMORY_DIR / f"{role}.json"
-    if not path.exists():
-        return {}
-    with _MEMORY_LOCK:
-        try:
-            return json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
-
-def get_all_cross_session_memories() -> dict:
-    _ensure_memory_dir()
-    result = {}
-    with _MEMORY_LOCK:
-        for path in _MEMORY_DIR.glob("*.json"):
-            try:
-                result[path.stem] = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-    return result
 
 # ── 哨兵目录（对外暴露）──
 SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"

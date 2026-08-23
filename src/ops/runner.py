@@ -1,7 +1,6 @@
 """ops/runner.py — 运行循环 + 健康仪表板（从 core.py 提取）"""
 
 import logging
-import subprocess
 import time
 
 log = logging.getLogger(__name__)
@@ -40,28 +39,7 @@ def dashboard() -> str:
     # ── 3. 路由拓扑摘要 ──
     lines.append("")
     lines.append("── 路由拓扑 ──")
-    try:
-        r = subprocess.run(
-            ["python3", "-c",
-             "import logging, os; logging.disable(logging.CRITICAL); "
-             "import sys; from pathlib import Path; "
-             "from paths import ensure_paths; ensure_paths(); "
-             "from routing.router import get_router; r = get_router(); print(r.routing)"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            import ast
-            for _line in reversed(r.stdout.strip().split("\n")):
-                if _line.strip():
-                    routing = ast.literal_eval(_line)
-                    break
-            for role, data in sorted(routing.items()):
-                cat_count = len(data.get("produce", []))
-                c = data.get("consume", [])
-                consume_cat = "*" if "*" in c else str(len(c))
-                lines.append(f"  {role:16} 产出 {cat_count}分类  消费 {consume_cat}分类")
-    except Exception:
-        lines.append("  (pipeline router 不可达)")
+    lines.append("  路由拓扑由 routing.gatekeeper 动态计算，未在此静态汇总")
 
     return "\n".join(lines)
 

@@ -8,8 +8,6 @@
   P4  read_sentinel       文件存在 → from_dict 成功
   P5  read_sentinel       文件损坏 → tmux 回退成功
   P6  read_sentinel       无文件 + 无 tmux → None
-  P7  get_cross_session_memory  文件不存在 → {}
-  P8  get_cross_session_memory  文件有效 → 返回 dict
   P9  list_sentinels      僵尸哨兵被过滤
 """
 import json
@@ -29,9 +27,6 @@ from ops.sentinel import (
     delete_sentinel,
     read_sentinel,
     list_sentinels,
-    get_cross_session_memory,
-    get_all_cross_session_memories,
-    record_cross_session_action,
 )
 
 
@@ -44,18 +39,14 @@ def isolate_sentinel_dirs(tmp_path):
     sentinel_dir.mkdir()
     health_dir = tmp_path / "health"
     health_dir.mkdir()
-    memory_dir = tmp_path / "cross-session"
-    memory_dir.mkdir()
 
     _sent.SENTINEL_DIR = sentinel_dir
     _sent._HEALTH_DIR = health_dir
-    _sent._MEMORY_DIR = memory_dir
 
-    yield {"sentinel_dir": sentinel_dir, "health_dir": health_dir, "memory_dir": memory_dir}
+    yield {"sentinel_dir": sentinel_dir, "health_dir": health_dir}
 
     _sent.SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"
     _sent._HEALTH_DIR = Path.home() / ".hermes" / "run" / "ccs-health"
-    _sent._MEMORY_DIR = Path.home() / ".hermes" / "run" / "ccs-cross-session-memory"
 
 
 def _make_sentinel(role="engineer", instance_id=0):
@@ -236,46 +227,6 @@ class TestReadSentinel:
 
         assert result is not None
         assert result.engine == "codex"
-
-
-class TestGetCrossSessionMemory:
-    """P7/P8: 跨 session 内存路径"""
-
-    def test_get_memory_nonexistent_returns_empty(self):
-        """P7: 文件不存在 → {}。"""
-        result = get_cross_session_memory("nonexistent_role")
-        assert result == {}
-
-    def test_get_memory_valid_json_returns_data(self):
-        """P8: 文件存在 + 合法 JSON → 返回 dict。"""
-        record_cross_session_action("engineer", "started session", summary="test")
-        result = get_cross_session_memory("engineer")
-        assert result["last_action"] == "started session"
-        assert "last_ts" in result
-
-    def test_get_memory_corrupt_json_returns_empty(self):
-        """文件损坏 → {}。"""
-        import ops.sentinel as _sent
-        _sent._MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        (_sent._MEMORY_DIR / "bad.json").write_text("NOT JSON {{{")
-
-        result = get_cross_session_memory("bad")
-        assert result == {}
-
-    def test_record_and_get_roundtrip(self):
-        """record → get 完整往返。"""
-        record_cross_session_action("qa", "ran tests", summary="all passed")
-        result = get_cross_session_memory("qa")
-        assert result["last_action"] == "ran tests"
-        assert result["summary"] == "all passed"
-
-    def test_get_all_memories(self):
-        """get_all_cross_session_memories 汇总。"""
-        record_cross_session_action("engineer", "deployed")
-        record_cross_session_action("qa", "tested")
-        result = get_all_cross_session_memories()
-        assert "engineer" in result
-        assert "qa" in result
 
 
 class TestListSentinels:

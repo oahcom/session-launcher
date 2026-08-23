@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 # 合法角色名：字母数字+连字符+下划线，不含 path traversal 或 shell 注入字符
-_ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+_ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-]+\Z')  # \Z 而非 $，防 role 名尾随换行注入
 
 # 从注册表加载合法角色名
 _SESSION_ROLES_ROOT = Path.home() / "hermes-session-roles" / "personas" / "session-roles"

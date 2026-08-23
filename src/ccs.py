@@ -168,6 +168,11 @@ def main():
     p_reg.add_argument("title", nargs="?", default="", help="角色标题")
 
     # ── workspace ──
+    # ── p0draft ── (R70 Round 4: grow P0_draft ladder — mark_p0_draft 入口)
+    p_p0 = sub.add_parser("p0draft", help="标注 P0_draft 任务 (engineer/pg/qa/devops/reviewer/scout/writer)")
+    p_p0.add_argument("task_id", help="任务 ID")
+    p_p0.add_argument("reason", help="升级理由 (≥15 字符，填写为什么这个任务是 P0)")
+
     p_ws = sub.add_parser("workspace", help="管理工作空间")
     ws_sub = p_ws.add_subparsers(dest="ws_command")
     ws_create = ws_sub.add_parser("create", help="创建新工作空间")
@@ -531,6 +536,29 @@ def main():
                 sys.exit(1)
         else:
             print("用法: ccs.py auto-send {list|add|rm}")
+            sys.exit(1)
+
+    # ═══════════ p0draft 命令 ═══════════
+    # R70 Round 4: grow dead P0 ladder API — wire mark_p0_draft into ccs CLI
+    elif args.command == "p0draft":
+        try:
+            # 动态導入，避免把 pipeline 依賴拉到 ccs.py 模組級
+            import sys as _sys
+            _pipe_src = os.path.realpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "session-pipeline", "src"))
+            if _pipe_src not in _sys.path:
+                _sys.path.insert(0, _pipe_src)
+            from p0_exemption import P0Exemption  # type: ignore
+            p0 = P0Exemption(role="ccs")  # 由 CCS CLI 觸發，role 標記為 ccs
+            result = p0.mark_p0_draft(args.task_id, args.reason, role="ccs")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result.get("p0_state") != "draft":
+                sys.exit(1)
+        except PermissionError as e:
+            print(f"P0_draft 权限拒绝: {e}", file=sys.stderr)
+            sys.exit(2)
+        except Exception as e:
+            print(f"P0_draft 标记失败: {e}", file=sys.stderr)
             sys.exit(1)
 
     # ═══════════ roles 命令 ═══════════

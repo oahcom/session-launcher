@@ -19,7 +19,7 @@ __all__ = [
     'CODEX_ERROR_MAX',
     'CODEX_SESSION_MAX',
     'CODEX_READY_RETRIES',
-    'CODEX_READY_INTERVAL', 'CODEX_SENTINEL_DIR',
+    'CODEX_READY_INTERVAL',
     '_MEM_FREE_MIN_MB',
     '_CCS_LAUNCH_INTERVAL',
 ]
@@ -73,9 +73,6 @@ def parse_tmux_name(tmux_name: str) -> tuple[str, int]:
     if m:
         return (m.group(1), int(m.group(2)))
     return (rest, 0)
-
-CODEX_SENTINEL_DIR = Path.home() / ".hermes" / "run" / "cdx-sentinels"
-
 
 CODEX_LOOP_DELAY = 60
 

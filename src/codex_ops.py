@@ -31,7 +31,7 @@ from tmux_ops import (
     CODEX_ERROR_MAX,
 )
 
-# 统一哨兵：Codex session 写入 /tmp/ccs-sentinels 而非独立目录
+# 统一哨兵：Codex session 写入 ~/.hermes/run/ccs-sentinels 而非独立目录
 # ponytail: 未来 engine 字段可扩展为 "codex-v2" 等版本标识
 from ops.sentinel import CcsSentinel, write_sentinel, list_sentinels
 
@@ -144,7 +144,7 @@ def start_codex_session(role_name: str) -> dict:
 
     pid = _find_codex_pid(tmux_name)
 
-    # P1-5: 哨兵写入 try/except(统一写入 /tmp/ccs-sentinels)
+    # P1-5: 哨兵写入 try/except(统一写入 ~/.hermes/run/ccs-sentinels)
     try:
         s = CcsSentinel(
             role=role_name,
@@ -248,7 +248,7 @@ def run_codex_task(role_name: str, message: str, timeout: int = 300) -> dict:
 
 
 def cdx_status() -> list[dict]:
-    """列出所有运行中的 Codex sessions(从统一哨兵 /tmp/ccs-sentinels 读取)."""
+    """列出所有运行中的 Codex sessions(从统一哨兵 ~/.hermes/run/ccs-sentinels 读取)."""
     stats = []
     for s in list_sentinels():
         if s.engine != "codex":

@@ -2,8 +2,6 @@
 """单元测试: ops/runner.py — 沉默吞异常路径覆盖
 
 路径索引:
-  S1  dashboard subprocess 失败 → fallback 消息
-  S2  dashboard ast.literal_eval 失败 → fallback 消息
   S3  _start_feed_listener _connect socket 异常 → 重连
   S4  _start_feed_listener recv 异常 → 断开重连
   S5  _start_feed_listener socket close 异常 → 不冒泡
@@ -12,14 +10,13 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from subprocess import TimeoutExpired
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent.parent / "src" / "ops"))
 
 import pytest
 
-from ops.runner import dashboard, _start_feed_listener
+from ops.runner import _start_feed_listener
 
 
 @pytest.fixture(autouse=True)
@@ -28,69 +25,6 @@ def _cleanup_threads():
     if hasattr(_start_feed_listener, "_threads"):
         _start_feed_listener._threads.clear()
     yield
-
-
-class TestDashboard:
-    """S1/S2: dashboard() 沉默吞异常路径"""
-
-    def test_subprocess_failure_returns_fallback_message(self):
-        """S1: subprocess.run 抛出异常 → 返回包含 fallback 消息的仪表板。"""
-        with patch("ops.runner.subprocess.run", side_effect=FileNotFoundError("no python")):
-            result = dashboard()
-
-        assert "pipeline router 不可达" in result
-        assert "CCS 生态健康仪表板" in result
-
-    def test_subprocess_timeout_returns_fallback(self):
-        """S1: timeout 异常 → 返回 fallback 消息。"""
-        with patch("ops.runner.subprocess.run", side_effect=TimeoutExpired("cmd", 10)):
-            result = dashboard()
-
-        assert "pipeline router 不可达" in result
-
-    def test_corrupted_routing_output_returns_fallback(self):
-        """S2: ast.literal_eval 解析失败 → fallback。"""
-        mock_r = MagicMock()
-        mock_r.returncode = 0
-        mock_r.stdout = "not a valid python literal!!!\n"
-        mock_r.stderr = ""
-
-        with patch("ops.runner.subprocess.run", return_value=mock_r):
-            result = dashboard()
-
-        assert "pipeline router 不可达" in result
-
-    def test_malformed_routing_output_returns_fallback(self):
-        """S2: 标准输出非 dict 结构 → fallback。"""
-        mock_r = MagicMock()
-        mock_r.returncode = 0
-        mock_r.stdout = "[1, 2, 3]\n"
-        mock_r.stderr = ""
-
-        with patch("ops.runner.subprocess.run", return_value=mock_r):
-            result = dashboard()
-
-        assert "pipeline router 不可达" in result
-
-    def test_healthy_dashboard_contains_basic_sections(self):
-        """正常路径：仪表板包含必要章节。"""
-        with patch("ops.runner.subprocess.run", return_value=MagicMock(returncode=1)):
-            result = dashboard()
-
-        assert "CCS 生态健康仪表板" in result
-        assert "CCS 哨兵" in result
-
-    def test_subprocess_nonzero_exit_still_shows_dashboard(self):
-        """S1: returncode != 0 仍显示仪表板（不进入路由解析块）。"""
-        mock_r = MagicMock()
-        mock_r.returncode = 1
-        mock_r.stdout = ""
-
-        with patch("ops.runner.subprocess.run", return_value=mock_r):
-            result = dashboard()
-
-        assert "pipeline router 不可达" not in result
-        assert "CCS 生态健康仪表板" in result
 
 
 class TestStartFeedListener:

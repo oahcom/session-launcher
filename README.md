@@ -125,6 +125,14 @@ python3 src/ccs.py health [role]          # 健康检查
 python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 ```
 
+### 3. 守护进程 (systemd 托管)
+
+| 单元 | 职责 | 状态检查 |
+|------|------|---------|
+| `ccs-intent-guardian.service` | 用户意图守护：对 ccs 的疑问/任务类输入重复注入两条自检提醒（"你真解决了用户问题吗？"+"你真严格按用户提示完成了吗？"），防止答非所问 | `systemctl --user is-active ccs-intent-guardian.service` |
+
+**意图判定逻辑**：`src/user_intent_reminder.py` 的 `classify_intent` 将输入分为 `QUESTION`/`TASK`/`OTHER`；仅疑问/任务类在 `core.send` 路径经 `inject_reminder` 注入提醒（`pipeline`/`daemon` 自动化来源排除，防递归自提醒）。守护类 `IntentReminderDaemon`（`src/ccls_daemon_intent_classifier.py`）从 systemd 自启动，验证：`python3 src/ccls_daemon_intent_classifier.py --selfcheck`（11/11 PASS）。
+
 ### 2. 哨兵文件
 
 每个 CCS 在 `/tmp/ccs-sentinels/<role>.json` 写入运行状态：

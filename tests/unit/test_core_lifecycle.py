@@ -100,12 +100,10 @@ class TestCoreLifecycle:
 
     @patch("core._is_alive")
     @patch("core._tmux_kill")
-    @patch("core.cleanup_stale_sentinels")
-    def test_stop_kills_session(self, mock_cleanup, mock_tmux_kill, mock_is_alive):
+    def test_stop_kills_session(self, mock_tmux_kill, mock_is_alive):
         """stop() 杀掉 tmux session"""
         mock_is_alive.return_value = True
         mock_tmux_kill.return_value = None
-        mock_cleanup.return_value = None
 
         result = stop("qa", instance_id=0)
 

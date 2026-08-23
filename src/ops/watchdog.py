@@ -231,7 +231,12 @@ def start_watchdog(this_role: str, partner_role: str,
                    interval: int = 30,
                    restart_delay: int = 5,
                    instance_id: int = 0) -> threading.Thread:
-    """启动守护线程。instance_id 决定监控哪个实例的 tmux session。"""
+    """启动守护线程。instance_id 决定监控哪个实例的 tmux session。
+
+    同时懒启动全局单例 IntentReminderDaemon（用户要求：ccs 处理期间
+    重复提醒自检两个问题）。它跨所有 ccs-* tmux session 轮询，故只起一次，
+    登记到同 key 的线程表，stop_watchdog 一并回收。
+    """
     stop_event = threading.Event()
     t = threading.Thread(
         target=_run,
@@ -240,8 +245,29 @@ def start_watchdog(this_role: str, partner_role: str,
         name=f"watchdog:{this_role}:{partner_role}:{instance_id}",
     )
     t.start()
-    _WATCHDOG_THREADS.setdefault(_wd_key(this_role, instance_id), []).append((t, stop_event))
+    entries = _WATCHDOG_THREADS.setdefault(_wd_key(this_role, instance_id), [])
+    entries.append((t, stop_event))
+    _ensure_intent_reminder_daemon(entries)
     return t
+
+
+# 全局单例：避免每个 ccs 实例重复拉起 IntentReminderDaemon。
+_INTENT_DAEMON_STARTED = False
+
+
+def _ensure_intent_reminder_daemon(entries: list) -> None:
+    """懒启动 IntentReminderDaemon 单例（幂等）。"""
+    global _INTENT_DAEMON_STARTED
+    if _INTENT_DAEMON_STARTED:
+        return
+    try:
+        from ccls_daemon_intent_classifier import IntentReminderDaemon
+        d = IntentReminderDaemon()
+        dt = d.start()  # daemon Thread
+        entries.append((dt, d._stop))
+        _INTENT_DAEMON_STARTED = True
+    except Exception as _e:  # 提醒 daemon 失败绝不可影响主 watchdog 启动
+        logging.getLogger(__name__).warning("IntentReminderDaemon 启动失败(降级跳过): %s", _e)
 
 
 def stop_watchdog(this_role: str, instance_id: int = 0) -> None:

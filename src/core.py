@@ -35,9 +35,6 @@ __all__ = [
     '_forbidden_list',
     'check_wake_permission',
     '_build_role_prompt',
-    'write_lifecycle_sentinel',
-    'check_ondemand_timeout',
-    'cleanup_stale_sentinels',
     '_is_alive',
     '_find_claude_pid',
     '_tmux_send',
@@ -920,90 +917,6 @@ def wake_ccs(role_name: str, context: str = "",
             return send(role_name, context)
         return {"success": True, "action": "already_running", "role": role_name}
     return force_start_ccs(role_name, by_role=by_role)
-
-def write_lifecycle_sentinel(role: dict) -> None:
-    """为 ondemand 角色写生命周期哨兵文件（使用 CcsSentinel .json 格式）。
-
-    该函数為死碼：start(ondemand) 直接調用 write_sentinel，從不走此函數。
-    僅在 launcher.py re-export 供外部引用。修復後改用 CcsSentinel 格式，
-    保持與 check_ondemand_timeout / cleanup_stale_sentinels 的契約一致。
-    """
-    s = CcsSentinel(
-        role=role.get("name", ""),
-        title=role.get("title", role.get("name", "")),
-        pid=os.getpid(),
-        started_at=time.time(),
-        lifecycle=role.get("lifecycle", "infinite"),
-        instance_id=0,
-    )
-    write_sentinel(s)
-
-def check_ondemand_timeout(max_minutes: int = 30) -> list[str]:
-    """检查 ondemand 角色是否超时（讀取 SENTINEL_DIR 的 .json 哨兵）。
-
-    契約修復: 原 glob *.active 檔案從未被 write_lifecycle_sentinel 實際調用，
-    導致永遠返回空列表。現改為讀取 CcsSentinel .json 格式，與 start() 一致。
-    """
-    from ops.sentinel import SENTINEL_DIR
-    if not SENTINEL_DIR.exists():
-        return []
-    timed_out = []
-    for f in sorted(SENTINEL_DIR.glob("*.json")):
-        try:
-            data = json.loads(f.read_text())
-            if data.get("lifecycle") != "ondemand":
-                continue
-            started_at = data.get("started_at")
-            if not started_at:
-                continue
-            if isinstance(started_at, (int, float)):
-                started = datetime.fromtimestamp(started_at, tz=timezone.utc)
-            else:
-                started = datetime.fromisoformat(started_at)
-            elapsed = datetime.now(timezone.utc) - started
-            max_m = data.get("max_minutes", max_minutes)
-            if elapsed > timedelta(minutes=max_m):
-                timed_out.append(data["role"])
-                f.unlink()
-        except (json.JSONDecodeError, OSError, ValueError):
-            f.unlink()
-    return timed_out
-
-def cleanup_stale_sentinels() -> list[str]:
-    """清理孤儿哨兵文件（讀取 SENTINEL_DIR 的 .json 哨兵）。
-
-    契約修復: 原 glob *.active 檔案從未被 write_lifecycle_sentinel 實際調用。
-    現改為讀取 CcsSentinel .json 格式，與 start() 一致。
-    """
-    from ops.sentinel import SENTINEL_DIR
-    if not SENTINEL_DIR.exists():
-        return []
-    cleaned = []
-    for f in sorted(SENTINEL_DIR.glob("*.json")):
-        try:
-            data = json.loads(f.read_text())
-            pid = data.get("pid")
-            if pid and not Path(f"/proc/{pid}").exists():
-                f.unlink()
-                cleaned.append(data["role"])
-                continue
-            lifecycle = data.get("lifecycle")
-            if lifecycle == "ondemand":
-                started_at = data.get("started_at")
-                if started_at:
-                    if isinstance(started_at, (int, float)):
-                        started = datetime.fromtimestamp(started_at, tz=timezone.utc)
-                    else:
-                        started = datetime.fromisoformat(started_at)
-                    elapsed = datetime.now(timezone.utc) - started
-                    max_m = data.get("max_minutes", 30)
-                    if elapsed > timedelta(minutes=max_m):
-                        f.unlink()
-                        cleaned.append(f"{data['role']}(timeout)")
-        except (json.JSONDecodeError, OSError, ValueError):
-            f.unlink()
-    return cleaned
-
 
 def list_roles() -> list[dict]:
     """列出所有可启动角色, 附带运行状态（含多 instance 信息）。"""
