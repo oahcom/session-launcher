@@ -33,7 +33,7 @@ PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 # 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent / _CORE_QUESTIONS，
 # 不再各自维护副本（v3 收敛：消除审查发现的重复定义与符号覆盖冲突）。
 try:
-    from user_intent_reminder import classify_intent, Intent, _CORE_QUESTIONS, repeat_reminder  # type: ignore
+    from user_intent_reminder import classify_intent, Intent, _CORE_QUESTIONS, repeat_reminder, read_intent  # type: ignore
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -46,6 +46,7 @@ except Exception:  # pragma: no cover - 同目录兜底
     Intent = _mod.Intent
     _CORE_QUESTIONS = _mod._CORE_QUESTIONS
     repeat_reminder = _mod.repeat_reminder
+    read_intent = _mod.read_intent
 def _tmux_sessions() -> list[str]:
     """枚举 ccs-* tmux sessions。"""
     try:
@@ -80,34 +81,74 @@ class IntentReminderDaemon:
     """
     _INTERVAL = 10.0        # 轮询间隔
     _REMIND_COOLDOWN = 30.0  # 同 session 冷却（纯冷却门控，修复 P0#2）
-    _SNIPPET_LEN = 400
 
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
         self._states: dict[str, _SessionState] = {}
         self._stop = threading.Event()
-        # 复用 user_intent_reminder.repeat_reminder 生成提醒文案，确保与 send 路径
-        # 同源（同一 _REMINDER_MARKER），同时生效时幂等不双注入。
-        self._reminder_text = repeat_reminder(Intent.TASK, round_no=1)
 
-    def _push_reminder(self, session: str) -> bool:
+    def _push_reminder(self, session: str, intent: "Intent | None" = None,
+                       round_no: int = 1) -> bool:
         """Write reminder to tmux pane (literal, line-by-line). Returns True if pushed."""
         st = self._states.setdefault(session, _SessionState())
         now = time.monotonic()
         if now - st.last_remind_ts < self._REMIND_COOLDOWN:  # 纯冷却门控 (P0#2)
             return False
+        # 意图感知：core.send 记录的本轮回应用户意图（疑问/任务），定制重复提醒焦点。
+        # 缺失/损坏 → read_intent 回退 Intent.TASK，行为不变。
+        if intent is None:
+            intent = read_intent(session[len("ccs-"):] if session.startswith("ccs-") else session)
+        reminder = repeat_reminder(intent, round_no=round_no)
         try:
             # D1 修复：send-keys -l 逐行 literal 发送，避免 \n 被当作按键
-            for line in self._reminder_text.split("\n"):
+            for line in reminder.split("\n"):
                 subprocess.run(["tmux", "send-keys", "-t", session, "-l", line],
                                check=True, timeout=3)
                 subprocess.run(["tmux", "send-keys", "-t", session, "Enter"],
                                check=True, timeout=3)
+            # G1 生长：把 conversation_monitor 已检测但仅写 bus 的越界提案
+            # 回灌给角色自身（只读提示，不自动执行），闭合治理回路。
+            vsum = self._recent_violations_summary(session)
+            if vsum:
+                for vline in vsum.split("\n"):
+                    subprocess.run(["tmux", "send-keys", "-t", session, "-l", vline],
+                                   check=True, timeout=3)
+                    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"],
+                                   check=True, timeout=3)
             st.last_remind_ts = now
             st.remind_count += 1
             return True
         except Exception:
             return False
+
+    def _recent_violations_summary(self, session: str) -> str:
+        """读取 conversation_monitor 写入 bus 的 role_drift 越界统计。
+
+        返回紧凑提示（最多 2 行），无越界返回空串。
+        任何异常静默降级（不阻塞提醒主流程）。
+        """
+        role = session[len("ccs-"):] if session.startswith("ccs-") else session
+        try:
+            out = subprocess.run(
+                [BUS_CLIENT, "read", "--cat", "architecture", "--limit", "30", "--json"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            import json
+            # bus read --json 输出为对象信封 {"facts": [...]}，与 search --json 同约定
+            # （partner.py:210）。直接取 facts；非 dict 时回退为自身。
+            _data = json.loads(out)
+            facts = _data.get("facts", _data) if isinstance(_data, dict) else _data
+            hits = [f for f in facts
+                    if "role_drift" in (f.get("tags") or "")
+                    and f.get("title", "").startswith(f"[role_drift] {role} ")]
+            if not hits:
+                return ""
+            last = hits[0]["title"]
+            entries = last.split(":", 1)[-1].strip()
+            return (f"⚠️ 监测到越界操作统计（来自 conversation_monitor）："
+                    f"{role} 漂移 {entries[:120]}")
+        except Exception:
+            return ""
 
     def _tick(self) -> int:
         """One poll cycle. Returns # reminders pushed."""
@@ -124,11 +165,13 @@ class IntentReminderDaemon:
             # 仅当 pane 快照未变（ccs 无新产出）→ 仍视为未答复 → 提醒
             # D3 修复：不分类 ccs 自身输出，只靠"无新产出"判断停滞
             if text == st.last_snippet:
-                if self._push_reminder(sess):
+                # 意图感知：读 core.send 记录的本轮回应用户意图，按轮次重复提醒。
+                _intent = read_intent(sess[len("ccs-"):] if sess.startswith("ccs-") else sess)
+                if self._push_reminder(sess, _intent, st.remind_count + 1):
                     pushed += 1
                     self._bus_trace(sess)
             else:
-                st.last_snippet = text[-self._SNIPPET_LEN:]
+                st.last_snippet = text  # 存完整 pane 快照（非截断尾）；与下次整段比较才能正确判定"无新产出"
         return pushed
 
     def _bus_trace(self, session: str) -> None:

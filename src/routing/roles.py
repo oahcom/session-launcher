@@ -14,10 +14,6 @@ __all__ = [
     '_resolve_ws_paths',
     'inject_role_knowledge_into_workspace',
     '_validate_role_name',
-    '_ensure_bus_aliases_in_bashrc',
-    # ponytail: inject_prompt_into_claudemd/clear_injected_prompt 已废弃，保留定义兼容旧 cron 模式
-    'inject_prompt_into_claudemd',
-    'clear_injected_prompt',
     '_ROLE_NAME_RE',
     'SESSION_ROLES_ROOT',
     '_WS_MARKER_START',
@@ -40,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from paths import BUS_CLIENT, ensure_paths as _ensure_paths
+from paths import BUS_CLIENT, ensure_paths as _ensure_paths, CCS_WORKSPACES as WORKSPACES
 _ensure_paths()
 
 # ── shared_loader 导入：统一角色数据入口 ──
@@ -346,6 +342,38 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     """
     name = role.get("name", "")
 
+    # 读取 role TASKS.md 的 negative 教训，注入 KNOWLEDGE 块（评分信号回写闭环补全）
+    # WHY: task_evidence 负向评分回写 TASKS.md，此处把教训注入 KNOWLEDGE 块随 role prompt 下发，
+    # 让 role 从历史模板任务教训中学习（评分信号闭环闭合）。
+    _tasks_lessons = ""
+    _MAX_LESSONS = 5
+    try:
+        # 防路径遍历：name 归一化并约束在 WORKSPACES 内
+        _safe_name = name
+        try:
+            _tasks_path = (WORKSPACES / _safe_name / "TASKS.md").resolve()
+            if not _tasks_path.is_relative_to(WORKSPACES.resolve()):
+                raise ValueError("path traversal")
+        except Exception:
+            _tasks_path = None  # 非法名 → 跳过读取
+
+        if _tasks_path and _tasks_path.exists():
+            _txt = _tasks_path.read_text(encoding="utf-8", errors="ignore")
+            # 仅提取 `- [negative]` 行 + `## 历史教训` 标题
+            _lessons_raw = []
+            for _line in _txt.splitlines():
+                _s = _line.strip()
+                if _s.startswith("- [negative]") or _s == "## 历史教训":
+                    # 防 prompt injection：只保留前 120 字，去除指令式措辞
+                    _clean = _s[:120].replace("请", "").replace("必须", "").replace("务必", "")
+                    _lessons_raw.append(f"- [lesson] {_clean}")
+                    if len(_lessons_raw) >= _MAX_LESSONS:
+                        break
+            if _lessons_raw:
+                _tasks_lessons = "\n".join(_lessons_raw) + "\n"
+    except Exception:
+        pass  # 读取失败不影响主流程
+
     ws_paths = _resolve_ws_paths(name)
     if not ws_paths:
         return "skipped (no workspace)"
@@ -356,7 +384,8 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         knowledge_block = (
             f"\n\n<!-- KNOWLEDGE:START -->\n"
             f"{assembled}\n"
-            f"<!-- KNOWLEDGE:END -->\n"
+            + (_tasks_lessons and "\n## 历史教训（评分回写，自动学习）\n" + _tasks_lessons or "")
+            + "\n<!-- KNOWLEDGE:END -->\n"
         )
     else:
         # 回退: 仅 contract + base.md（旧路径）
@@ -369,7 +398,8 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
             f"# 契约 — {role.get('title', name)}\n\n"
             f"{contract}\n"
             f"{base_content}\n"
-            f"<!-- KNOWLEDGE:END -->\n"
+            + (_tasks_lessons and "\n## 历史教训（评分回写，自动学习）\n" + _tasks_lessons or "")
+            + "\n<!-- KNOWLEDGE:END -->\n"
         )
 
     injected = 0
@@ -431,76 +461,6 @@ def _fallback_base_content() -> str:
 def _validate_role_name(name: str) -> bool:
     """角色名仅允许字母、数字、下划线、连字符。"""
     return bool(_ROLE_NAME_RE.match(name))
-
-def _ensure_bus_aliases_in_bashrc() -> None:
-    """在 ~/.bashrc 写入 bus 别名（仅追加一次）。"""
-    bashrc = Path.home() / ".bashrc"
-    if not bashrc.exists():
-        return
-    content = bashrc.read_text()
-    marker = "# ── CCS Bus aliases ──"
-    if marker in content:
-        return
-    alias_block = f"""
-{marker}
-alias bus_write='python3 {BUS_CLIENT} write'
-alias bus_read='python3 {BUS_CLIENT} read --cat'
-alias bus_unread='python3 {BUS_CLIENT} unread'
-alias bus_search='python3 {BUS_CLIENT} search'
-"""
-    bashrc.write_text(content.rstrip() + "\n" + alias_block)
-
-def inject_prompt_into_claudemd(role: dict) -> str:
-    """DEPRECATED — 旧版 launcher cron 模式使用。CCS 模式应使用 inject_role_knowledge_into_workspace()。"""
-    _ensure_bus_aliases_in_bashrc()
-    prompt = _build_role_prompt(role)
-    ctx = _role_assembler_output(role["name"], role)
-    if ctx:
-        prompt += "\n" + ctx
-    lifecycle = role.get("lifecycle", "infinite")
-    drive = role.get("drive", "cron")
-    templates = _action_templates(role)
-    inject_block = (
-        f"{SESSION_MARKER_START}\n"
-        f"# Session Role: {role['name']} ({role['title']})\n"
-        f"# Lifecycle: {lifecycle} | Drive: {drive}\n"
-        f"# 自动注入 — 由 session-launcher 管理\n\n"
-        f"{prompt}\n\n"
-        f"{templates}\n\n"
-        f"{SESSION_MARKER_END}\n"
-    )
-    if not _CLAUDE_MD.exists():
-        _CLAUDE_MD.write_text(inject_block)
-        return "created"
-    content = _CLAUDE_MD.read_text(encoding="utf-8")
-    if SESSION_MARKER_START in content and SESSION_MARKER_END in content:
-        start_idx = content.rindex(SESSION_MARKER_START)
-        end_idx = content.rindex(SESSION_MARKER_END) + len(SESSION_MARKER_END)
-        new_content = content[:start_idx] + inject_block + content[end_idx:]
-    elif SESSION_MARKER_START in content:
-        start_idx = content.rindex(SESSION_MARKER_START)
-        new_content = content[:start_idx] + inject_block
-    else:
-        new_content = content.rstrip() + "\n\n" + inject_block
-    _CLAUDE_MD.write_text(new_content, encoding="utf-8")
-    prompt_file = Path("/tmp/session_role_prompt.txt")
-    prompt_file.write_text(prompt)
-    return "injected"
-
-def clear_injected_prompt() -> None:
-    """清除主项目 CLAUDE.md 中的 session role 注入块（legacy）。"""
-    if not _CLAUDE_MD.exists():
-        return
-    content = _CLAUDE_MD.read_text(encoding="utf-8")
-    if SESSION_MARKER_START not in content:
-        return
-    start_idx = content.index(SESSION_MARKER_START)
-    if SESSION_MARKER_END in content:
-        end_idx = content.index(SESSION_MARKER_END) + len(SESSION_MARKER_END)
-    else:
-        end_idx = len(content)
-    new_content = content[:start_idx] + content[end_idx:]
-    _CLAUDE_MD.write_text(new_content, encoding="utf-8")
 
 def validate_ccs_execution(role: str, action: str) -> None:
     """CCS-RULE 代码层门禁：注入规则执行前校验。

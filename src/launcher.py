@@ -35,7 +35,7 @@ from core import (
     output as ccs_capture_output,
     health_check,
 )
-from routing.roles import _action_templates as action_templates, _ensure_bus_aliases_in_bashrc
+from routing.roles import _action_templates as action_templates
 
 # 常量
 from core import (
@@ -65,7 +65,7 @@ __all__ = [
     "register", "workspace_create", "workspace_list",
     "_find_claude_pid", "_find_codex_pid", "_is_alive", "_tmux_send", "_tmux_output", "_tmux_kill",
     "start_ccs", "stop_ccs", "ccs_status", "send_to_ccs", "ccs_capture_output", "health_check",
-    "action_templates", "_ensure_bus_aliases_in_bashrc",
+    "action_templates",
     "CCS_TMUX_PREFIX", "CODEX_TMUX_PREFIX",
     "BUS_CLIENT", "SESSION_ROLES_ROOT",
     "_FORBIDDEN_MAP", "_WAKE_PERMISSION_MAP",
@@ -87,14 +87,5 @@ def is_ccs_running(role_name: str) -> bool:
 
 
 def main():
-    # 红线1 代码化：gateway 重启禁令（仿真自检，确认 guard 可用）
-    try:
-        from gateway_guard import is_forbidden_command
-        _probe = "hermes gateway restart"  # 测试性探针，不实际执行
-        if is_forbidden_command(_probe):
-            LOGGER.warning("红线1 guard 已加载：检测到 gateway 重启指令将被拦截")
-    except Exception as _gg:
-        LOGGER.debug("gateway_guard 自检异常（不阻塞启动）: %s", _gg)
-
     from ccs import main as _ccs_main
     _ccs_main()
