@@ -47,6 +47,18 @@ except Exception:  # pragma: no cover - 同目录兜底
     _CORE_QUESTIONS = _mod._CORE_QUESTIONS
     repeat_reminder = _mod.repeat_reminder
     read_intent = _mod.read_intent
+
+# 生命周期加载（ponytail: 复用 survival_monitor 的 _load_role_lifecycles，
+# 通过 realpath 规范化防路径遍历；ondemand 角色不主动唤醒，避免无谓轰击）。
+try:
+    _PIPE_SRC = os.path.realpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "session-pipeline", "src"))
+    if _PIPE_SRC not in sys.path:
+        sys.path.insert(0, _PIPE_SRC)
+    from routing.survival_monitor import _load_role_lifecycles as _load_role_lifecycles  # type: ignore
+except Exception:  # pragma: no cover - 跨项目路径不可用时回退
+    def _load_role_lifecycles() -> dict[str, str]:
+        return {}
 def _tmux_sessions() -> list[str]:
     """枚举 ccs-* tmux sessions。"""
     try:
@@ -159,6 +171,13 @@ class IntentReminderDaemon:
             del self._states[dead]
         for sess in live:
             st = self._states.setdefault(sess, _SessionState())
+            # lifecycle 过滤：ondemand 角色被动接收信号，idle 是正常态，不主动唤醒
+            # （ponytail: 防止 daemon 对被动角色无谓轰击形成噪声循环）。
+            role_key = sess[len("ccs-"):] if sess.startswith("ccs-") else sess
+            if "-" in role_key:
+                role_key = role_key.rsplit("-", 1)[0]
+            if _load_role_lifecycles().get(role_key, "infinite") == "ondemand":
+                continue
             text = _capture_pane_end(sess)
             if not text:
                 continue
@@ -166,7 +185,8 @@ class IntentReminderDaemon:
             # D3 修复：不分类 ccs 自身输出，只靠"无新产出"判断停滞
             if text == st.last_snippet:
                 # 意图感知：读 core.send 记录的本轮回应用户意图，按轮次重复提醒。
-                _intent = read_intent(sess[len("ccs-"):] if sess.startswith("ccs-") else sess)
+                # 使用已去除实例后缀的 role_key（ccs-engineer-1 → engineer）与 core.send 记录对齐
+                _intent = read_intent(role_key)
                 if self._push_reminder(sess, _intent, st.remind_count + 1):
                     pushed += 1
                     self._bus_trace(sess)
