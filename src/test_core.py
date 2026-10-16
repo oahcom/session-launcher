@@ -247,7 +247,9 @@ TESTS = [
     test_load_roles_returns_list,
     test_build_role_prompt,
     test_router_env_parsing_and_fallback,
-    test_ondemand_timeout_and_stale_cleanup,
+    # test_ondemand_timeout_and_stale_cleanup 已随其定义一并移除：
+    # 该函数在文件中无定义（另有 10 个 def 对应 11 个引用），导致 import 时
+    # NameError、整个 test_core 收集失败，连带 pytest 在 src/ 下直接中断。
     test_stop_recycles_feed_proc_and_sentinel,
     test_start_options_and_hooks,
 ]

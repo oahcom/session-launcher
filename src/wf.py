@@ -9,6 +9,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from workflow_client import WorkflowClient, check  # noqa: E402
 
 
+def _require_role() -> str:
+    """获取角色名；非交互环境（stdin 关闭）时给出可操作提示而非 traceback。
+
+    原实现 `role or input("role: ")` 在 daemon/脚本/CI 调用（stdin=/dev/null）
+    时抛 EOFError 裸栈。已有 --role 与 $CCS_ROLE 两条注入路径，此处只兜底报错。
+    """
+    if not sys.stdin.isatty():
+        print("缺少角色：请用 --role/-r 指定（须置于子命令前，如 `wf -r engineer stats`）"
+              "或设置 $CCS_ROLE", file=sys.stderr)
+        sys.exit(2)
+    return input("role: ")
+
+
 def main():
     p = argparse.ArgumentParser(prog="wf", formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--role", "-r", default=os.getenv("CCS_ROLE", ""), help="角色 (默认 $CCS_ROLE)")
@@ -92,58 +105,58 @@ def main():
             print(f"task={tid}  wf={wid}")
 
     elif args.cmd == "complete":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             wf.complete(args.wf_id, args.summary)
             print(f"完成: {args.wf_id}")
 
     elif args.cmd == "fail":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             wf.fail(args.wf_id, args.reason)
             print(f"失败标记: {args.wf_id}")
 
     elif args.cmd == "notify":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             wf.notify(args.cat, args.title, evidence=args.evidence)
             print(f"通知已发: {args.cat} / {args.title}")
 
     elif args.cmd == "task":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             t = wf.get_task(args.task_id)
             print(json.dumps(t, indent=2, ensure_ascii=False) if t else "未找到")
 
     elif args.cmd == "logs":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             logs = wf.get_logs(wf_id=args.wf or None, task_id=args.task or None)
             for l in logs:
                 print(f"[{l.get('ts','')}] {l.get('action','')} — {l.get('detail','')}")
 
     elif args.cmd == "cancel":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             wf.cancel(args.wf_id, args.reason)
             print(f"已取消: {args.wf_id}")
 
     elif args.cmd == "my":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             tasks = wf.list_my_tasks(status=args.status or None)
             for t in tasks:
                 print(f"{t.get('instance_id','?'):24s} {str(t.get('status','?')):10s} {str(t.get('template_id','?')):12s} {t.get('current_step_id','?')}")
 
     elif args.cmd == "ls":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             tasks = wf.list_tasks(status=args.status or None, assignee=args.assignee or None)
             for t in tasks:
                 print(f"{t.get('task_id','?'):24s} {t.get('status','?'):10s} {t.get('assignee','?'):12s} {t.get('title','')}")
 
     elif args.cmd == "kanban":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             b = wf.kanban_board()
             for lane in b:
@@ -152,7 +165,7 @@ def main():
                     print(f"  {item.get('instance_id','?'):24s} {item.get('current_step_id',''):6s} {item.get('assignee','')}")
 
     elif args.cmd == "cleanup":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             zombies = wf.find_zombies(args.minutes, args.limit)
             if not zombies:
@@ -171,7 +184,7 @@ def main():
                 print(f"\n--dry-run: {len(zombies)} 个候选，加 --yes 执行取消")
 
     elif args.cmd == "stats":
-        r = role or input("role: ")
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             s = wf.workflow_stats()
             for k, v in s.items():

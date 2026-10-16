@@ -11,20 +11,22 @@ from pathlib import Path
 
 import pytest
 
-# 从 worktree 源码导入 Gateway（当前 main 分支尚未合入）
+# 从 session-pipeline 导入 Gateway（workflow/gateway.py 的唯一实现）
 import sys
 
-_GW_SRC = str(Path(__file__).resolve().parent.parent / ".claude" / "worktrees" / "fix-hardening" / "src")
+# Gate 的权威实现在 session-pipeline（该 worktree 已于 2026-10-16 清理）。
+_GW_SRC = str(Path.home() / "session-pipeline" / "src")
 if _GW_SRC not in sys.path:
     sys.path.insert(0, _GW_SRC)
 
 from workflow.gateway import Gate  # noqa: E402
 
-# Gate 已导入到本模块作用域。移除 worktree src 并清空 workflow 包缓存，
-# 否则 sys.modules['workflow'].__path__ 仍指向 worktree，后续测试的
-# import workflow.client 会解析到 worktree 版（无 find_zombies）。
-if _GW_SRC in sys.path:
-    sys.path.remove(_GW_SRC)
+# Gate 已导入到本模块作用域。清空 workflow 包缓存，否则 sys.modules['workflow']
+# 的 __path__ 仍只指向这一处，后续测试的 import workflow.client 解析不到本仓版本。
+# 注意：_GW_SRC 必须保留在 sys.path —— Gate.get_template 是延迟导入
+# `template_registry`（与 gateway.py 同目录），移除路径会让该调用
+# ModuleNotFoundError。原实现移除路径是为了隔离 worktree，现已直接指向
+# session-pipeline，无隔离必要。
 for _m in [k for k in list(sys.modules) if k == "workflow" or k.startswith("workflow.")]:
     del sys.modules[_m]
 
