@@ -34,11 +34,10 @@ PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 
 
 # 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent /
-# _CORE_QUESTIONS / repeat_reminder，不再各自维护副本
-# （v3 收敛：消除审查发现的重复定义与符号覆盖冲突）。
+# repeat_reminder，不再各自维护副本（v3 收敛：消除重复定义与符号覆盖冲突）。
 try:
     from user_intent_reminder import (  # type: ignore
-        classify_intent, Intent, _CORE_QUESTIONS, repeat_reminder)
+        classify_intent, Intent, repeat_reminder)
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -49,7 +48,6 @@ except Exception:  # pragma: no cover - 同目录兜底
     _spec.loader.exec_module(_mod)
     classify_intent = _mod.classify_intent
     Intent = _mod.Intent
-    _CORE_QUESTIONS = _mod._CORE_QUESTIONS
     repeat_reminder = _mod.repeat_reminder
 
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
@@ -188,10 +186,11 @@ class IntentReminderDaemon:
         read 79ms，10 个会话 × 每 10s = 每分钟 ~4.7s CPU，且 bus_client 每次
         构造 Blackboard 都会触发全表 FTS 回填。整轮读一次的代价降到 ~0.5s/分。
 
-        用 `search` 而非 `read --cat code_fix`：痕迹是角色各自的最新一条，而 read
-        按分类取整批，会与所有 code_fix 写入（含 contract_updater 等高频源）抢同一个
-        limit 窗口——实测 TOP50 只覆盖到 53 分钟前，一条新痕迹随时被挤出窗口 → 静默
-        停发。search 按标题关键词精确命中（实测只回痕迹本身），无窗口竞争。
+        用 `search` 而非 `read --cat code_fix`：痕迹是各角色各自的最新一条，而 read
+        按分类取整批返回，与全部 code_fix 写入（含 contract_updater 等高频源）共享
+        同一个 limit 窗口。实测该窗口约 53 天（50 条 / 近 30 分钟新增 9 条），
+        当前速率下离饥饿还很远，但代价为零而语义更精确——search 按标题关键词命中，
+        实测只返回痕迹本身，无窗口竞争、不受其他写入速率影响。
         任何异常返回空 dict（宁可不提醒，也不凭推测注入），但留日志不静默。
         """
         try:
