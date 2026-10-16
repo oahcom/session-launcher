@@ -25,9 +25,7 @@ ponytail: 轮询 10s，覆盖 ~50 个 ccs-* tmux session；并发 >100 改 event
 """
 from __future__ import annotations
 import os, time, subprocess, sys, fcntl, threading
-from dataclasses import dataclass, field
-from collections import deque
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
@@ -54,25 +52,15 @@ except Exception:  # pragma: no cover - 同目录兜底
     _CORE_QUESTIONS = _mod._CORE_QUESTIONS
     repeat_reminder = _mod.repeat_reminder
 
-# 生命周期加载（ponytail: 复用 survival_monitor 的 _load_role_lifecycles，
-# 通过 realpath 规范化防路径遍历；ondemand 角色不主动唤醒，避免无谓轰击）。
-try:
-    _PIPE_SRC = os.path.realpath(os.path.join(
-        os.path.dirname(__file__), "..", "..", "session-pipeline", "src"))
-    if _PIPE_SRC not in sys.path:
-        sys.path.insert(0, _PIPE_SRC)
-    from routing.survival_monitor import _load_role_lifecycles as _load_role_lifecycles  # type: ignore
-except Exception:  # pragma: no cover - 跨项目路径不可用时回退
-    def _load_role_lifecycles() -> dict[str, str]:
-        return {}
-
-
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
 try:
-    from tmux_ops import _tmux_send  # type: ignore
+    from tmux_ops import _tmux_send, parse_tmux_name  # type: ignore
 except Exception:  # pragma: no cover - 加载失败时降级为不可注入
     def _tmux_send(tmux_name: str, message: str, **_kw) -> None:
         raise RuntimeError("tmux_ops 不可用")
+
+    def parse_tmux_name(name: str):  # type: ignore
+        return (name, 0)
 
 
 def _inject_text(session: str, text: str) -> None:
@@ -163,16 +151,30 @@ class IntentReminderDaemon:
                   file=sys.stderr, flush=True)
             return False
 
-    def _request_ts(self, session: str) -> float:
-        """读该角色最近一次用户请求时刻，无则 0.0。
+    @staticmethod
+    def _role_of(session: str) -> str:
+        """tmux 会话名 → 角色名。复用 tmux_ops.parse_tmux_name 的权威解析。
 
-        来源为 core.send 在 source∈(user,cli) 时写下的注入痕迹。任何异常
-        返回 0.0（宁可不提醒，也不凭推测注入——误报会直接制造空转）。
+        不可用 `role.rsplit('-', 1)[0]`：那只对 `ccs-<role>-<N>` 成立，
+        对角色名**本身含连字符**的会话会把真名砍掉（`ccs-ccs-monitor` → `ccs`、
+        `ccs-codex-dev` → `codex`），与痕迹标题永不相等 → 这些角色静默零注入。
+        parse_tmux_name 只在后缀为纯数字时才剥离实例号。
         """
-        # 会话名 ccs-<role>[-N] → 角色名（多实例归并到同一角色，与其痕迹标题一致）
-        role = session[len("ccs-"):] if session.startswith("ccs-") else session
-        if "-" in role:
-            role = role.rsplit("-", 1)[0]
+        try:
+            return parse_tmux_name(session)[0]
+        except Exception:
+            return session[len("ccs-"):] if session.startswith("ccs-") else session
+
+    @staticmethod
+    def _read_request_traces() -> dict[str, float]:
+        """一次性读回全部用户请求痕迹：{角色名: 最近请求时刻}。
+
+        每轮只读一次 bus，而非每个 session 各读一次——查询与 session 无关
+        （只有标题里的角色名不同）。逐 session 读会形成 N+1 子进程：实测单次
+        read 79ms，10 个会话 × 每 10s = 每分钟 ~4.7s CPU，且 bus_client 每次
+        构造 Blackboard 都会触发全表 FTS 回填。整轮读一次的代价降到 ~0.5s/分。
+        任何异常返回空 dict（宁可不提醒，也不凭推测注入）。
+        """
         try:
             out = subprocess.run(
                 [BUS_CLIENT, "read", "--cat", "code_fix", "--limit", "50", "--json"],
@@ -181,11 +183,22 @@ class IntentReminderDaemon:
             import json
             data = json.loads(out)
             facts = data.get("facts", data) if isinstance(data, dict) else data
-            want = f"[user_intent_reminder] 已注入意图提醒 → {role}"
-            hit = next((f for f in facts if (f.get("title") or "") == want), None)
-            return float((hit or {}).get("timestamp") or 0.0)
+            prefix = "[user_intent_reminder] 已注入意图提醒 → "
+            traces: dict[str, float] = {}
+            for f in facts:
+                title = f.get("title") or ""
+                if not title.startswith(prefix):
+                    continue
+                role = title[len(prefix):].strip()
+                try:
+                    ts = float(f.get("timestamp") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if role and ts > traces.get(role, 0.0):
+                    traces[role] = ts
+            return traces
         except Exception:
-            return 0.0
+            return {}
 
     def _tick(self) -> int:
         """One poll cycle. Returns # reminders pushed."""
@@ -194,18 +207,20 @@ class IntentReminderDaemon:
         # P1 修复：剔除已不存在的 session
         for dead in set(self._states) - live:
             del self._states[dead]
+        # 每轮读一次请求痕迹，供所有 session 复用（避免 N+1 子进程）
+        traces = self._read_request_traces()
         for sess in live:
             st = self._states.setdefault(sess, _SessionState())
-            # lifecycle 过滤：ondemand 角色被动接收信号，idle 是正常态，不主动唤醒
-            # （ponytail: 防止 daemon 对被动角色无谓轰击形成噪声循环）。
-            role_key = sess[len("ccs-"):] if sess.startswith("ccs-") else sess
-            if "-" in role_key:
-                role_key = role_key.rsplit("-", 1)[0]
-            if _load_role_lifecycles().get(role_key, "infinite") == "ondemand":
-                continue
-            req = self._request_ts(sess)
+            role_key = self._role_of(sess)
+            if not traces:
+                continue  # 无任何用户请求 → 零注入（infinite 角色的空闲是正常态）
+            # 有未对齐用户请求时**不做 lifecycle 过滤**：该过滤的意图是"不主动唤醒
+            # 被动角色"，而此刻用户明确找过它、它也确实在 tmux 里跑着——提醒是响应
+            # 用户请求，不是主动唤醒。过滤掉会让"用户问了 qa，qa 永远收不到重复提醒"。
+            # 实证：qa 的 persona 声明 ondemand 但运行时哨兵是 infinite，被静默跳过。
+            req = traces.get(role_key, 0.0)
             if not req:
-                continue  # 无用户请求 → 零注入（infinite 角色的空闲是正常态）
+                continue
             if time.time() - req > self._REQUEST_TTL:
                 continue  # 请求已过期，不再重复提醒
             if req != st.request_ts:

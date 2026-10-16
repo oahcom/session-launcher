@@ -59,14 +59,12 @@ class TestRequestDrivenTrigger(unittest.TestCase):
     def tearDown(self):
         self.daemon._stop.set()
 
-    def _run(self, ticks, injects, req_ts):
-        self.daemon._request_ts = lambda s: req_ts
+    def _run(self, ticks, injects, traces):
+        self.daemon._read_request_traces = staticmethod(lambda: traces)
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \
              patch("ccls_daemon_intent_classifier._inject_text",
                    side_effect=lambda s, t: injects.append(t)), \
-             patch("ccls_daemon_intent_classifier._load_role_lifecycles",
-                   return_value={"engineer": "infinite"}), \
              patch("ccls_daemon_intent_classifier.subprocess.run"), \
              patch("ccls_daemon_intent_classifier.time.monotonic",
                    side_effect=range(0, 10 ** 7, 100)):
@@ -76,20 +74,20 @@ class TestRequestDrivenTrigger(unittest.TestCase):
     def test_no_user_request_injects_nothing(self):
         """無用戶請求 → 零注入（角色空閒是正常態，不得當停滯轟擊）。"""
         injects = []
-        self._run(50, injects, req_ts=0.0)
+        self._run(50, injects, {})
         self.assertEqual(injects, [], "無用戶請求時不得注入任何內容")
 
     def test_expired_request_injects_nothing(self):
         """請求已過 TTL → 不再重複提醒。"""
         injects = []
         stale = time.time() - IntentReminderDaemon._REQUEST_TTL - 100
-        self._run(50, injects, req_ts=stale)
+        self._run(50, injects, {"engineer": stale})
         self.assertEqual(injects, [], "過期請求不應再提醒")
 
     def test_open_request_triggers_reminders_capped(self):
         """存在未對齊請求 → 重複提醒，且不超過單次請求預算。"""
         injects = []
-        self._run(50, injects, req_ts=time.time())
+        self._run(50, injects, {"engineer": time.time()})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
@@ -97,7 +95,7 @@ class TestRequestDrivenTrigger(unittest.TestCase):
     def test_reminder_uses_user_intent_wording(self):
         """前提已由 bus 痕跡確證 → 用用戶要求的原始措辭，不再用「停滯自檢」框架。"""
         injects = []
-        self._run(50, injects, req_ts=time.time())
+        self._run(50, injects, {"engineer": time.time()})
         self.assertTrue(injects, "應有提醒")
         body = injects[0]
         self.assertIn("你收到的是任务", body)
@@ -109,56 +107,126 @@ class TestRequestDrivenTrigger(unittest.TestCase):
         """新一輪用戶請求到達 → 預算重置，可再次提醒。"""
         injects = []
         base = time.time()
-        self._run(50, injects, req_ts=base)
+        self._run(50, injects, {"engineer": base})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS)
-        self._run(50, injects, req_ts=base + 60)  # 新請求
+        self._run(50, injects, {"engineer": base + 60})  # 新請求
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS * 2,
                          "新請求後應可再次提醒（預算重置）")
 
     def test_multiple_sessions_independent(self):
         """多會話獨立跟蹤，互不干擾。"""
         d = self.daemon
-        d._request_ts = lambda s: 0.0
+        d._read_request_traces = staticmethod(lambda: {})
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer", "ccs-pm"]), \
-             patch("ccls_daemon_intent_classifier._inject_text") as inject, \
-             patch("ccls_daemon_intent_classifier._load_role_lifecycles",
-                   return_value={"engineer": "infinite", "pm": "infinite"}):
+             patch("ccls_daemon_intent_classifier._inject_text") as inject:
             d._tick()
             inject.assert_not_called()
 
 
-class TestRequestLookup(unittest.TestCase):
-    """_request_ts：從 bus 的 core.send 注入痕跡取「最近一次用戶請求時刻」。"""
+class TestRoleOf(unittest.TestCase):
+    """_role_of：tmux 會話名 → 角色名，必須保留角色名自身的連字號。
 
-    def _facts(self, role, ts):
-        return {"facts": [{"title": f"[user_intent_reminder] 已注入意图提醒 → {role}",
-                           "timestamp": ts}]}
+    缺陷實證（2026-10-16 Codex 審查 P2）：原用 `role.rsplit('-', 1)[0]`，
+    對角色名含連字號的會話（生產中的 ccs-monitor / codex-dev）會砍掉真名 →
+    與痕跡標題永不相等 → 靜默零注入（無錯誤、無日誌）。
+    """
+
+    def test_plain_role(self):
+        self.assertEqual(IntentReminderDaemon._role_of("ccs-engineer"), "engineer")
+
+    def test_instance_suffix_stripped(self):
+        """實例後綴（純數字）應被剝離，歸併到同一角色。"""
+        self.assertEqual(IntentReminderDaemon._role_of("ccs-pm-2"), "pm")
+
+    def test_hyphenated_role_kept(self):
+        """角色名自帶連字號時必須完整保留。"""
+        self.assertEqual(IntentReminderDaemon._role_of("ccs-ccs-monitor"),
+                         "ccs-monitor")
+        self.assertEqual(IntentReminderDaemon._role_of("ccs-codex-dev"),
+                         "codex-dev")
+
+
+class TestRequestLookup(unittest.TestCase):
+    """_read_request_traces：一次讀回全部角色的「最近一次用戶請求時刻」。"""
+
+    def _facts(self, entries):
+        return {"facts": [{"title": f"[user_intent_reminder] 已注入意图提醒 → {r}",
+                           "timestamp": ts} for r, ts in entries]}
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
-    def test_returns_timestamp_for_role(self, mock_run):
+    def test_maps_all_roles(self, mock_run):
         import json
         mock_run.return_value = MagicMock(
             spec=CompletedProcess, returncode=0,
-            stdout=json.dumps(self._facts("engineer", 12345.0)))
-        d = IntentReminderDaemon(interval=0.01)
-        self.assertEqual(d._request_ts("ccs-engineer"), 12345.0)
+            stdout=json.dumps(self._facts([("engineer", 111.0), ("qa", 222.0)])))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(),
+                         {"engineer": 111.0, "qa": 222.0})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
-    def test_returns_zero_when_no_trace(self, mock_run):
-        """無痕跡 → 0.0（寧可不提醒，也不憑推測注入）。"""
+    def test_keeps_latest_per_role(self, mock_run):
+        """同角色多條痕跡 → 取最新（舊請求不應覆蓋新請求）。"""
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps(self._facts([("qa", 222.0), ("qa", 999.0)])))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {"qa": 999.0})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_ignores_non_trace_facts(self, mock_run):
+        """非痕跡條目（其他 code_fix）不得被當成請求。"""
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[other] 修復完成", "timestamp": 1.0}]}))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_returns_empty_when_no_trace(self, mock_run):
+        """無痕跡 → {}（寧可不提醒，也不憑推測注入）。"""
         import json
         mock_run.return_value = MagicMock(
             spec=CompletedProcess, returncode=0, stdout=json.dumps({"facts": []}))
-        d = IntentReminderDaemon(interval=0.01)
-        self.assertEqual(d._request_ts("ccs-engineer"), 0.0)
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run",
            side_effect=OSError("bus 不可用"))
-    def test_bus_failure_returns_zero(self, mock_run):
-        """bus 故障 → 0.0，不拋錯、不誤報。"""
+    def test_bus_failure_returns_empty(self, mock_run):
+        """bus 故障 → {}，不拋錯、不誤報。"""
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_bad_timestamp_skipped(self, mock_run):
+        """timestamp 非數值 → 跳過該條，不讓髒數據炸整批。"""
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": "not-a-number"}]}))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {})
+
+
+class TestSingleBusReadPerTick(unittest.TestCase):
+    """每輪只讀一次 bus（回歸：曾每 session 各讀一次 → N+1 子進程）。
+
+    缺陷實證（2026-10-16 Codex 審查 P2）：實測單次 read 79ms，10 會話 × 每 10s
+    = 每分鐘 ~4.7s CPU，且每次構造 Blackboard 觸發全表 FTS 回填。
+    """
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    @patch("ccls_daemon_intent_classifier._inject_text")
+    @patch("ccls_daemon_intent_classifier._tmux_sessions")
+    def test_bus_read_once_for_many_sessions(self, mock_tmux, mock_inject, mock_run):
+        import json
+        mock_tmux.return_value = ["ccs-a", "ccs-b", "ccs-c", "ccs-d"]
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0, stdout=json.dumps({"facts": []}))
         d = IntentReminderDaemon(interval=0.01)
-        self.assertEqual(d._request_ts("ccs-engineer"), 0.0)
+        d._tick()
+        self.assertEqual(mock_run.call_count, 1,
+                         f"4 個會話應只讀 1 次 bus，實際 {mock_run.call_count} 次")
 
 
 class TestReminderQuality(unittest.TestCase):
