@@ -124,6 +124,48 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
 
+    def test_cap_constant_matches_class_constant(self):
+        """_MAX_REMINDERS_CAP（模块级，供 _load_states clamp）必须与
+        IntentReminderDaemon._MAX_REMINDERS 同值。
+
+        两者分居类内外，改一处忘另一处会让 clamp 边界与运行时预算脱钩：
+        cap 偏小 → 重载后预算被提前掐断；偏大 → 脏条目能领到超出契约的额度。
+        """
+        self.assertEqual(
+            _mod._MAX_REMINDERS_CAP, IntentReminderDaemon._MAX_REMINDERS,
+            "模組級 cap 與類內 _MAX_REMINDERS 已漂移")
+
+    def test_corrupt_entry_fails_closed_not_open(self):
+        """單條髒數據 → 按「已耗盡」處理，不得退回滿額預算。
+
+        缺陷實證（2026-10-17 三方審查 P1）：原實現遇解析失敗直接 continue，
+        該會話在內存中不存在 → 下輪 setdefault 新建 → remind_count=0 →
+        重新領滿 3 次提醒，與「落盤防重複提醒」的初衷正好相反（fail-open）。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(_mod, "STATE_FILE", Path(d) / "state.json"):
+                _mod.STATE_FILE.write_text(json.dumps({
+                    "ccs-qa": {"request_ts": 1.0, "remind_count": "not-a-number"},
+                }), encoding="utf-8")
+                states = _mod._load_states()
+        self.assertIn("ccs-qa", states, "臟條目不得被直接丟棄（否則退回滿額預算）")
+        self.assertEqual(states["ccs-qa"].remind_count, _mod._MAX_REMINDERS_CAP,
+                         "臟條目應按已耗盡處理（fail-closed）")
+
+    def test_out_of_range_count_is_clamped(self):
+        """remind_count 越界（負數/超大）→ clamp 到 [0, cap]。"""
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(_mod, "STATE_FILE", Path(d) / "state.json"):
+                _mod.STATE_FILE.write_text(json.dumps({
+                    "ccs-a": {"request_ts": 1.0, "remind_count": -5},
+                    "ccs-b": {"request_ts": 1.0, "remind_count": 9999},
+                }), encoding="utf-8")
+                states = _mod._load_states()
+        self.assertEqual(states["ccs-a"].remind_count, 0, "負數應 clamp 到 0")
+        self.assertEqual(states["ccs-b"].remind_count, _mod._MAX_REMINDERS_CAP,
+                         "超大值應 clamp 到 cap")
+
+
     def test_busy_role_defers_reminder_without_spending_budget(self):
         """角色生成中 → 不注入、不計預算（下輪重試）。
 
@@ -590,11 +632,20 @@ class TestStatePersistence(_HermeticStateFile):
                          "monotonic 值不得落盤")
 
     def test_one_dirty_entry_does_not_clear_whole_table(self):
-        """單條髒數據只丟該條，不得清空整表預算。"""
+        """單條髒數據不得清空整表預算，且不得退回滿額預算。
+
+        原斷言為 assertNotIn("bad", st)（直接丟棄臟條目）。2026-10-17 三方審查
+        指出這條路徑是 fail-open 的：條目被丟 → 內存中不存在該會話 → 下輪
+        setdefault 新建 _SessionState → remind_count=0 → 重新領滿 3 次提醒，
+        與落盤防重複提醒的初衷正好相反。改為按 cap 保守處理（fail-closed）：
+        最壞少提醒一次，不會多提醒。"good" 不因鄰條臟數據而丟失的原意不變。
+        """
         _mod.STATE_FILE.write_text(json.dumps({
             "good": {"request_ts": 1.0, "remind_count": 1},
             "bad": {"request_ts": None, "remind_count": None},
         }), encoding="utf-8")
         st = _mod._load_states()
-        self.assertIn("good", st, "合法條目不得因鄰條髒數據而丟失")
-        self.assertNotIn("bad", st, "髒條目應被跳過")
+        self.assertIn("good", st, "合法條目不得因鄰條臟數據而丟失")
+        self.assertEqual(st["good"].remind_count, 1, "合法條目的預算應原樣保留")
+        self.assertEqual(st["bad"].remind_count, _mod._MAX_REMINDERS_CAP,
+                         "臟條目應按已耗盡處理（fail-closed），而非丟棄後重獲滿額")

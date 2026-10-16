@@ -24,7 +24,7 @@ User spec:
 ponytail: 轮询 10s，覆盖 ~50 个 ccs-* tmux session；并发 >100 改 event-driven。
 """
 from __future__ import annotations
-import json, os, re, time, subprocess, sys, fcntl, threading
+import json, os, re, tempfile, time, subprocess, sys, fcntl, threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +35,10 @@ PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 # 内存态 _states 随之清零 → 同一条痕迹再次领满额预算，实测每 ~3 分钟复现一次
 # "预算耗尽(3次)"（2026-10-17 00:04/00:06/00:09/00:11）。落盘后重载可续算。
 STATE_FILE = Path(HERMES_HOME) / "run" / "intent_reminder_state.json"
+# 预算上限的模块级常量（_load_states 需要在类外引用它做 clamp，
+# 而 IntentReminderDaemon._MAX_REMINDERS 在类内、定义于下方）。
+# 两者必须同值 —— 有测试断言其一致性。
+_MAX_REMINDERS_CAP = 3
 
 
 # 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent /
@@ -133,15 +137,20 @@ def _load_states() -> dict[str, _SessionState]:
             # 逐条 try：单条脏数据（remind_count=null/dict、request_ts 非数）只丢该条。
             # 若让它抛到外层 except，整表预算会被清空 —— 所有角色重新获得满额预算，
             # 正是本文件反复防的"预算空烧"。
+            # 解析失败的那条**按已耗尽处理**而非直接丢弃：丢弃会让该会话在内存里
+            # 不存在，下轮 setdefault 新建 _SessionState → remind_count=0 → 满额预算，
+            # 与"防重复提醒"的落盘初衷正好相反（fail-open）。写 cap 是保守方向：
+            # 最坏少提醒一次，不会多提醒。
             try:
+                _rc = int(v.get("remind_count", 0))
                 out[k] = _SessionState(
                     request_ts=float(v.get("request_ts", 0.0)),
                     last_remind_ts=0.0,  # 见 docstring：monotonic 不可跨重启继承
-                    remind_count=int(v.get("remind_count", 0)),
+                    remind_count=max(0, min(_rc, _MAX_REMINDERS_CAP)),
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
             except (TypeError, ValueError):
-                continue
+                out[k] = _SessionState(remind_count=_MAX_REMINDERS_CAP)
         if raw and not out:
             # 整表全脏但没触到外层 except → 静默空表会让预算追踪无声消失。
             # 文件格式漂移时没有这条日志就无迹可查。
@@ -163,13 +172,25 @@ def _save_states(states: dict[str, _SessionState]) -> None:
     """
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(
-            {k: {"request_ts": s.request_ts,
-                 "remind_count": s.remind_count}
-             for k, s in states.items()},
-            ensure_ascii=False), encoding="utf-8")
-        tmp.replace(STATE_FILE)
+        # 唯一 tmp 名：两个进程（或 systemd 重拉窗口内新旧实例重叠）同写同一
+        # `.tmp` 路径会互相覆盖，最终 replace 落盘的是其中一次的完整快照——
+        # 不撕裂，但丢失另一次更新，表现为随机回退预算。mkstemp 保证独占。
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(STATE_FILE.parent), prefix=STATE_FILE.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(
+                    {k: {"request_ts": s.request_ts,
+                         "remind_count": s.remind_count}
+                     for k, s in states.items()},
+                    ensure_ascii=False))
+            os.replace(tmp_name, STATE_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         print(f"[ccls_daemon] 预算状态写入失败: {e}", file=sys.stderr, flush=True)
 

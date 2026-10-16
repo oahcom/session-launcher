@@ -189,18 +189,35 @@ _MCP_SERVER_REGISTRY: dict[str, dict] = {}
 
 
 def _load_mcp_registry() -> dict[str, dict]:
-    """扫描全局 settings.json + 所有插件 .mcp.json，构建 MCP server 注册表。"""
+    """扫描 ~/.claude.json + settings.json + 所有插件 .mcp.json，构建 MCP server 注册表。
+
+    WHY 两个文件都要读：`claude mcp add --scope user` 写 ~/.claude.json，
+    而 settings.json 是另一份配置。只读后者会让"已注册"的 server 在此处
+    查不到 → 被 _write_mcp_settings 静默过滤成空，角色拿不到工具
+    （实测 31/31 角色声明 mcp_servers 却全部拿到空表）。
+    settings.json 后读，保持其既有优先语义。
+    """
     registry: dict[str, dict] = {}
-    # 1. 全局 settings.json 的 mcpServers
+    # json 在模块顶部已导入（行 129）；此处不再重复导入别名
+    # 1. ~/.claude.json（claude mcp add 的落点）
+    cj = Path.home() / ".claude.json"
+    if cj.exists():
+        try:
+            ccfg = json.loads(cj.read_text(encoding="utf-8"))
+            # `or {}`：key 存在但值为 JSON null 时，.get(k, {}) 返回 None
+            # → registry.update(None) 抛 TypeError，整个注册表加载失败。
+            registry.update(ccfg.get("mcpServers") or {})
+        except Exception as e:
+            _log.warning("~/.claude.json MCP 加载失败: %s", e)
+    # 2. 全局 settings.json 的 mcpServers（覆盖同名条目）
     gs = Path.home() / ".claude" / "settings.json"
     if gs.exists():
         try:
-            import json as _json
-            gcfg = _json.loads(gs.read_text(encoding="utf-8"))
-            registry.update(gcfg.get("mcpServers", {}))
+            gcfg = json.loads(gs.read_text(encoding="utf-8"))
+            registry.update(gcfg.get("mcpServers") or {})
         except Exception as e:
             _log.warning("全局 settings.json MCP 加载失败: %s", e)
-    # 2. 扫描所有插件目录下的 .mcp.json（marketplace 注册 + 缓存）
+    # 3. 扫描所有插件目录下的 .mcp.json（marketplace 注册 + 缓存）
     for base in [Path.home() / ".claude/plugins/marketplaces",
                  Path.home() / ".claude/plugins/cache"]:
         if not base.is_dir():
@@ -241,11 +258,19 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
     settings_path = claude_dir / "settings.json"
     gs = Path.home() / ".claude" / "settings.json"
     cfg = json.loads(gs.read_text(encoding="utf-8")) if gs.exists() else {}
-    mcp_names = (role_def or {}).get("mcp_servers", [])
+    # `or []`：persona 写 "mcp_servers": null 时 .get(k, []) 返回 None
+    # → 下方推导式迭代 None 抛 TypeError，角色启动失败。
+    mcp_names = (role_def or {}).get("mcp_servers") or []
     # 继承全局 mcpServers（如 hex-line 等基础设施），再按角色增补
-    base_mcp = cfg.get("mcpServers", {})
+    base_mcp = cfg.get("mcpServers") or {}
     role_mcp = {n: _MCP_SERVER_REGISTRY[n] for n in mcp_names if n in _MCP_SERVER_REGISTRY}
     base_mcp.update(role_mcp)
+    # 声明了却不在注册表 → 静默过滤会让角色拿到空工具集而无从察觉。
+    # 实测 31/31 角色声明 hex-line，因注册表为空全部落空（R78 根因 A）。
+    _missing = [n for n in mcp_names if n not in _MCP_SERVER_REGISTRY]
+    if _missing:
+        _log.warning("角色 %s 声明的 MCP server 未注册，将不可用: %s",
+                     (role_def or {}).get("name", "?"), _missing)
     cfg["mcpServers"] = base_mcp
     # 权限：角色级 allowlist 替换全局 bypass
     # ponytail: mcp_tools 中的工具级限制尚未映射到 permissions.allow，
@@ -377,9 +402,13 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
             if sys.stdin and sys.stdin.isatty():
                 os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
             else:
+                # stderr：stdout 是 pipe 时块缓冲，这两行要到进程退出才 flush，
+                # journalctl 里会排到「已退出」之后 —— 实测骗过一次读日志的人，
+                # 把 12 分钟前的"已在运行"排到崩溃瞬间。
                 print(f"🎯 {tmux_name} 已在运行；非交互环境未 attach"
-                      f"（进入请执行 tmux attach -t {tmux_name}）")
-        print(f"📋 {tmux_name} 已在运行")
+                      f"（进入请执行 tmux attach -t {tmux_name}）",
+                      file=sys.stderr)
+        print(f"📋 {tmux_name} 已在运行", file=sys.stderr)
         return {"success": True, "role": o.role, "tmux_session": tmux_name,
                 "instance_id": o.instance_id}
 
@@ -550,7 +579,11 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
         "while true; do "
         "claude --bare --model 9router_hermes"
         f" {_PERM_FLAGS}"
-        " --effort max; "
+        # --effort high 而非 max：9router 回退链含 oc/big-pickle 节点，该节点
+        # 只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
+        # 实测（2026-10-16）同一参数下 big-pickle+max→400，+high→200。
+        # 回退落点与角色无关，故在源头统一降档，而非按角色配置。
+        " --effort high; "
         "echo '[CCS] Task completed, waiting for next task...' >&2; "
         "sleep 3; "
         "done"
@@ -694,17 +727,13 @@ def _start_monitoring_threads(role: str, tmux_name: str, partners: list[str],
                               instance_id: int, detach: bool, auto_restart: bool,
                               feed_cat: str, drive: str, bus_track: str,
                               bus_timeout: int) -> None:
-    """步骤 9-10：watchdog/tracker/feed listener/feed 子进程编排。"""
-    # 9. 启动守护线程 + feed listener（仅 detach 模式）
+    """步骤 9-10：watchdog/tracker/feed 子进程编排。"""
+    # 9. 启动守护线程（仅 detach 模式）
     if detach:
         for p in partners:
             start_watchdog(role, p, auto_restart=auto_restart, interval=30,
                           instance_id=instance_id)
             print(f"✅ 守护线程: 监控 {p} 存活")
-
-        if feed_cat:
-            _start_feed_listener(role, feed_cat)
-            print(f"✅ feed listener: 实时监控 {feed_cat} 分类")
 
     # 9.1 bus 死锁追踪：detach 模式或已指定/推导 bus_track 时启动。
     # systemd 路径 (ccs_monitor.py 长驻监控进程, detach=False) 也生效 → 修复 bus_age=-1。
@@ -869,6 +898,7 @@ def send(role: str, message: str, source: str = "",
     # 包裹 try/except：提醒注入失败绝不可吞掉原始消息（P1a 回归防护）
     send_message = message
     injected = False
+    _intent = None  # 仅在注入成功时有值；与 injected 同步初始化，避免未定义引用
     if source in ("user", "cli"):
         try:
             # record_intent 曾在此 import 但全库无定义（连 WIP 也没有），且
@@ -879,6 +909,9 @@ def send(role: str, message: str, source: str = "",
             from user_intent_reminder import inject_reminder
             send_message = inject_reminder(message, source)
             injected = send_message != message
+            # 复用 inject_reminder 内部的同一份判定（函数属性），不重算：
+            # 重算会拿已被提醒头包裹的 send_message，尾部不再是原始问句。
+            _intent = getattr(inject_reminder, "intent", None)
         except Exception as _e:  # noqa: BLE001 - 注入失败绝不可丢失用户原始消息
             send_message = message  # 降级：原样投递
             _log.warning("user_intent_reminder 注入失败，降级原样投递: %s", _e)
@@ -889,7 +922,9 @@ def send(role: str, message: str, source: str = "",
                 subprocess.run(
                     [str(BUS_CLIENT), "write", "code_fix",
                      f"[user_intent_reminder] 已注入意图提醒 → {role}",
-                     "--evidence", f"source={source} role={role}",
+                     "--evidence",
+                     f"source={source} role={role}"
+                     + (f" intent={_intent.value}" if _intent else ""),
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
             except Exception as _be:  # noqa: BLE001
@@ -1025,7 +1060,7 @@ def get_config_value(key_path: str):
     return _cfg_get_value(key_path)
 
 
-from ops.runner import dashboard, _start_feed_listener
+from ops.runner import dashboard
 
 from ops.workspace import register, workspace_create, workspace_list
 

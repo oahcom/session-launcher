@@ -65,6 +65,32 @@ def test_no_role_def_ok():
     assert isinstance(out.get("mcpServers", {}), dict)
 
 
+def test_mcp_servers_null_does_not_crash():
+    """mcp_servers 为 JSON null 时不得崩溃（三方审查 P1 回归）。
+
+    `.get("mcp_servers", [])` 在 key 存在但值为 null 时返回 None，
+    迭代 None 抛 TypeError → 角色启动失败。用 `or []` 兼容。
+    """
+    ws = Path("/tmp/_mcp_test_null")
+    ws.mkdir(parents=True, exist_ok=True)
+    core._write_mcp_settings(ws, {"name": "test", "mcp_servers": None})
+    out = json.loads((ws / ".claude" / "settings.json").read_text())
+    assert isinstance(out.get("mcpServers"), dict)
+
+
+def test_registry_loads_with_null_mcp_servers(tmp_path, monkeypatch):
+    """配置文件 mcpServers 为 null 时注册表仍能加载（三方审查 P1 回归）。
+
+    `registry.update(ccfg.get("mcpServers", {}))` 遇 null 会 update(None)
+    → TypeError，整张注册表（含 hex-line）加载失败。
+    """
+    cj = tmp_path / ".claude.json"
+    cj.write_text(json.dumps({"mcpServers": None}), encoding="utf-8")
+    monkeypatch.setattr(core.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(core, "_MCP_SERVER_REGISTRY", {})
+    assert core._load_mcp_registry() == {}  # 不抛异常即为通过
+
+
 if __name__ == "__main__":
     tests = [n for n in dir() if n.startswith("test_")]
     passed, failed = 0, 0
