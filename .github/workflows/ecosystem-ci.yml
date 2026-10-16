@@ -33,9 +33,13 @@ jobs:
 
       - name: Run project tests
         run: |
-          cd session-launcher && python3 -m pytest tests/test_signals.py tests/test_check_shell.py tests/test_mcp_settings.py -q --timeout=60
-          cd hermes-session-roles && python3 tests/test_registry.py && python3 tests/test_validate_roles_reverse.py
-          cd session-pipeline && PYTHONPATH=src python3 -m pytest tests/test_router.py -v --timeout=30
+          # 跑全量套件，不手列文件名：手列清单会静默漏掉新增测试（DR-008「清单手抄
+          # 代码」——曾漏掉 tests/unit/test_intent_classifier.py 等整个 unit 目录）。
+          # session-pipeline 的 contract_updater 等用例依赖同级 hermes-session-roles
+          # 目录，本 job 已 clone 到同级，故可跑全量。
+          cd session-launcher && python3 -m pytest tests/ -q --timeout=60
+          cd hermes-session-roles && python3 -m pytest tests/ -q
+          cd session-pipeline && PYTHONPATH=src python3 -m pytest tests/ -q --timeout=60
 
       - name: Upload health report
         uses: actions/upload-artifact@v4
