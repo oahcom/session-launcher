@@ -439,7 +439,19 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
             end_idx = content.find(end_marker, start_idx)
             if end_idx >= 0:
                 end_idx += len(end_marker)
-                before = content[:start_idx].rstrip()
+                # 前导会随每次注入累积上一版副本（只替换块、不清理块外）。
+                # 整段行都在新块内的 ## 段即历史残留，删；标记块先抽出保护。
+                _bl = {ln.strip() for ln in knowledge_block.splitlines() if ln.strip()}
+                _parts = re.split(r"(<!-- (?:WORKSPACE_SYS|BH_KNOWLEDGE)[^>]*-->.*?<!-- /?(?:WORKSPACE_SYS|BH_KNOWLEDGE)[^>]*-->)",
+                                  content[:start_idx], flags=re.S)
+                before = "".join(
+                    part if i % 2 else "".join(
+                        s for s in re.split(r"(?m)^(?=## )", part)
+                        if not all(ln.strip() in _bl for ln in s.splitlines() if ln.strip()))
+                    for i, part in enumerate(_parts)).rstrip()
+
+
+
                 after = content[end_idx:].lstrip()
                 new_content = before + knowledge_block + after
             else:

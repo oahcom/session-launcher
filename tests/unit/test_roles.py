@@ -767,5 +767,25 @@ class TestValidateCcsExecution:
         # 不应抛异常
 
 
+    def test_inject_strips_duplicate_preamble_segments(self, tmp_path):
+        """P18: 注入时清理块外重复 ## 段，保留 WORKSPACE_SYS 标记块"""
+        import routing.roles as _roles
+        ws = tmp_path / "engineer"
+        ws.mkdir()
+        cm = ws / "CLAUDE.md"
+        cm.write_text(
+            "# 头部\n\n## 身份\n- 老副本内容\n\n## 独有段\n- 只在前导\n\n"
+            "<!-- WORKSPACE_SYS:START -->\n> launcher 管理\n<!-- WORKSPACE_SYS:END -->\n"
+            "<!-- KNOWLEDGE:START -->\n旧块\n<!-- KNOWLEDGE:END -->\n",
+            encoding="utf-8")
+        with patch.object(_roles, "WORKSPACES", tmp_path), \
+             patch.object(_roles, "_resolve_ws_paths", return_value=[cm]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 身份\n- 老副本内容\n"):
+            _roles.inject_role_knowledge_into_workspace({"name": "engineer", "title": "E"})
+        out = cm.read_text(encoding="utf-8")
+        assert "WORKSPACE_SYS:START" in out, "标记块必须保留"
+        assert out.count("- 老副本内容") == 1, "重复段应被清理"
+        assert "- 只在前导" in out, "独有段必须保留"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
