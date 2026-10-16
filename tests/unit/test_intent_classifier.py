@@ -89,6 +89,7 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
 
     def tearDown(self):
         self.daemon._stop.set()
+        super().tearDown()  # 停止 STATE_FILE patch + 清理临时目录
 
     def _run(self, ticks, injects, traces):
         self.daemon._read_request_traces = staticmethod(lambda: traces)
@@ -365,6 +366,7 @@ class TestDeliveryFailureHandling(_HermeticStateFile):
     def tearDown(self):
         self._busy_patch.stop()
         self.daemon._stop.set()
+        super().tearDown()  # 停止 STATE_FILE patch + 清理临时目录
 
     @patch("ccls_daemon_intent_classifier._tmux_sessions",
            return_value=["ccs-engineer"])
@@ -507,12 +509,11 @@ class TestEmptyPollReclaimsEventually(_HermeticStateFile):
 
     def setUp(self):
         super().setUp()  # 激活 _HermeticStateFile 的状态隔离
-        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
-        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
         self.daemon = IntentReminderDaemon(interval=0.01)
 
     def tearDown(self):
         self.daemon._stop.set()
+        super().tearDown()  # 停止 STATE_FILE patch + 清理临时目录
 
     def test_single_empty_poll_keeps_state(self):
         """單輪空（抖動）→ 狀態保留，預算不被重置。"""

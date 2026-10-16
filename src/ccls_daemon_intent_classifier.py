@@ -142,6 +142,11 @@ def _load_states() -> dict[str, _SessionState]:
                 )
             except (TypeError, ValueError):
                 continue
+        if raw and not out:
+            # 整表全脏但没触到外层 except → 静默空表会让预算追踪无声消失。
+            # 文件格式漂移时没有这条日志就无迹可查。
+            print(f"[ccls_daemon] 预算状态 {len(raw)} 条全部解析失败（文件格式漂移？）",
+                  file=sys.stderr, flush=True)
         return out
     except Exception as e:
         if STATE_FILE.exists():  # 存在却读不出 = 真损坏，留日志；不存在是首启，正常
