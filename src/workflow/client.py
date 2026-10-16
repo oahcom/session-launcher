@@ -458,53 +458,6 @@ class WorkflowClient:
 
     # ── 子工作流 ──
 
-    # 角色→默认子工作流模板映射
-    _ROLE_TEMPLATE_MAP = {
-        "engineer": "dev_implement",
-        "pg": "pg_implement",
-        "qa": "qa_test_execute",
-        "reviewer": "reviewer_pr_review",
-        "writer": "writer_document",
-        "pm": "pm_requirements",
-        "product_architect": "architect_full_design",
-        "scout": "scout_research_cycle",
-        "coordinator": "coordinator_dispatch",
-        "devops": "devops_deploy_execute",
-        "security_auditor": "security_audit_scan",
-        "knowledge_curator": "knowledge_sync",
-        "lr": "lr_tech_decision",
-        "maintainer": "maintainer_health_monitor",
-        "closer": "closer_close_loop",
-        "optimizer": "developer_implementation",
-    }
-
-    def spawn_child(self, parent_wf_id: str, child_assignee: str,
-                    child_template: str = "", title: str = "",
-                    context: dict = None) -> str:
-        """从父工作流创建子工作流（handoff 场景）。
-        父步骤完成后自动把结果传给下一个角色执行。
-        若 child_template 未指定，按角色自动选默认模板。"""
-        parent = self.get(parent_wf_id)
-        if not parent:
-            raise ValueError(f"parent {parent_wf_id} 不存在")
-        parent_task = self.get_task(parent["task_id"]) if parent.get("task_id") else {}
-        title = title or f"子任务: {parent_task.get('title', parent_wf_id)}"
-        if not child_template:
-            child_template = self._ROLE_TEMPLATE_MAP.get(child_assignee, "dev_implement")
-        child_task_id, child_wf_id = self.create_task_v2(
-            title=title, assignee=child_assignee,
-            template_id=child_template, initiator_role=self.role,
-            description=f"parent={parent_wf_id} summary={parent.get('step_results','')[:200]}"
-        )
-        self._conn.execute(
-            "UPDATE workflow_instances SET parent_wf_id=?, subflow_source_step_id=? WHERE instance_id=?",
-            (parent_wf_id, parent.get("current_step_id", ""), child_wf_id)
-        )
-        self._conn.commit()
-        self._log(wf_id=child_wf_id, action="spawned",
-                  detail=f"parent={parent_wf_id}, child={child_wf_id}, target={child_assignee}")
-        return child_wf_id
-
     # ── Kanban ──
 
     def kanban_board(self) -> list[dict]:
