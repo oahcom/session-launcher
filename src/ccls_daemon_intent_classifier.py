@@ -28,13 +28,11 @@ from pathlib import Path
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 BUS_CLIENT = os.path.join(HERMES_HOME, "scripts", "bus_client.py")
-# 漂移告警时效：检测器每 3600s 重跑一次（routing_daemon.DRIFT_INTERVAL）。
-# 关键：不再漂移的角色【不会被更新】，其旧行的 ts 停留在最后一次漂移时刻，
-# 因此 TTL 必须【略大于一个检测周期】—— 否则本轮刚报的告警会在下轮检测前
-# 就被判过期；取 1.5 倍既覆盖调度抖动，又能在「上轮报过、本轮没报」后
-# 于约 1.5~2.5 小时内自然过期。实测：detect_drift 修复时间窗后 scout 已
-# 不再漂移，但其 17:15 的旧告警仍会持续注入 pane。
-_DRIFT_ALERT_TTL = 5400  # 1.5 × DRIFT_INTERVAL
+# 漂移告警判定改为「以最新一轮检测结果为准」—— 见 _recent_violations_summary，
+# 读 detector 每轮写出的 [role_drift_summary] 全量快照。
+# 曾试过时间衰减 TTL（1.5 × DRIFT_INTERVAL），但治标不治本：已恢复的角色在
+# TTL 到期前仍被注入幽灵告警，且 TTL 取值无法同时满足「不漏报本轮」与
+# 「尽快清掉上轮」，故弃用。
 PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 
 
@@ -182,17 +180,25 @@ class IntentReminderDaemon:
             # （partner.py:210）。直接取 facts；非 dict 时回退为自身。
             _data = json.loads(out)
             facts = _data.get("facts", _data) if isinstance(_data, dict) else _data
-            # 时效门：检测器每小时重跑，不再漂移的角色【不会覆写】其旧告警，
-            # 旧条会长期留在最近 30 条内并被反复注入（幽灵告警）。
-            # 实测 scout 在时间窗修复后已不再漂移，但其 0.9h 前的旧告警仍会被注入。
-            # 此处只认最近一轮检测周期（2×DRIFT_INTERVAL=2h）内的告警。
-            _cutoff = time.time() - _DRIFT_ALERT_TTL
+            # 以最新一轮检测结果为准：detector 每轮写一条固定标题的全量快照
+            # （[role_drift_summary]，bus ON CONFLICT(t) 保证只留最新），
+            # 其 evidence.drifted 列出【本轮仍漂移的角色】。
+            # 角色不在名单内 = 已恢复 → 不注入。原实现直接取最近一条 role_drift
+            # 即注入，不看该角色是否仍在漂移，导致已恢复角色被反复注入幽灵告警
+            # （实测 scout/pm/engineer 于 17:26 修复后旧告警仍持续注入）。
+            _sum = next((f for f in facts
+                         if (f.get("title") or "").startswith("[role_drift_summary]")), None)
+            try:
+                _drifted = set(json.loads((_sum or {}).get("evidence") or "{}").get("drifted") or [])
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                _drifted = None  # 快照缺失/损坏 → 无法判定，退回原行为（宁多报不漏报）
             hits = [f for f in facts
                     if "role_drift" in (f.get("tags") or "")
-                    and f.get("title", "").startswith(f"[role_drift] {role} ")
-                    and float(f.get("timestamp") or 0) >= _cutoff]
+                    and (f.get("title") or "").startswith(f"[role_drift] {role} ")]
             if not hits:
                 return ""
+            if _drifted is not None and role not in _drifted:
+                return ""  # 本轮快照未列该角色 → 已恢复，不注入
             last = hits[0]["title"]
             entries = last.split(":", 1)[-1].strip()
             return (f"⚠️ 监测到越界操作统计（来自 conversation_monitor）："
