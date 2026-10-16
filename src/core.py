@@ -76,9 +76,23 @@ def _save_send_fail_streak(streak: dict[str, int]) -> None:
     """原子写入持久化的 send 失败连续计数。"""
     try:
         _SEND_FAIL_STREAK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _SEND_FAIL_STREAK_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(streak, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(_SEND_FAIL_STREAK_FILE)
+        # 唯一 tmp 名（同 ccls_daemon 的同源修复）：send() 由 pipeline 经 subprocess
+        # 并发调用，固定 `.tmp` 路径会让两个进程交错写同一文件 → 落盘可能是
+        # 撕裂的 JSON → _load_send_fail_streak 静默返回 {} → 三连败计数丢失，
+        # 红线 3 的 3 连败门槛失效（消息被静默丢弃而无告警）。
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(_SEND_FAIL_STREAK_FILE.parent),
+            prefix=_SEND_FAIL_STREAK_FILE.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(streak, ensure_ascii=False))
+            os.replace(tmp_name, _SEND_FAIL_STREAK_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
 
@@ -130,6 +144,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import subprocess
 import sys
 import time
