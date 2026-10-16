@@ -295,21 +295,25 @@ class TestForbiddenList:
         assert "部署" in result
         assert "写代码" not in result  # pg 允许写代码
 
-    def test_unknown_role_uses_default_items(self):
-        """P5b: 未知角色 → 默认列表"""
-        import routing.roles as _roles
-        result = _roles._forbidden_list("unknown")
-        assert "跑测试" in result
-        assert "启动 CCS" in result
+    def test_unknown_role_returns_empty(self):
+        """P5b: 未定义角色 → 空串（不再套用通用默认值）
 
-    def test_unknown_role_name_no_display(self):
-        """P5c: 显示名缺失时回退到 key 本身"""
+        旧行为对未知角色返回 [run_tests, deploy, ...]，而 engineer/devops 等
+        本就需要跑测试/部署，导致 workspace 里被写入与其职责矛盾的禁区行。
+        未定义即不声明，职责红线由 base.md + persona constraints 承担。
+        """
+        import routing.roles as _roles
+        assert _roles._forbidden_list("unknown") == ""
+        assert _roles._forbidden_list("engineer") == ""
+        assert _roles._forbidden_list("devops") == ""
+
+    def test_display_name_fallback(self):
+        """P5c: 显示名缺失时回退到 key 本身（对已定义角色生效）"""
         import routing.roles as _roles
         original = dict(_roles._FORBIDDEN_DISPLAY)
         _roles._FORBIDDEN_DISPLAY = {}
         try:
-            result = _roles._forbidden_list("unknown")
-            assert result == "run_tests、edit_config、deploy、start_ccs、edit_persona_json"
+            assert _roles._forbidden_list("qa") == "write_code、edit_config、deploy、edit_persona_json"
         finally:
             _roles._FORBIDDEN_DISPLAY.clear()
             _roles._FORBIDDEN_DISPLAY.update(original)
@@ -377,11 +381,22 @@ class TestActionTemplates:
         assert "PartnerClient" not in result
 
     def test_no_output_targets_minimal(self):
-        """P7d: 无产出消费 → 最小输出"""
+        """P7d: 无产出消费 → 最小输出；未定义禁区的角色不输出该行
+
+        旧断言 `assert "禁区" in result` 锁的是「未定义也套用通用默认值」的旧行为——
+        那条默认值曾把「跑测试/部署」写进 engineer/devops 的 workspace，与其职责矛盾。
+        """
         import routing.roles as _roles
         role = {"name": "minimal", "output_targets": [], "input_signals": []}
         result = _roles._action_templates(role)
-        assert "禁区" in result
+        assert "动作模板" in result
+        assert "禁区" not in result  # 未定义 → 不声明
+
+    def test_defined_role_keeps_forbidden(self):
+        """P7e: 已定义禁区的角色 → 仍输出该行"""
+        import routing.roles as _roles
+        role = {"name": "qa", "output_targets": [], "input_signals": []}
+        assert "禁区" in _roles._action_templates(role)
 
 
 # ===================================================================

@@ -181,10 +181,18 @@ def _invalidate_role_cache() -> None:
         _LOADED_ALL_ROLES = None
 
 def _forbidden_list(role_name: str) -> str:
-    items = _FORBIDDEN_MAP.get(
-        role_name,
-        ["run_tests", "edit_config", "deploy", "start_ccs", "edit_persona_json"]
-    )
+    """该角色的追加禁区；未定义则返回空串。
+
+    WHY 无定义不再套用通用默认值：_FORBIDDEN_MAP 只覆盖 4 个角色，其余落到旧默认
+    [run_tests, deploy, ...]。这些角色本就有各自职责——engineer（开发工程师）需要
+    跑测试、devops（运维工程师）的职责就是部署——通用默认值与 persona 的
+    constraints（「遵循 X 角色红线」）直接冲突，实测已把「禁区：跑测试、部署」写进
+    engineer/devops 的 workspace CLAUDE.md。无定义即不追加声明，角色红线由 base.md
+    与 persona constraints 承担，那才是权威源。
+    """
+    items = _FORBIDDEN_MAP.get(role_name)
+    if not items:
+        return ""
     return "、".join(_FORBIDDEN_DISPLAY.get(i, i) for i in items)
 
 def check_wake_permission(actor: str, target: str) -> bool:
@@ -234,7 +242,11 @@ def _action_templates(role: dict) -> str:
 # 安全发送消息（自动唤醒离线接收方）
   python3 ~/session-launcher/src/routing/partner.py send-safe <role> <消息> --as <my_role>""")
 
-    lines.append(f"\n禁区：{_forbidden_list(name)}")
+    # 未定义则该行整体不输出：空标签「禁区：」既无信息，又会被角色读成
+    # 「没有禁区」的反向暗示。
+    _forbidden = _forbidden_list(name)
+    if _forbidden:
+        lines.append(f"\n禁区：{_forbidden}")
     return "\n".join(lines)
 
 def _contract_block(role: dict) -> str:
