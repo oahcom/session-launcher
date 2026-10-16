@@ -5,6 +5,7 @@ __all__ = [
     '_is_alive',
     '_tmux_send',
     '_tmux_output',
+    '_role_is_busy',
     '_tmux_kill',
     '_find_codex_pid',
     '_active_codex_session_count',
@@ -192,21 +193,48 @@ def _is_alive(tmux_name: str) -> bool:
         return False
 
 
-def _tmux_send(tmux_name: str, message: str, retries: int = 3, retry_delay: float = 1.0):
+# 只信状态栏的 "esc to interrupt"：它仅生成中显示，空闲时消失（7 角色实测）。
+# 不用 spinner 文案（✻ Sautéed/Churned/Pontificating…）——动词随机、词表追不完，
+# 且空闲 pane 会残留已完成的 "✻ X for 3m 2s" 导致误判为忙。
+_BUSY_SCAN_TAIL = 8  # 状态栏在最底部
+
+def _role_is_busy(tmux_name: str) -> bool:
+    """检测 pane 是否处于生成中（Claude CLI 状态栏 esc-to-interrupt 提示）。
+
+    ponytail: 天花板——依赖状态栏文案，Claude Code 改版换措辞即失配（降级为
+    视为空闲 → 照发 C-u。C-u 不中断生成，故失配无害，仅是失去清行能力）。
+    升级路径：claude CLI 若暴露状态接口则改用协议查询。
+    """
+    return "esc to interrupt" in _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
+
+def _tmux_send(tmux_name: str, message: str, retries: int = 3,
+               retry_delay: float = 1.0, wait_idle: int = 0):
     """Send message to tmux session with retry on failure.
 
     ponytail: 重试3次、间隔1s，覆盖 tmux session 暂时不可用的场景。
     超时/异常后 sleep 再重试，超限后静默丢弃（日志已有 _check_alive 覆盖）。
+
+    wait_idle>0: 机制2（可选）——角色忙时最多等 wait_idle 秒，仍未闲则降级直投。
+    默认 wait_idle=0: 机制1——忙时跳过 C-u 直接投递（消息进 CLI 输入队列，
+    等当前回合结束被读取，不打断生成）；闲时才发 C-u 清输入行。
     """
+    deadline = time.time() + max(wait_idle, 0)
+    # 机制2：等到闲再投。放在 retry 循环外，避免等待消耗重试次数。
+    while wait_idle and _role_is_busy(tmux_name) and time.time() < deadline:
+        time.sleep(2)
     for attempt in range(retries):
         try:
-            # C-c 同时承担退 pager 与清输入缓冲两件事，不要为此单独发 q。
-            # q 在无 pager 时会被 Claude CLI 输入框当普通文本接收，粘在下条消息
-            # 前形成 q/goal 畸形（实测 pane: "❯ q/goal [deadlock] task_spec 超时"）。
-            subprocess.run(
-                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-c"],
-                capture_output=True, timeout=3,
-            )
+            # 忙检测：角色在生成中。C-c 会中断推理（Claude Code 键位：
+            # Ctrl+C=Interrupt, Ctrl+U=Delete to line start，官方 interactive-mode 文档）。
+            if not _role_is_busy(tmux_name):
+                # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
+                # 「中断当前推理」（实测 lr 6 分钟内被打断 7 次，transcript 留下 7 条
+                # [Request interrupted by user]，且正在跑的 Bash 调用被拒）。
+                # 退 pager 不是投递的职责——角色自身卡在 pager 归 watchdog 管。
+                subprocess.run(
+                    ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
+                    capture_output=True, timeout=3,
+                )
             time.sleep(0.05)
             for i in range(0, len(message), 500):
                 chunk = message[i:i + 500]
