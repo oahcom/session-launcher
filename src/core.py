@@ -572,7 +572,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
             "-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
             "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
             "-e", f"PATH={_claude_path}",
-            "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
+            "bash", "-c", cmd
         ], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
         return "tmux 未安装或不在 PATH 中"
