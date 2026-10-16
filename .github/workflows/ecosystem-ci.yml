@@ -33,7 +33,7 @@ jobs:
 
       - name: Run project tests
         run: |
-          cd session-launcher && python3 -m pytest tests/test_6dimension_deep_qa.py -v --timeout=30
+          cd session-launcher && python3 -m pytest tests/test_signals.py tests/test_check_shell.py tests/test_mcp_settings.py -q --timeout=60
           cd hermes-session-roles && python3 tests/test_registry.py && python3 tests/test_validate_roles_reverse.py
           cd session-pipeline && PYTHONPATH=src python3 -m pytest tests/test_router.py -v --timeout=30
 
