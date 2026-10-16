@@ -90,7 +90,8 @@ def _inject_to_tmux(tmux_target: str, event: dict):
     payload = f"[feed:{cat}] {title}\n{snippet}" if snippet else f"[feed:{cat}] {title}"
     try:
         subprocess.run(
-            ["tmux", "send-keys", "-t", tmux_target, payload, "Enter"],
+            # -l: literal，防止 payload 中的 q/C-c/Space 等按 tmux 键名解释
+            ["tmux", "send-keys", "-l", "-t", tmux_target, payload, "Enter"],
             capture_output=True, timeout=5,
         )
     except Exception:
