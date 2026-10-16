@@ -139,6 +139,14 @@ _SUPPLEMENT_MATRIX: dict[str, set[str]] = {
 }
 if _workgroup_dynamic:
     _workgroup_dynamic.update(_SUPPLEMENT_MATRIX)
+# 自动化来源：受信系统组件（非人类、非角色）。这些来源的消息由其自身触发逻辑
+# 决定去向，不走三源验证的 workgroup 检查——否则 daemon 发的消息会被静默丢弃。
+# routing_daemon 曾缺失此项：cron_schedule 与 ccs_send_fallback 全部被拒
+# （实测 #374753 "→engineer 失败: 三源验证拒绝"），角色因此收不到任何定时任务。
+_AUTOMATED_SOURCES = frozenset({
+    "cli", "loop", "pipeline", "cron-worker", "workflow_engine", "routing_daemon",
+})
+
 WORKGROUP_MATRIX: dict[str, set[str]] = _workgroup_dynamic if _workgroup_dynamic else {
     "coordinator": {"*"},
     "lr": {"*"},
@@ -190,7 +198,7 @@ class CrossRoleRouter:
         返回 True 放行，False 拒绝。
         """
         # 同角色消息 & 系统角色直接放行（放行前先分类并落库，供速率统计按敏感度过滤）
-        if source == target or source in ("cli", "loop", "pipeline", "cron-worker", "workflow_engine"):
+        if source == target or source in _AUTOMATED_SOURCES:
             self._log_cross_role_send(source, target, message)
             return True
 
@@ -200,7 +208,7 @@ class CrossRoleRouter:
         allowed_targets = WORKGROUP_MATRIX.get(source, set())
 
         # 全类型消息统一校验: 未知来源且不在 workgroup → 拒绝
-        if not allowed_targets and not source in ("cli", "loop", "pipeline", "cron-worker"):
+        if not allowed_targets and source not in _AUTOMATED_SOURCES:
             self._log_violation(source, target, message,
                                 f"unknown source {source}, not in workgroup matrix")
             return False
