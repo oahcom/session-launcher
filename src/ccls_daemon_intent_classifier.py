@@ -184,6 +184,12 @@ def _save_states(states: dict[str, _SessionState]) -> None:
                          "remind_count": s.remind_count}
                      for k, s in states.items()},
                     ensure_ascii=False))
+                # fsync 才算真正落盘：无它时 os.replace 返回后内容可能仍在
+                # page cache，掉电/硬重启会让 STATE_FILE 指向空或半写文件
+                # —— 本修复的核心价值就是跨重启续算（实测 04:43 重启场景），
+                # 少了这步等于在最需要的场景失效。
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp_name, STATE_FILE)
         except BaseException:
             try:
