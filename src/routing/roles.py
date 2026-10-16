@@ -312,6 +312,9 @@ def _build_role_prompt(role: dict) -> str:
         msgs.append("等待 cron-worker 唤醒。")
     elif drive == "goal":
         msgs.append("驱动模式: goal（主动执行至目标达成）")
+    elif drive == "infinite":
+        # 引擎按需拉起时常驻；无 drive=="ondemand" 的启动闸门拦截
+        msgs.append("驱动模式: infinite（常驻，持续等待信号）")
     else:
         msgs.append("驱动模式: ondemand（按需启动）")
         msgs.append("等待上游角色或 cron-worker 通过 `ccs send` 发送任务。")

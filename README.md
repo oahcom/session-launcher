@@ -81,7 +81,7 @@ src/
   ├── ccs.py                CLI 主入口（argparse 分发全部子命令）
   ├── core.py               CCS 生命周期编排（start/stop/status/send/health）
   ├── tmux_ops.py           tmux 底层操作（PID 查找、pane 捕获、进程管理）
-  ├── role_manager.py       角色定义加载、禁区映射、workspace CLAUDE.md 注入
+  ├── routing/roles.py      角色定义加载、禁区映射、workspace CLAUDE.md 注入
   ├── codex_ops.py          Codex session 管理（start/exec/status）
   ├── ccs_socket.py         CCS 直接通信客户端（<1ms Unix Socket）
   │

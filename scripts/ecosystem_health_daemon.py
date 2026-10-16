@@ -173,7 +173,8 @@ def main():
         subprocess.run([sys.executable, str(BUS_CLIENT), "write", "ccs_health", summary,
                        "--src", "health-daemon", "--evidence", json.dumps(summary_data)],
                       capture_output=True, timeout=10)
-    except Exception: pass
+    except Exception as _e:  # 健康检查写入本身失败必须可见，否则 maintainer 循环会误以为全绿
+        print(f"[{time.strftime('%H:%M:%S')}] 健康检查 bus 写入失败: {_e}", file=sys.stderr)
 
     # 跨项目反推：eval pass-rate 偏低自动发 bus notice
     check_eval_passrate()

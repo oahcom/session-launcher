@@ -35,16 +35,6 @@ class WorkflowClient:
         )
         self._conn.commit()
 
-    # ── Template ──
-
-    def list_templates(self) -> list[dict]:
-        rows = self._conn.execute("SELECT * FROM workflow_templates ORDER BY name").fetchall()
-        return [dict(r) for r in rows]
-
-    def find_template(self, name: str) -> Optional[dict]:
-        row = self._conn.execute("SELECT * FROM workflow_templates WHERE name=?", (name,)).fetchone()
-        return dict(row) if row else None
-
     # ── Task CRUD ──
 
     def _validate_create_task(self, template_id: str,
@@ -215,18 +205,6 @@ class WorkflowClient:
         rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-    def delete_task(self, task_id: str) -> bool:
-        task = self.get_task(task_id)
-        if not task:
-            return False
-        if task['assigner'] == self.role and self.role != 'system':
-            return False
-        self._log(task_id=task_id, action="deleted")
-        self._conn.execute("DELETE FROM workflow_instances WHERE task_id=?", (task_id,))
-        self._conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
-        self._conn.commit()
-        return True
-
     # ── Workflow Instance CRUD ──
 
     def create(self, assignee: str, task_description: str,
@@ -390,12 +368,6 @@ class WorkflowClient:
         self._conn.commit()
         return True
 
-    def archive(self, wf_id: str) -> bool:
-        self._conn.execute("UPDATE workflow_instances SET status='archived' WHERE instance_id=?", (wf_id,))
-        self._conn.commit()
-        self._log(wf_id=wf_id, action="archived")
-        return True
-
     def find_zombies(self, minutes: int = 120, limit: int = 50) -> list[dict]:
         """僵尸检测: running > minutes 分钟的工作流。
 
@@ -420,16 +392,6 @@ class WorkflowClient:
             d["running_minutes"] = round((now - d["created_at"]) / 60, 1)
             out.append(d)
         return out
-
-    def list_all(self, status: str = None, limit: int = 50) -> list[dict]:
-        query = "SELECT * FROM workflow_instances WHERE 1=1"
-        params = []
-        if status:
-            query += " AND status=?"; params.append(status)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-        rows = self._conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
 
     # ── 日志 ──
 
@@ -463,14 +425,6 @@ class WorkflowClient:
     def check_wake_permission(self, target: str) -> bool:
         from routing.partner import PartnerClient
         return PartnerClient(self.role).check_wake_permission(target)
-
-    def resolve_partner(self, role: str) -> dict:
-        from routing.partner import PartnerClient
-        return PartnerClient(self.role).resolve(role)
-
-    def wake_partner(self, role: str, context: str = "", force: bool = False) -> dict:
-        from routing.partner import PartnerClient
-        return PartnerClient(self.role).wake(role, context, force)
 
     # ── Confirm 密钥验证 ──
 
@@ -550,48 +504,6 @@ class WorkflowClient:
         self._log(wf_id=child_wf_id, action="spawned",
                   detail=f"parent={parent_wf_id}, child={child_wf_id}, target={child_assignee}")
         return child_wf_id
-
-    def get_children(self, parent_wf_id: str) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM workflow_instances WHERE parent_wf_id=? ORDER BY created_at",
-            (parent_wf_id,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def advance_pipeline(self, wf_id: str, summary: str) -> dict:
-        """推进多步骤流水线：当前步骤完成后自动派发下一个 handoff 角色的子工作流。
-        返回下一个步骤信息或 None（流程结束）。"""
-        import json
-        inst = self.get(wf_id)
-        if not inst:
-            return {"advanced": False, "reason": "实例不存在"}
-        template_id = inst.get("template_id", "")
-        row = self._conn.execute(
-            "SELECT steps_json FROM workflow_templates WHERE template_id=?", (template_id,)
-        ).fetchone()
-        if not row:
-            return {"advanced": False, "reason": f"模板 {template_id} 不存在"}
-        steps = json.loads(dict(row)["steps_json"])
-        current_step = inst.get("current_step_id", "")
-        # 找当前步骤的下一步
-        found = False
-        for s in steps:
-            if found and s.get("type") == "handoff":
-                # 更新父工作流 current_step
-                child_id = self.spawn_child(wf_id, s["target_role"],
-                    title=f"{s.get('title', template_id)}", context={"summary": summary})
-                self._conn.execute(
-                    "UPDATE workflow_instances SET current_step_id=? WHERE instance_id=?",
-                    (s["step_id"], wf_id)
-                )
-                self._conn.commit()
-                self._log(wf_id=wf_id, action="handoff",
-                          detail=f"→ {child_id} ({s['target_role']})")
-                return {"advanced": True, "next_step": s["step_id"],
-                        "child_wf_id": child_id, "target_role": s["target_role"]}
-            if s["step_id"] == current_step:
-                found = True
-        return {"advanced": False, "reason": "已到流水线末尾"}
 
     # ── Kanban ──
 

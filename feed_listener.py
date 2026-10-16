@@ -87,15 +87,25 @@ def _inject_to_tmux(tmux_target: str, event: dict):
         return
     # ponytail: 不用 /goal，避免 tmux 竞态导致空目标死循环。升级路径：用 ccs send 的 unix socket 接口替代 tmux send-keys
     snippet = (body or title)[:200]
-    payload = f"[feed:{cat}] {title}\n{snippet}" if snippet else f"[feed:{cat}] {title}"
+    # 单行拼接：换行符随 payload 一起发送时提交语义不确定，用分隔符消除歧义
+    payload = f"[feed:{cat}] {title} | {snippet}" if snippet else f"[feed:{cat}] {title}"
     try:
-        subprocess.run(
-            # -l: literal，防止 payload 中的 q/C-c/Space 等按 tmux 键名解释
-            ["tmux", "send-keys", "-l", "-t", tmux_target, payload, "Enter"],
+        # -l 关闭键名解析，故 "Enter" 必须单独发一次：混在同一次调用里会被当字面文本输入，
+        # 消息永不提交（tmux 3.4 man: "The -l flag disables key name lookup and processes
+        # the keys as literal UTF-8 characters"）。tmux_ops.py:250 是同款正确写法。
+        r = subprocess.run(
+            ["tmux", "send-keys", "-l", "-t", tmux_target, payload],
             capture_output=True, timeout=5,
         )
-    except Exception:
-        pass
+        if r.returncode != 0:
+            print(f"  → feed 注入失败 (rc={r.returncode}): {r.stderr[:120]!r}", file=sys.stderr)
+            return
+        subprocess.run(
+            ["tmux", "send-keys", "-t", tmux_target, "Enter"],
+            capture_output=True, timeout=5,
+        )
+    except Exception as e:
+        print(f"  → feed 注入异常: {e}", file=sys.stderr)
 
 
 def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""):
@@ -122,10 +132,7 @@ def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""
             except (ValueError, OSError, FileNotFoundError):
                 pass  # 旧进程已死，覆盖写
                 Path(pid_file).write_text(str(os.getpid()))
-        import atexit, functools
-        def _cleanup():
-            try: os.unlink(pid_file)
-            except OSError: pass
+        import atexit
         atexit.register(lambda: [os.unlink(pid_file) for _ in [1] if os.path.exists(pid_file)])
         _sig.signal(_sig.SIGTERM, lambda *_: (atexit._run_exitfuncs(), sys.exit(0)))
     print(f"正在连接 {FEED_SOCKET}...")

@@ -42,7 +42,7 @@ python3 src/ccs.py start <role> --partner x   # 带伙伴
 ### 服务检查
 ```bash
 python3 src/ccs.py status <role>
-python3 src/ecosystem_health.py --check
+python3 src/ecosystem_health.py --json   # 或 --ci（异常时 exit 1）
 ```
 
 ### 路由策略
@@ -75,7 +75,6 @@ src/
   ops/
     sentinel.py        ── 哨兵文件读写（CcsSentinel）
     ccs_config.py      ── 配置中心
-    mcp_settings.py    ── MCP 设置
     tracker.py         ── 轮次追踪
     watchdog.py        ── 伙伴存活守护
     runner.py          ── 执行器
@@ -97,7 +96,7 @@ src/
 
 ## 测试命令
 ```bash
-cd ~/session-launcher && python3 -m pytest src/ -x -q
+cd ~/session-launcher && python3 -m pytest tests/ -q
 python3 -m py_compile src/*.py src/**/*.py
-python3 src/ecosystem_health.py --check
+python3 src/ecosystem_health.py --json
 ```

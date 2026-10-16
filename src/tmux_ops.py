@@ -183,6 +183,10 @@ def _find_claude_session_id(role: str = "") -> Optional[str]:
 
 def _is_alive(tmux_name: str) -> bool:
     """单检：仅验证 tmux session 存在。供 core/runner/codex_ops 等快速路径使用。"""
+    # 空串必须短路为 False：`tmux has-session -t ""` 在 server 存活时 rc=0，
+    # 会让 ondemand 哨兵（tmux_session=""）被误报 alive（实测 2026-10-16）。
+    if not tmux_name:
+        return False
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],
@@ -212,7 +216,11 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
     """Send message to tmux session with retry on failure.
 
     ponytail: 重试3次、间隔1s，覆盖 tmux session 暂时不可用的场景。
-    超时/异常后 sleep 再重试，超限后静默丢弃（日志已有 _check_alive 覆盖）。
+
+    返回 True=已投递，False=重试耗尽仍失败。**调用方必须检查返回值**：
+    旧版超限后静默返回 None，core.send 照报 success=True，消息实际丢弃且
+    3 连败 fallback 永不触发（实测 2026-10-16，send-keys 恒 rc=1 时仍
+    返回 {'success': True, 'sent_chars': 11}）。
 
     wait_idle>0: 机制2（可选）——角色忙时最多等 wait_idle 秒，仍未闲则降级直投。
     默认 wait_idle=0: 机制1——忙时跳过 C-u 直接投递（消息进 CLI 输入队列，
@@ -252,10 +260,14 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
                 capture_output=True, timeout=3,
             )
             if r.returncode == 0:
-                return
-        except Exception:
+                return True
+        except Exception as e:
+            logging.getLogger("tmux_ops").warning(
+                "tmux send 失败 (attempt %d/%d) %s: %s", attempt + 1, retries, tmux_name, e)
             if attempt < retries - 1:
                 time.sleep(retry_delay)
+    logging.getLogger("tmux_ops").error("tmux send 重试耗尽，消息未投递: %s", tmux_name)
+    return False
 
 
 def _tmux_output(tmux_name: str, tail: int = 20) -> str:

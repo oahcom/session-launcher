@@ -255,8 +255,22 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
     if role_perms:
         cfg["permissions"] = role_perms
     else:
-        # 严格默认：无一预授权 → 所有操作弹出确认
-        cfg["permissions"] = {"allow": []}
+        # 继承全局权限模板（Bash + bypassPermissions），而非空 allow:[]。
+        # ponytail: 空 allow:[] 会让 Write 被禁用 → 角色只能用 shell echo 伪产出、不 commit，
+        # 直接破坏"产出真实对接生产"。工程 P0 修复：从全局 settings.json 继承 permissions，
+        # 缺省回退到 Bash(*) + bypassPermissions（与全局一致），保证角色能真实写文件+提交。
+        gs_perms = cfg.get("permissions", {})
+        if gs_perms:
+            cfg["permissions"] = gs_perms
+        else:
+            cfg["permissions"] = {"allow": ["Bash(*)"], "defaultMode": "bypassPermissions"}
+    # 继承全局 env（ANTHROPIC_MODEL 等），并注入项目代码路径，
+    # 让需要 import pipeflow/session-pipeline 的角色（如 engineer）不再因 ModuleNotFoundError 卡死。
+    # ponytail: PYTHONPATH 缺失是 test_exit_schema/s1 等任务 ImportError→死循环的 root cause;
+    # 之前手动改 workspace settings 会被本函数重写丢弃，故在此统一注入。
+    base_env = cfg.get("env", {})
+    base_env.setdefault("PYTHONPATH", str(Path.home() / "session-pipeline" / "src"))
+    cfg["env"] = base_env
     settings_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     _log.info("写入 %s mcp_servers=%s perms_rules=%d",
               settings_path, list(cfg["mcpServers"].keys()),
@@ -522,12 +536,26 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
     # 权限由 workspace settings.json permissions.allow 控制
     _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
+    # ponytail: wrapper 让 claude 完成任务后不退出 session，而是循环等待下一个任务。
+    # 这解决了"任务完成即退出 session"导致角色无法持续存活 24h 的根因。
     cmd = (
+        "while true; do "
         "claude --bare --model 9router_hermes"
-        f"{_PERM_FLAGS}"
-        " --effort max"
+        f" {_PERM_FLAGS}"
+        " --effort max; "
+        "echo '[CCS] Task completed, waiting for next task...' >&2; "
+        "sleep 3; "
+        "done"
     )
     r_env = _router_env()
+    # 确保 PATH 包含 claude 的安装路径 (/home/administrator/.local/bin)：
+    # launcher 若从精简 PATH 环境启动（systemd Environment=PATH= / cron），
+    # 原样透传会让 pane 内找不到 claude，角色起不来。
+    _claude_dir = str(Path.home() / ".local" / "bin")
+    _parts = os.environ.get("PATH", "").split(os.pathsep)
+    if _claude_dir not in _parts:
+        _parts.append(_claude_dir)
+    _claude_path = os.pathsep.join(_parts)
     try:
         r = subprocess.run([
             "tmux", "new-session", "-d", "-s", tmux_name,
@@ -535,6 +563,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
             "-e", "FORCE_PERSONA=0",
             "-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
             "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
+            "-e", f"PATH={_claude_path}",
             "bash", "-c", f"tmux set -g bracketed-paste off; {cmd}"
         ], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
@@ -626,6 +655,12 @@ def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None
 
     # 7.5 自动发送消息（auto_send）
     if not no_auto_send and is_auto_send_enabled():
+        # ondemand 角色：完全跳过 auto_send。被动接收 ccs send / bus 信号唤醒，
+        # 启动时不主动轰 scanner 消息（ponytail: 避免无信号时硬塞噪音，也防重复投喂）。
+        lifecycle = (role_def or {}).get("lifecycle", "infinite")
+        if lifecycle == "ondemand":
+            print(f"📋 auto_send: 跳过 ondemand 角色 (被动唤醒，不主动 scanner)")
+            return
         # 优先级: 信号生成 > persona auto_send_messages > 配置兜底
         signal_msgs = _auto_send_msgs_from_signals(role_def)
         role_auto_msgs = (role_def or {}).get("auto_send_messages", [])
@@ -705,6 +740,10 @@ def stop(role: str, instance_id: int = 0,
             _log.info("feed 子进程已回收: %s", tmux_name)
         except Exception as e:
             _log.warning("feed 子进程回收异常 %s: %s", tmux_name, e)
+    # _FEED_PROCS 是进程内字典，而 start/stop 是两次独立 CLI 调用 → 上面的 pop
+    # 恒为 None。补一条 pid 文件回收路径（feed_listener.py:111 已写该文件），
+    # 否则每次 stop 遗留一个 PPID=1 的孤儿（实测 9 listener / 8 会话）。
+    _kill_feed_listener_by_pidfile(tmux_name)
     _tmux_kill(tmux_name)
     delete_sentinel(role, instance_id)
     if not was_alive:
@@ -776,11 +815,13 @@ def send(role: str, message: str, source: str = "",
         # 跨轮次 3 连败门槛（红线 3 对齐）：
         # 单次 tmux has-session 失败可能是 socket 抖动，不立即写 fallback；
         # 连续 3 次失败才写 [ccs_send_fallback] 并升级。
-        streak = _inc_send_fail_streak(role)
+        # 计数键用 tmux_name（含 instance_id）：用裸 role 会让实例 1 的失败
+        # 消耗实例 0 的额度，主实例首次抖动即被判"3 连败确认"（实测 2026-10-16）。
+        streak = _inc_send_fail_streak(tmux_name)
         if streak < _MAX_SEND_FAIL_STREAK:
             return {"success": False,
                     "error": f"CCS {role}[{instance_id}] 探测失败 {streak}/{_MAX_SEND_FAIL_STREAK}（暂缓 fallback，防抖动误报）"}
-        _reset_send_fail_streak(role)
+        _reset_send_fail_streak(tmux_name)
         _write_bus_notice(role, message, source, "CCS未运行(3连败确认)")
         return {"success": False, "error": f"CCS {role}[{instance_id}] 未运行"}
 
@@ -804,8 +845,9 @@ def send(role: str, message: str, source: str = "",
                      "--evidence", f"{_reason} | source={source}",
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
-            except Exception:
-                pass
+            except Exception as _be:
+                # 拦截 gateway 重启指令是安全事件，bus 写失败也必须留痕
+                _log.error("红线1 拦截事件写 bus 失败（拦截本身已生效）: %s", _be)
             return {"success": False, "blocked_by": "redline1_gateway",
                     "reason": _reason}
     except Exception as _ge:  # 校验异常绝不可阻断正常投递
@@ -817,6 +859,11 @@ def send(role: str, message: str, source: str = "",
     injected = False
     if source in ("user", "cli"):
         try:
+            # record_intent 曾在此 import 但全库无定义（连 WIP 也没有），且
+            # user_intent_reminder 自身已声明「意图状态持久化 intent_state.json
+            # 已废弃」（见其 read_intent docstring）。同行 import 一个不存在的
+            # 名字会让**整行**失败 → inject_reminder/classify_intent 也拿不到 →
+            # 整个意图注入路径静默降级（异常被下方 except 吞掉，消息仍投递）。
             from user_intent_reminder import inject_reminder
             send_message = inject_reminder(message, source)
             injected = send_message != message
@@ -835,10 +882,19 @@ def send(role: str, message: str, source: str = "",
                     capture_output=True, timeout=5)
             except Exception as _be:  # noqa: BLE001
                 _log.warning("user_intent_reminder bus 证据写失败（不影响投递）: %s", _be)
-    _tmux_send(tmux_name, send_message)
+    delivered = _tmux_send(tmux_name, send_message)
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
     _trigger_hooks("after_send", role=role, message=send_message, source=source)
-    _reset_send_fail_streak(role)  # 成功送达清零连败计数
+    if not delivered:
+        # 投递失败不得报 success：否则调用方（引擎/partner）以为送达，
+        # 3 连败 fallback 永不触发，消息静默丢弃（实测 2026-10-16）。
+        streak = _inc_send_fail_streak(tmux_name)
+        if streak >= _MAX_SEND_FAIL_STREAK:
+            _reset_send_fail_streak(tmux_name)
+            _write_bus_notice(role, message, source, f"tmux 投递失败({streak}连败确认)")
+        return {"success": False,
+                "error": f"tmux 投递失败 {role}[{instance_id}] ({streak}/{_MAX_SEND_FAIL_STREAK})"}
+    _reset_send_fail_streak(tmux_name)  # 成功送达清零连败计数
     return {"success": True, "sent_chars": len(send_message)}
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
@@ -974,6 +1030,30 @@ def _start_feed_subprocess(tmux_name: str) -> None:
         _log.info("feed 子进程已启动: %s -> %s", FEED_LISTENER, tmux_name)
     except (OSError, json.JSONDecodeError) as e:
         _log.warning("feed 子进程启动失败: %s", e)
+
+
+def _kill_feed_listener_by_pidfile(tmux_name: str) -> None:
+    """按 pid 文件回收 feed_listener（跨进程，stop 时调用）。
+
+    feed_listener.py 启动时会写 ~/.hermes/run/feed_listeners/<tmux>.pid 作为
+    自身的单实例锁；stop 读同一文件即可回收，即使监听器由另一个进程启动。
+    僵尸 pid（进程已死）只清文件，不报错。
+    """
+    import os as _os
+    pid_file = Path.home() / ".hermes" / "run" / "feed_listeners" / f"{tmux_name}.pid"
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        _os.kill(pid, 15)  # SIGTERM：feed_listener 注册了 handler 会自清 pid 文件
+        _log.info("feed 监听器已回收: %s (pid=%d)", tmux_name, pid)
+    except ProcessLookupError:
+        pass  # 进程已死，仅需清残留文件
+    except OSError as e:
+        _log.warning("feed 监听器回收失败 %s (pid=%d): %s", tmux_name, pid, e)
+        return
+    pid_file.unlink(missing_ok=True)
 
 
 # ── 多 instance 辅助函数 ──

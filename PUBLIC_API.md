@@ -20,9 +20,8 @@ src/
 ├── ccs_socket.py       # CCS 直接通信（Unix Socket: CCSClient / CCSStreamer）
 ├── core.py             # 生命周期编排（start/send/stop/health）
 ├── launcher.py         # Launcher 编排入口
-├── lifecycle_manager.py# CCS 生命周期钩子（complete_step/fail_step/confirm_step）
+├── routing/roles.py        # RoleManager（角色加载 + workspace 注入 + 权限）
 ├── paths.py            # 路径常量
-├── role_manager.py     # 角色管理
 ├── sentinel.py         # 根目录哨兵（跨会话动作记录）
 ├── tmux_ops.py         # tmux 操作封装
 ├── codex_ops.py        # Codex CLI 集成
@@ -68,7 +67,7 @@ src/
 | `cancel(wf_id, reason="")` | str, str? | `None` | 取消 |
 | `notify(category, title, evidence="")` | str, str, str? | `None` | 发 bus 通知（subprocess 调 bus_client） |
 
-## LifecycleManager (`lifecycle_manager.py`)
+## LifecycleManager (`lifecycle/manager.py`)
 
 backward-compat 重导出，实际实现位于 `session-pipeline/src/lifecycle/manager.py`。
 
@@ -134,5 +133,5 @@ Unix Socket 通信客户端（`Sister Bus` 之外的直接 CCS 通信通道）�
 |------|------|------|
 | `ecosystem_health.py:36` | `PIPELINE = HOME / "session-pipeline"` | 路径引用 |
 | `paths.py:30` | `SESSION_PIPELINE_SRC` | 路径常量（常量） |
-| `lifecycle_manager.py` | `from lifecycle.manager import *` | 跨项目重导出 |
+| `lifecycle/manager.py` | `from lifecycle.manager import *` | 跨项目重导出 |
 

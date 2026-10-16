@@ -129,3 +129,12 @@ def inject_reminder(message: str, source: str = "") -> str:
     if not _should_inject(message):
         return message  # R70: 非疑问/任务 → 跳过
     return f"{_REMINDER_HEADER}\n{message}"
+
+
+def read_intent(role: str) -> Intent:
+    """Read persisted user intent for a role.
+
+    ponytail: 意图状态持久化（intent_state.json）已废弃，此处回退到
+    Intent.TASK（与 daemon 原有 fallback 行为一致），不引入新依赖。
+    """
+    return Intent.TASK

@@ -43,7 +43,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 python3 -m pytest tests/test_6dimension_deep_qa.py -v
 python3 -m pytest tests/test_e2e_mock.py -v
 python3 -m pytest tests/test_system_health.py -v
-PYTHONPATH=src python3 -c "import core, tmux_ops, role_manager, codex_ops, sentinel; print('OK')"
+PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops; print('OK')"
 ```
 
 ---

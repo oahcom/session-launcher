@@ -206,9 +206,6 @@ def _check_custom(spec: dict, filter_str: str) -> bool:
 
 # ── 旧格式兼容 ──
 
-_LEGACY_CHECKERS = {}
-
-
 def _legacy(source: str) -> str | None:
     """检测旧格式 source 类型。"""
     if "bus_client.py" in source:

@@ -118,7 +118,10 @@ def _load_workgroup_from_personas() -> dict[str, set[str]] | None:
                 elif isinstance(w, dict) and "role" in w:
                     roles.add(w["role"])
             if roles:
-                matrix[name] = roles
+                # setdefault 而非赋值：preset 的兜底权限（如 coordinator 的 {"*"}）必须
+                # 保留。persona 的 workgroup 是"角色声明的协作面"，不是"权限上限"——
+                # 用赋值会让 coordinator 只剩 4 个目标，发不出红消息（实测 2026-10-16）。
+                matrix.setdefault(name, set()).update(roles)
                 loaded_any = True
     except Exception as e:
         logger.warning("_load_workgroup_from_personas: %s", e)
@@ -186,14 +189,14 @@ class CrossRoleRouter:
 
         返回 True 放行，False 拒绝。
         """
-        self._log_cross_role_send(source, target, message)
-
-        # 同角色消息 & 系统角色直接放行
+        # 同角色消息 & 系统角色直接放行（放行前先分类并落库，供速率统计按敏感度过滤）
         if source == target or source in ("cli", "loop", "pipeline", "cron-worker", "workflow_engine"):
+            self._log_cross_role_send(source, target, message)
             return True
 
         # WL-P0-01: 消息内容敏感度分类
         msg_sensitivity = classify_message_content(message)
+        self._log_cross_role_send(source, target, message, msg_sensitivity)
         allowed_targets = WORKGROUP_MATRIX.get(source, set())
 
         # 全类型消息统一校验: 未知来源且不在 workgroup → 拒绝
@@ -218,12 +221,16 @@ class CrossRoleRouter:
             return False
 
         # 2. 审计上限: 每小时超过5条 🔴 消息 → 强制拦截, 提示创建task
+        # 只统计红消息：绿/黄不计入，否则正常协作量就能耗尽敏感额度。
+        # 历史行无 sensitivity 字段（修复前写入）→ 用 json_extract 判 NULL，
+        # 它们在 detail 里没有该键，等价于不计入（保守放行，不追溯拦住旧流量）。
         conn = self._get_conn()
         try:
             hour_ago = time.time() - 3600
             count = conn.execute(
                 "SELECT COUNT(*) as c FROM workflow_logs "
-                "WHERE actor=? AND action='cross_role_send' AND ts>?",
+                "WHERE actor=? AND action='cross_role_send' AND ts>? "
+                "AND json_extract(detail, '$.sensitivity')='red'",
                 (source, hour_ago)
             ).fetchone()["c"]
             if count > SENSITIVE_RATE_LIMIT:
@@ -251,14 +258,16 @@ class CrossRoleRouter:
         total = 0
         details = []
 
-        # 源1: bus --src 查询
+        # 源1: bus --src 查询。只有 "matched" 才算一源——"partial"（搜到结果但
+        # 不含 claimed_source）若也计分，任何 bus 命中 + 同名会话即凑满 2 源，
+        # 三源验证形同虚设（实测 2026-10-16）。
         total += 1
         bus_src = self._check_bus_source(claimed_source, message)
-        if bus_src:
+        if bus_src == "matched":
             matches += 1
-            details.append(f"bus_src={bus_src}")
+            details.append("bus_src=matched")
         else:
-            details.append("bus_src=not_found")
+            details.append(f"bus_src={bus_src or 'not_found'}")
 
         # 源2: DB assigner 查询
         total += 1
@@ -374,8 +383,13 @@ class CrossRoleRouter:
         """检查发送权限（兼容旧接口）。"""
         return self.intercept(source, target, category)
 
-    def _log_cross_role_send(self, source: str, target: str, message: str):
-        """记录跨角色消息到 workflow_logs。"""
+    def _log_cross_role_send(self, source: str, target: str, message: str,
+                             sensitivity: str = ""):
+        """记录跨角色消息到 workflow_logs。
+
+        sensitivity 供速率限制按红消息过滤——不记录的话统计会把绿/黄消息
+        一并计入，正常协作量即可耗尽 🔴 额度（实测 2026-10-16）。
+        """
         conn = self._get_conn()
         try:
             conn.execute(
@@ -386,6 +400,7 @@ class CrossRoleRouter:
                  json.dumps({
                      "source": source, "target": target,
                      "message_preview": message[:200],
+                     "sensitivity": sensitivity,
                  }, ensure_ascii=False),
                  time.time())
             )

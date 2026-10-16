@@ -380,6 +380,9 @@ def list_sentinels() -> list[CcsSentinel]:
         result[key] = sentinel
 
     # filter out zombie sentinels (pid=0/None + empty tmux)
+    # 存活判定留给调用方（status/health_check/dashboard 均自行调用 _is_alive 并需要
+    # 死哨兵来报告"死亡"），此处只过滤无任何标识的僵尸；且 tmux has-session 在
+    # socket 隔离环境下会假阴性，放此层会隐藏真实存活角色。
     return [s for s in result.values() if s.tmux_session or (s.pid or 0) > 0]
 
 

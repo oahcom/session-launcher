@@ -166,7 +166,7 @@ class TestCoreLifecycle:
     def test_send_message(self, mock_tmux_send, mock_is_alive):
         """send() 发送消息到 tmux"""
         mock_is_alive.return_value = True
-        mock_tmux_send.return_value = None
+        mock_tmux_send.return_value = True  # 投递成功；send 现在检查该返回值
 
         # source="cli" 跳过 gatekeeper 三源验证
         result = send("qa", "test message", source="cli", instance_id=0)
@@ -176,6 +176,18 @@ class TestCoreLifecycle:
         # Check message contains the test message
         args, _ = mock_tmux_send.call_args
         assert "test message" in args[1]
+
+    @patch("core._is_alive")
+    @patch("core._tmux_send")
+    def test_send_message_returns_failure_when_delivery_fails(self, mock_tmux_send, mock_is_alive):
+        """投递失败必须报 success=False：否则调用方以为送达，消息静默丢弃"""
+        mock_is_alive.return_value = True
+        mock_tmux_send.return_value = False  # 重试耗尽
+
+        result = send("qa", "test message", source="cli", instance_id=0)
+
+        assert result["success"] is False
+        assert "投递失败" in result["error"]
 
     @patch("core._tmux_output")
     def test_output_captures_tmux(self, mock_tmux_output):
@@ -330,7 +342,7 @@ class TestCoreEdgeCases:
     def test_send_empty_message(self, mock_tmux_send, mock_is_alive):
         """send() 空消息处理"""
         mock_is_alive.return_value = True
-        mock_tmux_send.return_value = None
+        mock_tmux_send.return_value = True  # 投递成功；send 现在检查该返回值
 
         result = send("qa", "", source="cli", instance_id=0)
 
