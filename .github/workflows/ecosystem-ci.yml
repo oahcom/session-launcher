@@ -18,8 +18,8 @@ jobs:
 
       - name: Checkout sibling projects
         run: |
-          git clone https://github.com/your-org/hermes-session-roles.git
-          git clone https://github.com/your-org/session-pipeline.git
+          git clone https://github.com/oahcom/hermes-session-role.git hermes-session-roles
+          git clone https://github.com/oahcom/session-pipe.git session-pipeline
 
       - name: Python setup
         uses: actions/setup-python@v5
@@ -33,9 +33,9 @@ jobs:
 
       - name: Run project tests
         run: |
-          cd session-launcher && python3 -m pytest tests/test_6dimension_deep_qa.py -v --timeout=30 || true
-          cd hermes-session-roles && python3 tests/test_search.py
-          cd session-pipeline && PYTHONPATH=src python3 -m pytest tests/test_router.py -v --timeout=30 || true
+          cd session-launcher && python3 -m pytest tests/test_6dimension_deep_qa.py -v --timeout=30
+          cd hermes-session-roles && python3 tests/test_registry.py && python3 tests/test_validate_roles_reverse.py
+          cd session-pipeline && PYTHONPATH=src python3 -m pytest tests/test_router.py -v --timeout=30
 
       - name: Upload health report
         uses: actions/upload-artifact@v4
