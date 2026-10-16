@@ -199,8 +199,13 @@ class TestTmuxSendBusyHandling:
         """机制2：忙 → 轮询；转闲后清行并投递。"""
         import tmux_ops
         from unittest.mock import patch
-        states = iter([True, True, False])  # 两次忙，第三次闲
-        with patch("tmux_ops._role_is_busy", side_effect=lambda n: next(states)), \
+        seen = []
+
+        def busy_twice_then_idle(_name):
+            seen.append(1)
+            return len(seen) <= 2  # 前两次忙，之后闲
+
+        with patch("tmux_ops._role_is_busy", side_effect=busy_twice_then_idle), \
              patch("tmux_ops.time.sleep"), \
              patch("tmux_ops.subprocess.run") as m:
             m.return_value.returncode = 0
