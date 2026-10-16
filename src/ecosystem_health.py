@@ -260,7 +260,7 @@ def check_all() -> HealthReport:
                      "contract_updater", "eval_checker", "eval_consistency",
                      "liveness", "output_validator", "p0_exemption",
                      "routing_daemon", "task_evidence", "template_registry",
-                     "workflow_metrics", "drift_detector", "paths",
+                     "drift_detector", "paths",
                      "cron_scheduler", "conversation_monitor"],
     }
     for proj_name, modules in core_modules.items():

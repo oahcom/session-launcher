@@ -776,6 +776,10 @@ def status() -> list[dict]:
             "workspace": ws,
             "health": {
                 "watchdog_ok": s.health.watchdog_ok,
+                # last_watchdog_check=0 表示 watchdog 线程从未跑过（该角色未配 partners，
+                # 见 _start_monitoring_threads）。此时 watchdog_ok 只是 dataclass 默认值，
+                # 不能当作"检查过且正常"展示。实测 2026-10-16：8/8 角色全是 0.0 却显示 ✅。
+                "watchdog_measured": s.health.last_watchdog_check > 0,
                 "bus_msg_age": round(s.health.last_bus_msg_age, 0),
                 "restart_count": s.health.restart_count,
             },
@@ -941,6 +945,8 @@ def health_check(role: str = "", instance_id: int = 0,
             "bus_track": s.bus_track or None,
             "last_bus_msg_age": round(s.health.last_bus_msg_age, 0),
             "watchdog_ok": s.health.watchdog_ok,
+            # 见 status()：False 表示比"不健康"更弱的状态——从未测量过。
+            "watchdog_measured": s.health.last_watchdog_check > 0,
             "restart_count": s.health.restart_count,
             "uptime_sec": int(time.time() - s.started_at) if alive else 0,
         }

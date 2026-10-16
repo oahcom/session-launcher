@@ -16,8 +16,15 @@ import sys
 
 # Gate 的权威实现在 session-pipeline（该 worktree 已于 2026-10-16 清理）。
 _GW_SRC = str(Path.home() / "session-pipeline" / "src")
-if _GW_SRC not in sys.path:
-    sys.path.insert(0, _GW_SRC)
+# 必须无条件提到最前：launcher 与 pipeline 各有一个 workflow 包，谁在 sys.path
+# 更靠前谁赢。若只写 "if _GW_SRC not in sys.path"，当 CCS 角色 workspace 已经
+# 经 .claude/settings.json 预置了 PYTHONPATH（core.py 的 _write_mcp_settings 注入）
+# 时守卫会判定"已存在"而跳过——随后 conftest 的 session-launcher/src 反而排在
+# 前面，import workflow 解析到本仓的无 gateway.py 版本 → ModuleNotFoundError。
+# 实测 2026-10-16：干净 shell 342 passed，带头注入时 1 error，make test rc=2。
+if _GW_SRC in sys.path:
+    sys.path.remove(_GW_SRC)
+sys.path.insert(0, _GW_SRC)
 
 from workflow.gateway import Gate  # noqa: E402
 

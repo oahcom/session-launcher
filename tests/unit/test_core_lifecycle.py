@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +17,27 @@ from core import (
     _validate_role_name,
     _resolve_ws_paths,
 )
+from ops.sentinel import CcsHealth
+
+
+@pytest.fixture(autouse=True)
+def isolate_sentinel_dirs(tmp_path, monkeypatch):
+    """隔离哨兵/健康目录，避免测试改写真实 CCS 状态。
+
+    setup_method 只隔离了 CCS_WORKSPACES_ROOT / TMUX_TMPDIR，而 start()/stop()
+    会经 ops.sentinel 直接读写 ~/.hermes/run/{ccs-sentinels,ccs-health}。实测
+    （2026-10-16）：test_start_creates_session 把生产 qa.json 的 pid 清空、
+    title 改成 "QA测试"；test_stop_kills_session 直接删除该文件。
+    同款 fixture 见 tests/unit/test_sentinel.py::isolate_sentinel_dirs。
+    """
+    import ops.sentinel as _sent
+
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    health_dir = tmp_path / "health"
+    health_dir.mkdir()
+    monkeypatch.setattr(_sent, "SENTINEL_DIR", sentinel_dir)
+    monkeypatch.setattr(_sent, "_HEALTH_DIR", health_dir)
 
 
 class TestCoreLifecycle:
@@ -137,6 +159,7 @@ class TestCoreLifecycle:
         sentinel.title = "test"
         sentinel.pid = 12345
         sentinel.tmux_session = "ccs-qa"
+        sentinel.health = CcsHealth()   # 真实字段集，避免缺字段被 Mock 静默补齐
         mock_list_sentinels.return_value = [sentinel]
 
         result = status()
@@ -155,6 +178,7 @@ class TestCoreLifecycle:
         sentinel.title = "test"
         sentinel.pid = None
         sentinel.tmux_session = "ccs-qa"
+        sentinel.health = CcsHealth()
         mock_list_sentinels.return_value = [sentinel]
 
         result = status()
@@ -215,9 +239,8 @@ class TestCoreLifecycle:
         sentinel.tmux_session = "ccs-qa"
         sentinel.partners = []
         sentinel.bus_track = None
-        sentinel.health.last_bus_msg_age = 30.0
-        sentinel.health.watchdog_ok = True
-        sentinel.health.restart_count = 0
+        sentinel.health = CcsHealth(last_bus_msg_age=30.0, watchdog_ok=True,
+                                    last_watchdog_check=time.time(), restart_count=0)
         sentinel.started_at = 1000.0
         mock_read_sentinel.return_value = sentinel
 
@@ -240,9 +263,8 @@ class TestCoreLifecycle:
         sentinel.tmux_session = "ccs-qa"
         sentinel.partners = []
         sentinel.bus_track = None
-        sentinel.health.last_bus_msg_age = 0.0
-        sentinel.health.watchdog_ok = False
-        sentinel.health.restart_count = 0
+        sentinel.health = CcsHealth(last_bus_msg_age=0.0, watchdog_ok=False,
+                                    restart_count=0)
         sentinel.started_at = 0.0
         mock_read_sentinel.return_value = sentinel
 

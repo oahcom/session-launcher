@@ -32,7 +32,11 @@ def dashboard() -> str:
         age = int(time.time() - s.started_at)
         partner = s.partners[0] if s.partners else "-"
         box = "✅" if alive else "❌"
-        wd = "✅" if s.health.watchdog_ok else "❌"
+        # 未测量（last_watchdog_check=0，角色无 partners）显示 —，不要把默认值当健康
+        if not s.health.last_watchdog_check:
+            wd = "—"
+        else:
+            wd = "✅" if s.health.watchdog_ok else "❌"
         lines.append(f"{s.role:16} {box:6} {age//60:3}分{age%60:02d}s "
                      f"{s.pid or 0:<8} {partner:14} {s.bus_track or '-':14} {wd:6} {s.health.restart_count:<4}")
 

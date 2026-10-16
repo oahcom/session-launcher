@@ -319,7 +319,11 @@ def main():
                       f"{'✅' if alive else '❌'}  "
                       f"运行 {uptime_m}分  pid={s['pid']}  "
                       f"partner={s['partner'] or '-'}  bus={s['bus_track'] or '-'}")
-                print(f"      health: watchdog={'✅' if health['watchdog_ok'] else '❌'} "
+                if not health.get("watchdog_measured", True):
+                    wd = "—"   # 从未测量 ≠ 健康。显示 ✅ 会把默认值当成检查结果。
+                else:
+                    wd = "✅" if health["watchdog_ok"] else "❌"
+                print(f"      health: watchdog={wd} "
                       f"bus_age={health['bus_msg_age']}s restarts={health['restart_count']}")
 
     elif args.command == "send":
