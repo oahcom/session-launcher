@@ -48,6 +48,12 @@ __all__ = [
     'CODEX_LOOP_DELAY',
 ]
 
+# codex 0.148 移除 --dangerously-skip-permissions，改名 --dangerously-bypass-approvals-and-sandbox。
+# 旧 flag 直接 Usage 报错退出（2026-10-16 实测 `codex exec --dangerously-skip-permissions`
+# 打印 Usage 并 exit 2），故 runner 脚本与 run_codex_task 都失效。单一常量防两处再次分叉。
+_CODEX_PERM_FLAG = os.environ.get(
+    "CODEX_PERM_FLAG", "--dangerously-bypass-approvals-and-sandbox")
+
 # P0-5: 角色级锁防并发放.ponytail: 简化版 per-role lock, 高并发场景升级为 connection pool
 _CODEX_LOCKS: dict[str, threading.Lock] = {}
 _CODEX_LOCKS_LOCK = threading.Lock()
@@ -176,9 +182,9 @@ def _build_codex_runner_script(role: dict) -> str:
     drive = role.get("drive", "ondemand")
     idle_action = role.get("idle_action", "")
 
-    # ponytail: --dangerously-skip-permissions 用于无交互场景（tmux 内 codex 无法弹出权限确认框）。
+    # ponytail: 跳权限确认用于无交互场景（tmux 内 codex 无法弹出权限确认框）。
     # 如果后续 codex 支持 tmux 兼容的权限确认方式，应移除此标志。
-    _perm_flag = os.environ.get("CODEX_PERM_FLAG", "--dangerously-skip-permissions")
+    _perm_flag = _CODEX_PERM_FLAG
 
     if drive == "goal":
         return (
@@ -221,7 +227,7 @@ def run_codex_task(role_name: str, message: str, timeout: int = 300) -> dict:
 
         try:
             result = subprocess.run(
-                ["codex", "exec", "--dangerously-skip-permissions",
+                ["codex", "exec", _CODEX_PERM_FLAG,
                  "-m", "9router_hermes", prompt],
                 capture_output=True, text=True, timeout=timeout
             )

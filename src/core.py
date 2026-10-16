@@ -1035,6 +1035,10 @@ def _start_feed_subprocess(tmux_name: str) -> None:
 
     记录 Popen 句柄进 _FEED_PROCS，stop() 时按 tmux 名 kill+wait 回收。
     """
+    # 先回收同 target 的旧 listener：pidfile 单实例锁只防"同时存活"，防不住
+    # "旧进程 PPID=1 悬挂 + pidfile 被清"的泄漏路径。实测 ccs-qa 累积 6 个
+    # listener、ccs-scout 3 个（2026-10-16 23:58），重复投递同一 tmux。
+    _kill_feed_listener_by_pidfile(tmux_name)
     try:
         proc = subprocess.Popen(
             [sys.executable, str(FEED_LISTENER), "--tmux-target", tmux_name],

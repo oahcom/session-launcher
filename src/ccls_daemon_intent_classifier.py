@@ -76,12 +76,20 @@ def _inject_text(session: str, text: str) -> bool | None:
 
 
 def _tmux_sessions() -> list[str]:
-    """枚举 ccs-* tmux sessions。"""
+    """枚举 ccs-* tmux sessions。失败返回空表，但必须留日志。
+
+    WHY 不静默：空表被调用方当作"会话消失"（走 _EMPTY_POLL_THRESHOLD 分支）。
+    实测 7/63 轮（11%）返回空而 tmux 中始终有 8 个会话 —— 真正原因（`tmux ls`
+    3s 超时 / socket 抖动）被 except 吞掉后，与"所有会话真退出"无法区分
+    （2026-10-16 排查耗时：需手工模拟 systemd 环境才能排除 PATH/socket 假说）。
+    """
     try:
         out = subprocess.check_output(["tmux", "ls", "-F", "#{session_name}"],
                                       text=True, timeout=3)
         return [s for s in out.splitlines() if s.startswith("ccs-")]
-    except Exception:
+    except Exception as e:
+        print(f"[ccls_daemon] tmux ls 失败 → 空枚举: {e!r}",
+              file=sys.stderr, flush=True)
         return []
 
 @dataclass
