@@ -1,17 +1,12 @@
-"""test_intent_classifier — ccls_daemon_intent_classifier.classify_intent 单测。
+"""test_intent_classifier ─ ccls_daemon_intent_classifier 單元測試。
 
-填补 R70 daemon 缺测试（grep tests/ 无 intent 测试）的缺口；验证疑问/任务/其他
-三类判定与中文问号、英文任务动词前缀（C2 修复点）。
+驗證：(1) 意圖分類三類判定；(2) 停滞檢測連續兩輪無新產出→提醒；
+(3) 品質回歸：停滞自檢提醒不得注入虛假「用户直接指令」前提，bus 痕跡入 monitor_audit。
 """
-import sys
-from pathlib import Path
+import unittest
+from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
 
-_src = Path(__file__).resolve().parent.parent.parent / "src"
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-
-import unittest
 from ccls_daemon_intent_classifier import classify_intent, Intent, IntentReminderDaemon
 
 
@@ -48,11 +43,15 @@ class TestClassifyIntent(unittest.TestCase):
 
 
 class TestStallDetection(unittest.TestCase):
-    """验证 Round 4 复活的 stall 检测：连续两轮 pane 无新产出 → 推送提醒。"""
+    """驗證停滞檢測：連續兩輪 pane 無新產出 → 第二輪推送停滞自檢提醒。
+
+    註：daemon 不再分類 ccs 輸出（D3），僅憑 pane 快照是否變化判定停滞；
+    意圖判定(QUESTION/TASK)歸屬 user→CCS 的 ccs.send→inject_reminder 路徑，
+    daemon 不負意圖判定責任。
+    """
 
     def setUp(self):
         self.daemon = IntentReminderDaemon(interval=0.01)
-        # 清理可能残留的状态
         self.daemon._states.clear()
 
     def tearDown(self):
@@ -60,101 +59,132 @@ class TestStallDetection(unittest.TestCase):
 
     @patch("ccls_daemon_intent_classifier._capture_pane_end")
     @patch("ccls_daemon_intent_classifier.IntentReminderDaemon._push_reminder", return_value=True)
-    @patch("ccls_daemon_intent_classifier.read_intent", return_value=Intent.TASK)
     @patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=["ccs-engineer"])
-    def test_stall_triggers_reminder(self, mock_tmux, mock_read_intent, mock_push, mock_capture):
-        """连续两轮同一 pane 内容 → 第二轮触发提醒。"""
-        pane_content = "user: 修复 bug\nccs: 正在分析...\n" * 10  # 真实会话内容
-        mock_capture.return_value = pane_content
+    def test_stall_triggers_reminder(self, mock_tmux, mock_push, mock_capture):
+        """連續兩輪同一 pane 内容 → 第二輪觸發提醒。"""
+        mock_capture.return_value = "user: 修复 bug\nccs: 正在分析...\n" * 10
 
-        # Poll 1: 首次快照存储，不提醒
         pushed = self.daemon._tick()
-        self.assertEqual(pushed, 0, "首次轮询不应提醒")
+        self.assertEqual(pushed, 0, "首次輪詢不應提醒（僅存快照）")
 
-        # Poll 2: 同内容（ccs 无新产出）→ 应触发提醒
         pushed = self.daemon._tick()
-        self.assertEqual(pushed, 1, "无新产出第二轮应触发提醒")
+        self.assertEqual(pushed, 1, "無新產出第二輪應觸發提醒")
         mock_push.assert_called()
 
     @patch("ccls_daemon_intent_classifier._capture_pane_end")
     @patch("ccls_daemon_intent_classifier.IntentReminderDaemon._push_reminder", return_value=True)
-    @patch("ccls_daemon_intent_classifier.read_intent", return_value=Intent.TASK)
     @patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=["ccs-engineer"])
-    def test_new_output_resets_stall(self, mock_tmux, mock_read_intent, mock_push, mock_capture):
-        """有新产出时不提醒，且更新快照。"""
+    def test_new_output_resets_stall(self, mock_tmux, mock_push, mock_capture):
+        """有新產出時不提醒，並更新快照。"""
         mock_capture.side_effect = [
-            "old output line 1\n",      # Poll 1
-            "old output line 1\nnew output\n",  # Poll 2: 有新内容
+            "old output line 1\n",
+            "old output line 1\nold output\n",
         ]
-
-        # Poll 1
         self.daemon._tick()
-        # Poll 2: 有新产出 → 不提醒，更新快照
         pushed = self.daemon._tick()
-        self.assertEqual(pushed, 0, "有新产出不应触发提醒")
+        self.assertEqual(pushed, 0, "有新產出不應觸發提醒")
         mock_push.assert_not_called()
 
+    @patch("ccls_daemon_intent_classifier._tmux_send")
     @patch("ccls_daemon_intent_classifier._capture_pane_end")
     @patch("ccls_daemon_intent_classifier.subprocess.run")
-    @patch("ccls_daemon_intent_classifier.read_intent", return_value=Intent.TASK)
     @patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=["ccs-engineer"])
-    def test_cooldown_prevents_spam(self, mock_tmux, mock_read_intent, mock_run, mock_capture):
-        """冷却期内不重复提醒。使用真实 _push_reminder 逻辑，mock subprocess.run 返回有效 CompletedProcess。"""
-        from subprocess import CompletedProcess
-        # 构造成功的 CompletedProcess mock
-        mock_completed = MagicMock(spec=CompletedProcess)
-        mock_completed.returncode = 0
-        mock_run.return_value = mock_completed
+    def test_cooldown_prevents_spam(self, mock_tmux, mock_run, mock_capture, mock_send):
+        """冷卻期內不重複推送。
 
-        pane_content = "stalled content\n"
-        mock_capture.return_value = pane_content
+        注入走 _tmux_send 而非 subprocess.run（后者仅供 bus trace 等使用），
+        故以 _tmux_send 调用次数判定推送。
+        """
+        mock_run.return_value = MagicMock(spec=CompletedProcess, returncode=0)
+        mock_capture.return_value = "stalled content\n"
 
-        # 首次触发提醒（2 次 tick：首次存快照，第二次触发）
         self.daemon._tick()
         self.daemon._tick()
-        self.assertTrue(mock_run.called, "首次推送应发生")
-
-        # 冷却期内再次触发 _tick → 不应再次调用 subprocess.run
+        self.assertTrue(mock_send.called, "首次推送應發生")
+        calls_after_first = mock_send.call_count
         for _ in range(5):
             self.daemon._tick()
-        # 仅第一次推送调用 subprocess.run（每行 2 次调用 + reminder 可能多行）
-        # 关键：call_count 应等于首次推送的总调用数，不应增加
-        calls_after_first = mock_run.call_count
-        for _ in range(5):
-            self.daemon._tick()
-        self.assertEqual(mock_run.call_count, calls_after_first, "冷却期内不应再次推送")
-
-    @patch("ccls_daemon_intent_classifier._capture_pane_end")
-    @patch("ccls_daemon_intent_classifier.IntentReminderDaemon._push_reminder", return_value=True)
-    @patch("ccls_daemon_intent_classifier.read_intent", return_value=Intent.TASK)
-    @patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=["ccs-engineer-1"])
-    def test_instance_suffix_stripped_for_intent(self, mock_tmux, mock_read_intent, mock_push, mock_capture):
-        """实例后缀（ccs-engineer-1 → engineer）被剥离后传给 read_intent。"""
-        mock_capture.return_value = "stalled\n"
-        self.daemon._tick()
-        self.daemon._tick()
-        mock_read_intent.assert_called_with("engineer")
+        self.assertEqual(mock_send.call_count, calls_after_first, "冷卻期內不應再次推送")
 
     @patch("ccls_daemon_intent_classifier._capture_pane_end")
     @patch("ccls_daemon_intent_classifier.subprocess.run")
-    @patch("ccls_daemon_intent_classifier.read_intent", return_value=Intent.TASK)
     @patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=["ccs-engineer", "ccs-pm"])
-    def test_multiple_sessions_independent(self, mock_tmux, mock_read_intent, mock_run, mock_capture):
-        """多会话独立跟踪，互不干扰。"""
-        from subprocess import CompletedProcess
-        mock_completed = MagicMock(spec=CompletedProcess)
-        mock_completed.returncode = 0
-        mock_run.return_value = mock_completed
-
+    def test_multiple_sessions_independent(self, mock_tmux, mock_run, mock_capture):
+        """多會話獨立跟蹤，互不干擾。"""
+        mock_run.return_value = MagicMock(spec=CompletedProcess, returncode=0)
         mock_capture.side_effect = ["engineer content\n", "pm content\n"]
         self.daemon._tick()
-        # 两个会话都首轮 → 无提醒
         self.assertEqual(mock_run.call_count, 0)
 
         mock_capture.side_effect = ["engineer content\n", "pm content\n"]
         self.daemon._tick()
-        # 两个会话都第二轮且内容未变 → 各自触发（每个 reminder 触发 subprocess.run 多次）
         self.assertGreater(mock_run.call_count, 0)
+
+
+class TestReminderQuality(unittest.TestCase):
+    """回归：停滞自检提醒必须诚实，不得注入虚假「用户直接指令」前提；bus 痕迹入 monitor_audit。"""
+
+    def test_stagnation_reminder_has_no_false_user_premise(self):
+        d = IntentReminderDaemon(interval=0.01)
+        txt = d._stagnation_reminder(2)
+        self.assertNotIn("你收到的是用户直接指令", txt)
+        self.assertNotIn("直接指令", txt)
+        from user_intent_reminder import _CORE_QUESTIONS
+        self.assertIn(_CORE_QUESTIONS[0], txt)
+        self.assertIn(_CORE_QUESTIONS[1], txt)
+        self.assertIn("停滞自检", txt)
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_bus_trace_writes_monitor_audit_not_code_fix(self, mock_run):
+        mock_run.return_value = MagicMock(spec=CompletedProcess, returncode=0)
+        d = IntentReminderDaemon(interval=0.01)
+        d._bus_trace("ccs-maintainer")
+        self.assertTrue(mock_run.called, "bus trace 应调用 bus_client")
+        args = mock_run.call_args[0][0]
+        self.assertIn("monitor_audit", args, "痕迹应写入 monitor_audit")
+        self.assertNotIn("code_fix", args, "不得再污染 code_fix")
+
+
+class TestInjectTextAsSingleMessage(unittest.TestCase):
+    """多行提醒必须作为**一条**消息注入，不得逐行提交。
+
+    回归：曾用 `for line: send-keys -l line; send-keys Enter`，每行独立成
+    消息（实测 coordinator 收到 22 字符的裸首行
+    「【停滞自检 · 每轮必对齐】第1次重复自检：」），角色为每行各起一个回合应答。
+    """
+
+    @patch("ccls_daemon_intent_classifier._tmux_send")
+    def test_multiline_text_injected_once(self, mock_send):
+        from ccls_daemon_intent_classifier import _inject_text
+        _inject_text("ccs-probe", "L1\nL2\nL3")
+        self.assertEqual(mock_send.call_count, 1,
+                         "多行文本应一次投递，不应逐行发送")
+
+    @patch("ccls_daemon_intent_classifier._tmux_send")
+    def test_text_passed_through_unaltered(self, mock_send):
+        from ccls_daemon_intent_classifier import _inject_text
+        text = "L1\nL2\nL3"
+        _inject_text("ccs-probe", text)
+        self.assertEqual(mock_send.call_args[0][1], text,
+                         "文本应原样传递，不得按行拆分或重组")
+
+    @patch("ccls_daemon_intent_classifier._tmux_send")
+    def test_push_reminder_sends_whole_body(self, mock_send):
+        """_push_reminder 主体走单次注入（含越界摘要分支）。"""
+        d = IntentReminderDaemon(interval=0.01)
+        with patch.object(d, "_recent_violations_summary", return_value=""):
+            d._push_reminder("ccs-probe", round_no=1)
+        self.assertEqual(mock_send.call_count, 1, "整条提醒应一次投递")
+        body = mock_send.call_args[0][1]
+        self.assertIn("停滞自检", body)
+        self.assertGreater(len(body.split("\n")), 1,
+                           "提醒本身应是多行，用于验证整条投递")
+
+    def test_tmux_send_not_degraded_stub(self):
+        """_tmux_send 必须来自 tmux_ops，不得是降级桩（否则注入静默失败）。"""
+        import ccls_daemon_intent_classifier as m
+        self.assertEqual(getattr(m._tmux_send, "__module__", ""), "tmux_ops",
+                         "tmux_ops 加载失败，注入降级为抛异常桩")
 
 
 if __name__ == "__main__":

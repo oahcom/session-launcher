@@ -8,8 +8,9 @@ User spec:
 
 设计决策（v2 修复 Codex 20 维审查发现的 P0/P1）：
 - P0#2 死去重：原 hash(constant_string) 使第二次起永远 False → 改为纯冷却门控。
-- D3 误判 ccs 自身输出：daemon **只分类用户原始输入**，不分类 pane 尾。
-       判定未答复的逻辑改为：上次提醒后 pane 无新产出（快照未变）→ 仍视为未答复。
+- D3 误判 ccs 自身输出：daemon **不分类 ccs 输出**，仅靠 pane 无新产出判定停滞；
+       提醒框架为「停滞自检」（复用 _CORE_QUESTIONS 两问），不声称收到用户指令
+       （user 意图判定属 core.send→inject_reminder，daemon 不负该责，避免虚假前提）。
 - X1 缺单实例锁：加 fcntl.flock pidfile（对齐架构红线 3）。
 - C1 任务动词只看前 12 字：改为全串扫描。
 - C2 英文任务漏判：加英文任务动词前缀。
@@ -33,7 +34,7 @@ PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 # 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent / _CORE_QUESTIONS，
 # 不再各自维护副本（v3 收敛：消除审查发现的重复定义与符号覆盖冲突）。
 try:
-    from user_intent_reminder import classify_intent, Intent, _CORE_QUESTIONS, repeat_reminder, read_intent  # type: ignore
+    from user_intent_reminder import classify_intent, Intent, _CORE_QUESTIONS  # type: ignore
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -45,8 +46,6 @@ except Exception:  # pragma: no cover - 同目录兜底
     classify_intent = _mod.classify_intent
     Intent = _mod.Intent
     _CORE_QUESTIONS = _mod._CORE_QUESTIONS
-    repeat_reminder = _mod.repeat_reminder
-    read_intent = _mod.read_intent
 
 # 生命周期加载（ponytail: 复用 survival_monitor 的 _load_role_lifecycles，
 # 通过 realpath 规范化防路径遍历；ondemand 角色不主动唤醒，避免无谓轰击）。
@@ -59,6 +58,27 @@ try:
 except Exception:  # pragma: no cover - 跨项目路径不可用时回退
     def _load_role_lifecycles() -> dict[str, str]:
         return {}
+
+
+# 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
+try:
+    from tmux_ops import _tmux_send  # type: ignore
+except Exception:  # pragma: no cover - 加载失败时降级为不可注入
+    def _tmux_send(tmux_name: str, message: str, **_kw) -> None:
+        raise RuntimeError("tmux_ops 不可用")
+
+
+def _inject_text(session: str, text: str) -> None:
+    """把多行文本作为**一条**消息注入 pane。
+
+    不可逐行 send-keys + 逐行 Enter：那样每行独立成一条消息（实测
+    coordinator 收到 22 字符的裸首行「【停滞自检 · 每轮必对齐】第1次重复自检：」），
+    角色为每行各起一个回合应答。_tmux_send 整条投递（chunk + 单个 Enter），
+    payload 内嵌换行在 CLI 输入框中是换行而非提交。
+    """
+    _tmux_send(session, text)
+
+
 def _tmux_sessions() -> list[str]:
     """枚举 ccs-* tmux sessions。"""
     try:
@@ -99,39 +119,44 @@ class IntentReminderDaemon:
         self._states: dict[str, _SessionState] = {}
         self._stop = threading.Event()
 
-    def _push_reminder(self, session: str, intent: "Intent | None" = None,
-                       round_no: int = 1) -> bool:
-        """Write reminder to tmux pane (literal, line-by-line). Returns True if pushed."""
+    def _push_reminder(self, session: str, round_no: int = 1) -> bool:
+        """向 tmux pane 逐行 literal 注入「停滞自检」提醒。返回 True 表示已推送。"""
         st = self._states.setdefault(session, _SessionState())
         now = time.monotonic()
         if now - st.last_remind_ts < self._REMIND_COOLDOWN:  # 纯冷却门控 (P0#2)
             return False
-        # 意图感知：core.send 记录的本轮回应用户意图（疑问/任务），定制重复提醒焦点。
-        # 缺失/损坏 → read_intent 回退 Intent.TASK，行为不变。
-        if intent is None:
-            intent = read_intent(session[len("ccs-"):] if session.startswith("ccs-") else session)
-        reminder = repeat_reminder(intent, round_no=round_no)
+        # 本 daemon 在「pane 无新产出」(停滞) 时触发，而非「收到用户指令」时触发；
+        # 因此只复用 user_intent_reminder._CORE_QUESTIONS 这一单一真相源的两问，
+        # 改用「停滞自检」框架——绝不声称"你收到用户直接指令"(那是 core.send→inject_reminder 的职责)，
+        # 否则会向未收到任何用户输入的 /loop 角色注入虚假前提，制造空转答案
+        # (实证：ccs-coordinator 曾回 "已完成。不再回应重复自检。"，对不存在的用户任务作答)。
+        reminder = self._stagnation_reminder(round_no)
         try:
-            # D1 修复：send-keys -l 逐行 literal 发送，避免 \n 被当作按键
-            for line in reminder.split("\n"):
-                subprocess.run(["tmux", "send-keys", "-t", session, "-l", line],
-                               check=True, timeout=3)
-                subprocess.run(["tmux", "send-keys", "-t", session, "Enter"],
-                               check=True, timeout=3)
+            _inject_text(session, reminder)
             # G1 生长：把 conversation_monitor 已检测但仅写 bus 的越界提案
             # 回灌给角色自身（只读提示，不自动执行），闭合治理回路。
             vsum = self._recent_violations_summary(session)
             if vsum:
-                for vline in vsum.split("\n"):
-                    subprocess.run(["tmux", "send-keys", "-t", session, "-l", vline],
-                                   check=True, timeout=3)
-                    subprocess.run(["tmux", "send-keys", "-t", session, "Enter"],
-                                   check=True, timeout=3)
+                _inject_text(session, vsum)
             st.last_remind_ts = now
             st.remind_count += 1
             return True
-        except Exception:
+        except Exception as e:
+            # 不静默：注入失败会让角色永久停在停滞态而无人知晓（本轮实测
+            # AttributeError 被此处吞掉，排查多轮）。降级仍在，但留下痕迹。
+            print(f"[ccls_daemon] 停滞自检注入失败 {session}: {e}",
+                  file=sys.stderr, flush=True)
             return False
+
+    def _stagnation_reminder(self, round_no: int = 1) -> str:
+        """停滞自检提醒文本：诚实对齐当前任务，不复述不存在的用户指令。"""
+        q, t = _CORE_QUESTIONS[0], _CORE_QUESTIONS[1]
+        return (
+            f"【停滞自检 · 每轮必对齐】第{round_no}次重复自检：\n"
+            "你的会话已一段时间没有新产出（可能卡住或空转）。在继续前先诚实对齐当前任务：\n"
+            f"1. {q}\n2. {t}\n"
+            "若当前没有可推进的真实任务，停留在职责上，不要编造待办作答。"
+        )
 
     def _recent_violations_summary(self, session: str) -> str:
         """读取 conversation_monitor 写入 bus 的 role_drift 越界统计。
@@ -181,13 +206,10 @@ class IntentReminderDaemon:
             text = _capture_pane_end(sess)
             if not text:
                 continue
-            # 仅当 pane 快照未变（ccs 无新产出）→ 仍视为未答复 → 提醒
+            # 仅当 pane 快照未变（ccs 无新产出）→ 视为停滞 → 自检提醒
             # D3 修复：不分类 ccs 自身输出，只靠"无新产出"判断停滞
             if text == st.last_snippet:
-                # 意图感知：读 core.send 记录的本轮回应用户意图，按轮次重复提醒。
-                # 使用已去除实例后缀的 role_key（ccs-engineer-1 → engineer）与 core.send 记录对齐
-                _intent = read_intent(role_key)
-                if self._push_reminder(sess, _intent, st.remind_count + 1):
+                if self._push_reminder(sess, st.remind_count + 1):
                     pushed += 1
                     self._bus_trace(sess)
             else:
@@ -195,10 +217,12 @@ class IntentReminderDaemon:
         return pushed
 
     def _bus_trace(self, session: str) -> None:
+        # 停滞自检属监控/健康事件，写入 monitor_audit（语义正确），
+        # 不再污染 code_fix（角色据该 cat 找真实修复方案，噪声会稀释信号）。
         try:
             subprocess.run([
-                BUS_CLIENT, "write", "code_fix",
-                f"[ccls_daemon] 重复提醒 {session} (未答复→重复自检)",
+                BUS_CLIENT, "write", "monitor_audit",
+                f"[ccls_daemon] 停滞自检提醒 {session} (无新产出→重复自检)",
                 "--evidence", f"round=R70 session={session}",
                 "--src", "ccls_daemon",
             ], capture_output=True, timeout=5)
