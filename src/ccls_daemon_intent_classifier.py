@@ -63,15 +63,18 @@ except Exception:  # pragma: no cover - 加载失败时降级为不可注入
         return (name, 0)
 
 
-def _inject_text(session: str, text: str) -> None:
-    """把多行文本作为**一条**消息注入 pane。
+def _inject_text(session: str, text: str) -> bool | None:
+    """把多行文本作为**一条**消息注入 pane。返回 _tmux_send 的结果。
 
     不可逐行 send-keys + 逐行 Enter：那样每行独立成一条消息（实测
     coordinator 收到 22 字符的裸首行「【停滞自检 · 每轮必对齐】第1次重复自检：」），
     角色为每行各起一个回合应答。_tmux_send 整条投递（chunk + 单个 Enter），
     payload 内嵌换行在 CLI 输入框中是换行而非提交。
+
+    **返回值必须逐层上传**：_tmux_send 失败时返回 False 而非抛异常，
+    这里若丢弃它就等于把投递失败伪装成成功。
     """
-    _tmux_send(session, text)
+    return _tmux_send(session, text)
 
 
 def _tmux_sessions() -> list[str]:
@@ -143,7 +146,16 @@ class IntentReminderDaemon:
         # 避免虚假前提而设的妥协，现已有 bus 痕迹作为确证。
         reminder = repeat_reminder(Intent.TASK, round_no)
         try:
-            _inject_text(session, reminder)
+            # 必须看返回值：_tmux_send 重试耗尽时 **return False 而不抛异常**
+            # （tmux_ops.py:220/270，其 docstring 明写"调用方必须检查返回值"）。
+            # 旧写法丢弃返回值 → 投递全失败也计成功，三重后果：用户请求一次没送到
+            # 预算却已耗尽（此后永久静默）、bus 留下"已提醒"的假痕迹（把"没送到"
+            # 伪装成"已对齐"）、daemon 侧无任何失败信号。
+            delivered = _inject_text(session, reminder)
+            if delivered is False:
+                print(f"[ccls_daemon] 重复自检投递失败（重试耗尽）{session}",
+                      file=sys.stderr, flush=True)
+                return False
             st.last_remind_ts = now
             st.remind_count += 1
             return True
@@ -175,11 +187,16 @@ class IntentReminderDaemon:
         （只有标题里的角色名不同）。逐 session 读会形成 N+1 子进程：实测单次
         read 79ms，10 个会话 × 每 10s = 每分钟 ~4.7s CPU，且 bus_client 每次
         构造 Blackboard 都会触发全表 FTS 回填。整轮读一次的代价降到 ~0.5s/分。
-        任何异常返回空 dict（宁可不提醒，也不凭推测注入）。
+
+        用 `search` 而非 `read --cat code_fix`：痕迹是角色各自的最新一条，而 read
+        按分类取整批，会与所有 code_fix 写入（含 contract_updater 等高频源）抢同一个
+        limit 窗口——实测 TOP50 只覆盖到 53 分钟前，一条新痕迹随时被挤出窗口 → 静默
+        停发。search 按标题关键词精确命中（实测只回痕迹本身），无窗口竞争。
+        任何异常返回空 dict（宁可不提醒，也不凭推测注入），但留日志不静默。
         """
         try:
             out = subprocess.run(
-                [BUS_CLIENT, "read", "--cat", "code_fix", "--limit", "50", "--json"],
+                [BUS_CLIENT, "search", "已注入意图提醒", "--limit", "50", "--json"],
                 capture_output=True, text=True, timeout=5,
             ).stdout
             import json
@@ -199,13 +216,23 @@ class IntentReminderDaemon:
                 if role and ts > traces.get(role, 0.0):
                     traces[role] = ts
             return traces
-        except Exception:
+        except Exception as e:
+            # 不静默：读不到痕迹 = 所有角色的提醒静默停发，必须留下痕迹。
+            print(f"[ccls_daemon] 读取用户请求痕迹失败: {e}",
+                  file=sys.stderr, flush=True)
             return {}
 
     def _tick(self) -> int:
         """One poll cycle. Returns # reminders pushed."""
         pushed = 0
         live = set(_tmux_sessions())
+        # 空枚举几乎总是 tmux 抖动（`tmux ls` 3s timeout / socket 重建），不是
+        # "所有 session 都消失了"。此时若照常回收 _states，下一轮 setdefault 会
+        # 把 remind_count 归零 → 同一用户请求再拿满额预算（实测单次抖动使注入
+        # 翻倍 3→6）。跳过本轮，等真枚举回来再判〔对齐架构红线「3 次连续失败才
+        # 标 down」的同一个道理：单次失败不算〕。
+        if not live:
+            return pushed
         # P1 修复：剔除已不存在的 session
         for dead in set(self._states) - live:
             del self._states[dead]

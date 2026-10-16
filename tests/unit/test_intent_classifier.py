@@ -229,6 +229,89 @@ class TestSingleBusReadPerTick(unittest.TestCase):
                          f"4 個會話應只讀 1 次 bus，實際 {mock_run.call_count} 次")
 
 
+class TestDeliveryFailureHandling(unittest.TestCase):
+    """投遞失敗必須被識別，不得計為成功。
+
+    缺陷實證（2026-10-16 獨立審查 D-2 P1）：`_tmux_send` 重試耗盡時
+    **return False 而非拋異常**（tmux_ops.py:220/270，docstring 明寫「調用方
+    必須檢查返回值」）。舊寫法丟棄返回值 → 投遞全失敗也計成功 → 預算空燒、
+    bus 留下「已提醒」假痕跡、daemon 側無失敗信號。
+    """
+
+    def setUp(self):
+        self.daemon = IntentReminderDaemon(interval=0.01)
+        self.daemon._states.clear()
+        self._fixed_ts = time.time()
+        self.daemon._read_request_traces = staticmethod(
+            lambda: {"engineer": self._fixed_ts})
+
+    def tearDown(self):
+        self.daemon._stop.set()
+
+    @patch("ccls_daemon_intent_classifier._tmux_sessions",
+           return_value=["ccs-engineer"])
+    @patch("ccls_daemon_intent_classifier._inject_text", return_value=False)
+    def test_delivery_failure_not_counted_as_success(self, mock_inject, mock_tmux):
+        """投遞恆失敗 → 不得累加預算、不得寫 bus 假痕跡。"""
+        # 冷卻需先放行，否則 _push_reminder 提前 return，本用例會空轉通過
+        with patch("ccls_daemon_intent_classifier.subprocess.run") as mock_run, \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   return_value=self.daemon._REMIND_COOLDOWN + 1):
+            pushed = self.daemon._tick()
+        self.assertTrue(mock_inject.called, "應已嘗試投遞（否則用例空轉）")
+        self.assertEqual(pushed, 0, "投遞失敗不得計入 pushed")
+        self.assertEqual(self.daemon._states["ccs-engineer"].remind_count, 0,
+                         "投遞失敗不得消耗預算（否則永久靜默）")
+        mock_run.assert_not_called()  # 不得寫 monitor_audit 假痕跡
+
+    @patch("ccls_daemon_intent_classifier._tmux_sessions",
+           return_value=["ccs-engineer"])
+    @patch("ccls_daemon_intent_classifier._inject_text", return_value=True)
+    def test_delivery_success_counted(self, mock_inject, mock_tmux):
+        """投遞成功 → 正常累加預算。"""
+        with patch("ccls_daemon_intent_classifier.subprocess.run"), \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   return_value=self.daemon._REMIND_COOLDOWN + 1):
+            pushed = self.daemon._tick()
+        self.assertEqual(pushed, 1)
+        self.assertEqual(self.daemon._states["ccs-engineer"].remind_count, 1)
+
+
+class TestTmuxFlakeResilience(unittest.TestCase):
+    """tmux 枚舉單輪為空 = 抖動，不得清空狀態（否則預算被重置）。
+
+    缺陷實證（2026-10-16 獨立審查 D-4 P2）：`_tmux_sessions` 超時/抖動時返回 []，
+    舊寫法該輪刪除全部 _states → 下一輪 setdefault 令 remind_count 歸零 →
+    同一用戶請求再拿滿額預算（實測單次抖動使注入翻倍 3→6）。
+    對齊架構紅線「3 次連續失敗才標 down」：單次失敗不算。
+    """
+
+    def test_empty_session_list_does_not_reset_budget(self):
+        FIXED_TS = time.time()  # 固定值：time.time() 每次都变会被判成"新请求"
+        d = IntentReminderDaemon(interval=0.01)
+        d._states.clear()
+        d._read_request_traces = staticmethod(lambda: {"engineer": FIXED_TS})
+        injects = []
+        with patch("ccls_daemon_intent_classifier._tmux_sessions",
+                   return_value=["ccs-engineer"]), \
+             patch("ccls_daemon_intent_classifier._inject_text",
+                   side_effect=lambda s, t: injects.append(t)), \
+             patch("ccls_daemon_intent_classifier.subprocess.run"), \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   side_effect=range(0, 10 ** 7, 100)):
+            for _ in range(50):
+                d._tick()  # 耗盡預算
+            self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS)
+            # 單輪枚舉失敗（抖動）
+            with patch("ccls_daemon_intent_classifier._tmux_sessions",
+                       return_value=[]):
+                d._tick()
+            for _ in range(50):
+                d._tick()  # 恢復
+        self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
+                         f"單輪抖動不得重置預算，實際注入 {len(injects)} 次")
+
+
 class TestReminderQuality(unittest.TestCase):
     """bus 痕跡入 monitor_audit，不污染 code_fix。"""
 
