@@ -132,7 +132,13 @@ def _load_states() -> dict[str, _SessionState]:
             return {}
         out: dict[str, _SessionState] = {}
         for k, v in raw.items():
+            # 非 dict 脏值同样按 cap 保守处理（不可 continue 丢弃）：丢弃会让该
+            # 会话在内存中不存在 → 下轮 setdefault 新建 remind_count=0 → 重领满额，
+            # 与落盘防重复提醒的初衷相反（fail-open）。
             if not isinstance(v, dict):
+                out[k] = _SessionState(remind_count=_MAX_REMINDERS_CAP)
+                print(f"[ccls_daemon] 预算状态 {k} 非 dict，按已耗尽处理",
+                      file=sys.stderr, flush=True)
                 continue
             # 逐条 try：单条脏数据（remind_count=null/dict、request_ts 非数）只丢该条。
             # 若让它抛到外层 except，整表预算会被清空 —— 所有角色重新获得满额预算，
@@ -150,7 +156,19 @@ def _load_states() -> dict[str, _SessionState]:
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
             except (TypeError, ValueError):
-                out[k] = _SessionState(remind_count=_MAX_REMINDERS_CAP)
+                # 该条脏：remind_count 不可信 → 写 cap。
+                # 同时**尽量保留 request_ts**：否则 _tick 的「新一轮用户请求」分支
+                # 会因 request_ts=0.0 与真实 ts 不等而重置预算，脏条目被抵消，
+                # 角色再次重领满额 —— 与首轮 P1「防 fail-open」的初衷正好相反。
+                # request_ts 本身也脏时 float() 再抛，落回仅写 cap。
+                try:
+                    out[k] = _SessionState(
+                        request_ts=float(v.get("request_ts", 0.0)),
+                        remind_count=_MAX_REMINDERS_CAP,
+                        intent=None,
+                    )
+                except (TypeError, ValueError):
+                    out[k] = _SessionState(remind_count=_MAX_REMINDERS_CAP)
         if raw and not out:
             # 整表全脏但没触到外层 except → 静默空表会让预算追踪无声消失。
             # 文件格式漂移时没有这条日志就无迹可查。

@@ -166,6 +166,42 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
                          "超大值應 clamp 到 cap")
 
 
+    def test_dirty_entry_preserves_request_ts(self):
+        """remind_count 脏但 request_ts 可解析 → 必须保留 ts（端到端 fail-closed）。
+
+        第二轮审查 P1：原 except 分支只写 remind_count=cap，request_ts 取默认
+        0.0 → `_tick` 的「新一轮用户请求」分支因真实 ts ≠ 0.0 而重置预算 →
+        脏条目被抵消，角色仍重领满额 3 次（与 fail-open 同病）。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(_mod, "STATE_FILE", Path(d) / "state.json"):
+                _mod.STATE_FILE.write_text(json.dumps({
+                    "ccs-x": {"request_ts": 1792184373.9, "remind_count": "dirty"},
+                }), encoding="utf-8")
+                states = _mod._load_states()
+        self.assertEqual(states["ccs-x"].remind_count, _mod._MAX_REMINDERS_CAP)
+        self.assertEqual(states["ccs-x"].request_ts, 1792184373.9,
+                         "request_ts 丢失 → _tick 会当新请求重置预算，fail-closed 失效")
+
+
+    def test_non_dict_entry_not_silently_dropped(self):
+        """非 dict 脏值（如 "not-a-dict"）→ 按 cap 保守处理，不得丢弃。
+
+        丢弃 → 会话不在内存表 → 下轮 setdefault 新建 remind_count=0 → 满额。
+        """
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(_mod, "STATE_FILE", Path(d) / "state.json"):
+                _mod.STATE_FILE.write_text(json.dumps({
+                    "ccs-a": {"request_ts": 1.0, "remind_count": 1},
+                    "ccs-b": "not-a-dict",
+                }), encoding="utf-8")
+                states = _mod._load_states()
+        self.assertIn("ccs-a", states)
+        self.assertEqual(states["ccs-a"].remind_count, 1)
+        self.assertIn("ccs-b", states, "非 dict 条目不得静默丢弃")
+        self.assertEqual(states["ccs-b"].remind_count, _mod._MAX_REMINDERS_CAP)
+
+
     def test_busy_role_defers_reminder_without_spending_budget(self):
         """角色生成中 → 不注入、不計預算（下輪重試）。
 
