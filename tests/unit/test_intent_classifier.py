@@ -81,21 +81,46 @@ class TestRequestDrivenTrigger(unittest.TestCase):
         """請求已過 TTL → 不再重複提醒。"""
         injects = []
         stale = time.time() - IntentReminderDaemon._REQUEST_TTL - 100
-        self._run(50, injects, {"engineer": stale})
+        self._run(50, injects, {"engineer": (stale, None)})
         self.assertEqual(injects, [], "過期請求不應再提醒")
 
     def test_open_request_triggers_reminders_capped(self):
         """存在未對齊請求 → 重複提醒，且不超過單次請求預算。"""
         injects = []
-        self._run(50, injects, {"engineer": time.time()})
+        self._run(50, injects, {"engineer": (time.time(), None)})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
 
+    def test_busy_role_defers_reminder_without_spending_budget(self):
+        """角色生成中 → 不注入、不計預算（下輪重試）。
+
+        缺陷實證（2026-10-17）：Claude Code 生成期間收到的 send-keys 進入
+        queued messages（pane 底部 "Press up to edit queued messages"），角色
+        只在當前回合結束後才讀。實測 qa 忙碌 12 分鐘期間 3 條提醒全卡隊列，
+        而預算已耗盡轉靜默 —— 提醒全部在角色忙時發出、全部在角色閒時失效，
+        與「提醒它自檢」的時機需求恰好相反。修復後忙時延後且不扣預算。
+        """
+        injects = []
+        with patch("ccls_daemon_intent_classifier._role_is_busy", return_value=True):
+            self._run(50, injects, {"engineer": (time.time(), None)})
+        self.assertEqual(injects, [], "角色生成中不應注入（會卡進 queued messages）")
+        st = self.daemon._states["ccs-engineer"]
+        self.assertEqual(st.remind_count, 0,
+                         "忙時延後不得消耗預算，否則角色閒下來時已無預算可提醒")
+
+    def test_idle_role_still_gets_reminders(self):
+        """反向場景：角色空閒時照常提醒（修復不得把提醒一併廢掉）。"""
+        injects = []
+        with patch("ccls_daemon_intent_classifier._role_is_busy", return_value=False):
+            self._run(50, injects, {"engineer": (time.time(), None)})
+        self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
+                         "空閒角色應照常收到提醒")
+
     def test_reminder_uses_user_intent_wording(self):
         """前提已由 bus 痕跡確證 → 用用戶要求的原始措辭，不再用「停滯自檢」框架。"""
         injects = []
-        self._run(50, injects, {"engineer": time.time()})
+        self._run(50, injects, {"engineer": (time.time(), None)})
         self.assertTrue(injects, "應有提醒")
         body = injects[0]
         self.assertIn("你收到的是任务", body)
@@ -103,13 +128,28 @@ class TestRequestDrivenTrigger(unittest.TestCase):
         self.assertIn(_CORE_QUESTIONS[0], body)
         self.assertIn(_CORE_QUESTIONS[1], body)
 
+    def test_question_request_uses_question_wording(self):
+        """疑問請求的重複提醒必須用疑問措辭，不得降級成任務措辭。"""
+        injects = []
+        self._run(50, injects, {"engineer": (time.time(), Intent.QUESTION)})
+        self.assertTrue(injects, "應有提醒")
+        self.assertIn("你收到的是疑问", injects[0],
+                      "疑問請求不得使用任務措辭")
+
+    def test_missing_intent_degrades_to_task_wording(self):
+        """痕跡無 intent 字段（舊痕跡/字段變動）→ 降級 TASK，即修復前行為。"""
+        injects = []
+        self._run(50, injects, {"engineer": (time.time(), None)})
+        self.assertTrue(injects, "應有提醒")
+        self.assertIn("你收到的是任务", injects[0])
+
     def test_new_request_resets_budget(self):
         """新一輪用戶請求到達 → 預算重置，可再次提醒。"""
         injects = []
         base = time.time()
-        self._run(50, injects, {"engineer": base})
+        self._run(50, injects, {"engineer": (base, None)})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS)
-        self._run(50, injects, {"engineer": base + 60})  # 新請求
+        self._run(50, injects, {"engineer": (base + 60, None)})  # 新請求
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS * 2,
                          "新請求後應可再次提醒（預算重置）")
 
@@ -161,7 +201,7 @@ class TestRequestLookup(unittest.TestCase):
             spec=CompletedProcess, returncode=0,
             stdout=json.dumps(self._facts([("engineer", 111.0), ("qa", 222.0)])))
         self.assertEqual(IntentReminderDaemon._read_request_traces(),
-                         {"engineer": 111.0, "qa": 222.0})
+                         {"engineer": (111.0, None), "qa": (222.0, None)})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_keeps_latest_per_role(self, mock_run):
@@ -170,7 +210,45 @@ class TestRequestLookup(unittest.TestCase):
         mock_run.return_value = MagicMock(
             spec=CompletedProcess, returncode=0,
             stdout=json.dumps(self._facts([("qa", 222.0), ("qa", 999.0)])))
-        self.assertEqual(IntentReminderDaemon._read_request_traces(), {"qa": 999.0})
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {"qa": (999.0, None)})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_parses_intent_from_evidence(self, mock_run):
+        """evidence intent= 字段 → Intent（疑问/任务/其他），供重复提醒选用措辞。
+
+        缺陷實證：重複提醒曾硬编码 Intent.TASK，疑問被按任務措辭提醒
+        （「先確保嚴格按用戶指令交付」對一個純提問是錯的前提）。
+        """
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0,
+                 "evidence": "source=user role=qa intent=question"},
+                {"title": "[user_intent_reminder] 已注入意图提醒 → pm",
+                 "timestamp": 222.0,
+                 "evidence": "source=user role=pm intent=task"}]}
+            ))
+        self.assertEqual(
+            IntentReminderDaemon._read_request_traces(),
+            {"qa": (111.0, Intent.QUESTION), "pm": (222.0, Intent.TASK)})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_unknown_intent_value_degrades_to_none(self, mock_run):
+        """intent 取值非法（數據漂移/字段改義）→ None，由調用方降級 TASK。
+
+        不得讓髒值炸整輪解析（會使所有角色靜默零提醒）。
+        """
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0, "evidence": "source=user role=qa intent=wut"}]}
+            ))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(),
+                         {"qa": (111.0, None)})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_ignores_non_trace_facts(self, mock_run):
@@ -243,9 +321,17 @@ class TestDeliveryFailureHandling(unittest.TestCase):
         self.daemon._states.clear()
         self._fixed_ts = time.time()
         self.daemon._read_request_traces = staticmethod(
-            lambda: {"engineer": self._fixed_ts})
+            lambda: {"engineer": (self._fixed_ts, None)})
+        # 本組用例只考「投遞失敗處理」，忙檢測是另一維（見
+        # TestRequestDrivenTrigger 的 busy 用例）。不打樁會讀到真 tmux 狀態：
+        # engineer 真忙 → _push_reminder 提前 return → 投遞根本未嘗試 →
+        # mock_inject.called 恆 False，測試空轉而非測到目標行為。
+        self._busy_patch = patch(
+            "ccls_daemon_intent_classifier._role_is_busy", return_value=False)
+        self._busy_patch.start()
 
     def tearDown(self):
+        self._busy_patch.stop()
         self.daemon._stop.set()
 
     @patch("ccls_daemon_intent_classifier._tmux_sessions",
@@ -298,7 +384,7 @@ class TestTmuxFlakeResilience(unittest.TestCase):
         FIXED_TS = time.time()  # 固定值：time.time() 每次都变会被判成"新请求"
         d = IntentReminderDaemon(interval=0.01)
         d._states.clear()
-        d._read_request_traces = staticmethod(lambda: {"engineer": FIXED_TS})
+        d._read_request_traces = staticmethod(lambda: {"engineer": (FIXED_TS, None)})
         injects = []
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \

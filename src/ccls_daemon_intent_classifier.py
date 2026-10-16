@@ -24,13 +24,17 @@ User spec:
 ponytail: 轮询 10s，覆盖 ~50 个 ccs-* tmux session；并发 >100 改 event-driven。
 """
 from __future__ import annotations
-import os, time, subprocess, sys, fcntl, threading
+import json, os, re, time, subprocess, sys, fcntl, threading
 from dataclasses import dataclass
 from pathlib import Path
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 BUS_CLIENT = os.path.join(HERMES_HOME, "scripts", "bus_client.py")
 PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
+# 提醒预算落盘：daemon 按设计会因源码 mtime 变化退出并由 systemd 重拉（见 run()），
+# 内存态 _states 随之清零 → 同一条痕迹再次领满额预算，实测每 ~3 分钟复现一次
+# "预算耗尽(3次)"（2026-10-17 00:04/00:06/00:09/00:11）。落盘后重载可续算。
+STATE_FILE = Path(HERMES_HOME) / "run" / "intent_reminder_state.json"
 
 
 # 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent /
@@ -52,13 +56,16 @@ except Exception:  # pragma: no cover - 同目录兜底
 
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
 try:
-    from tmux_ops import _tmux_send, parse_tmux_name  # type: ignore
+    from tmux_ops import _tmux_send, parse_tmux_name, _role_is_busy  # type: ignore
 except Exception:  # pragma: no cover - 加载失败时降级为不可注入
     def _tmux_send(tmux_name: str, message: str, **_kw) -> None:
         raise RuntimeError("tmux_ops 不可用")
 
     def parse_tmux_name(name: str):  # type: ignore
         return (name, 0)
+
+    def _role_is_busy(tmux_name: str) -> bool:  # type: ignore
+        return False  # 降级：判不出忙 → 照常投递（宁可投递也不静默停发）
 
 
 def _inject_text(session: str, text: str) -> bool | None:
@@ -98,6 +105,50 @@ class _SessionState:
     request_ts: float = 0.0   # 该角色最近一次用户请求时刻（bus 注入痕迹 timestamp）
     last_remind_ts: float = 0.0
     remind_count: int = 0
+    # 该请求的意图（evidence intent= 字段）。取不到时调用方降级 TASK。
+    intent: "Intent | None" = None
+
+
+def _load_states() -> dict[str, _SessionState]:
+    """读回落盘的提醒预算。损坏/缺失一律返回空表（降级为原内存行为，不阻塞启动）。
+
+    只保留与本进程活着的会话无关的语义：键是 tmux session 名，由调用方决定去留。
+    """
+    try:
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, _SessionState] = {}
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                out[k] = _SessionState(
+                    request_ts=float(v.get("request_ts", 0.0)),
+                    last_remind_ts=float(v.get("last_remind_ts", 0.0)),
+                    remind_count=int(v.get("remind_count", 0)),
+                    intent=None,  # 意图每轮从痕迹刷新，无需持久化
+                )
+        return out
+    except Exception as e:
+        if STATE_FILE.exists():  # 存在却读不出 = 真损坏，留日志；不存在是首启，正常
+            print(f"[ccls_daemon] 预算状态读取失败（降级为内存态）: {e}",
+                  file=sys.stderr, flush=True)
+        return {}
+
+
+def _save_states(states: dict[str, _SessionState]) -> None:
+    """原子写回预算状态。失败只留日志 —— 落盘是优化，不该让 daemon 崩。"""
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {k: {"request_ts": s.request_ts,
+                 "last_remind_ts": s.last_remind_ts,
+                 "remind_count": s.remind_count}
+             for k, s in states.items()},
+            ensure_ascii=False), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception as e:
+        print(f"[ccls_daemon] 预算状态写入失败: {e}", file=sys.stderr, flush=True)
 
 
 class IntentReminderDaemon:
@@ -140,21 +191,38 @@ class IntentReminderDaemon:
 
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
-        self._states: dict[str, _SessionState] = {}
+        # 从磁盘续算预算：本 daemon 按设计会因源码更新退出重拉（见 run()），
+        # 若不续算，每次编辑源文件都会让同一条痕迹重新领满额提醒。
+        self._states: dict[str, _SessionState] = _load_states()
         self._empty_polls = 0
         self._stop = threading.Event()
 
-    def _push_reminder(self, session: str, round_no: int = 1) -> bool:
+    def _push_reminder(self, session: str, round_no: int = 1,
+                       intent: "Intent | None" = None) -> bool:
         """向 tmux pane 注入「重复自检」提醒。返回 True 表示已推送。"""
         st = self._states.setdefault(session, _SessionState())
         now = time.monotonic()
         if now - st.last_remind_ts < self._REMIND_COOLDOWN:  # 纯冷却门控 (P0#2)
             return False
+        # 角色生成中时**不注入、也不计预算**。Claude Code 在生成期间收到 send-keys
+        # 会排进 queued messages（pane 底部 "Press up to edit queued messages"），
+        # 角色只在当前回合结束后才读——实测 qa 忙碌 12 分钟时 3 条提醒全卡在队列，
+        # 而预算已耗尽转静默。结果是：提醒全部在角色忙时发出、全部在角色闲时失效，
+        # 恰与"提醒它自检"的时机需求相反。返回 False 让调用方下轮重试。
+        try:
+            if _role_is_busy(session):
+                print(f"[ccls_daemon] {session} 生成中 → 延后提醒（不计预算）",
+                      file=sys.stderr, flush=True)
+                return False
+        except Exception:
+            pass  # 忙检测不可用则照常投递，宁可误投也不静默停发
         # 触发前提已成立（该角色确有未对齐的用户请求），故用用户要求的原始措辞。
         # 这与 core.send 的首轮注入同源（_REMINDER_HEADER / repeat_reminder），
         # 不再需要 v2 的「停滞自检」中性框架——那是为了在「不知有无用户输入」时
         # 避免虚假前提而设的妥协，现已有 bus 痕迹作为确证。
-        reminder = repeat_reminder(Intent.TASK, round_no)
+        # 意图取自痕迹（疑问/任务措辞不同：疑问强调"先回答用户问题"）；取不到
+        # （旧痕迹/字段缺失）降级 TASK，即本 daemon 修复前的行为。
+        reminder = repeat_reminder(intent or Intent.TASK, round_no)
         try:
             # 必须看返回值：_tmux_send 重试耗尽时 **return False 而不抛异常**
             # （tmux_ops.py:220/270，其 docstring 明写"调用方必须检查返回值"）。
@@ -194,8 +262,12 @@ class IntentReminderDaemon:
             return session[len("ccs-"):] if session.startswith("ccs-") else session
 
     @staticmethod
-    def _read_request_traces() -> dict[str, float]:
-        """一次性读回全部用户请求痕迹：{角色名: 最近请求时刻}。
+    def _read_request_traces() -> dict[str, tuple[float, "Intent | None"]]:
+        """一次性读回全部用户请求痕迹：{角色名: (最近请求时刻, 意图)}。
+
+        意图取自 core.send 写下的 evidence `intent=` 字段（classify_intent 的
+        产物）。缺失时为 None —— 旧痕迹（本字段上线前写入）与证据格式变动都会
+        命中，调用方按 TASK 降级（保持本 daemon 修复前的行为）。
 
         每轮只读一次 bus，而非每个 session 各读一次——查询与 session 无关
         （只有标题里的角色名不同）。逐 session 读会形成 N+1 子进程：实测单次
@@ -218,7 +290,7 @@ class IntentReminderDaemon:
             data = json.loads(out)
             facts = data.get("facts", data) if isinstance(data, dict) else data
             prefix = "[user_intent_reminder] 已注入意图提醒 → "
-            traces: dict[str, float] = {}
+            traces: dict[str, tuple[float, "Intent | None"]] = {}
             for f in facts:
                 title = f.get("title") or ""
                 if not title.startswith(prefix):
@@ -228,8 +300,14 @@ class IntentReminderDaemon:
                     ts = float(f.get("timestamp") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                if role and ts > traces.get(role, 0.0):
-                    traces[role] = ts
+                ev = f.get("evidence") or ""
+                _m = re.search(r"intent=(\w+)", ev)
+                try:
+                    intent = Intent(_m.group(1)) if _m else None
+                except ValueError:
+                    intent = None  # 未知取值：降级 TASK，不让脏数据中断整轮
+                if role and ts > traces.get(role, (0.0, None))[0]:
+                    traces[role] = (ts, intent)
             return traces
         except Exception as e:
             # 不静默：读不到痕迹 = 所有角色的提醒静默停发，必须留下痕迹。
@@ -269,18 +347,20 @@ class IntentReminderDaemon:
             # 被动角色"，而此刻用户明确找过它、它也确实在 tmux 里跑着——提醒是响应
             # 用户请求，不是主动唤醒。过滤掉会让"用户问了 qa，qa 永远收不到重复提醒"。
             # 实证：qa 的 persona 声明 ondemand 但运行时哨兵是 infinite，被静默跳过。
-            req = traces.get(role_key, 0.0)
-            if not req:
+            trace = traces.get(role_key)
+            if not trace:
                 continue
+            req, req_intent = trace
             if time.time() - req > self._REQUEST_TTL:
                 continue  # 请求已过期，不再重复提醒
             if req != st.request_ts:
                 # 新一轮用户请求 → 预算重置，可重新提醒
                 st.request_ts = req
                 st.remind_count = 0
+            st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
-            if self._push_reminder(sess, st.remind_count + 1):
+            if self._push_reminder(sess, st.remind_count + 1, st.intent):
                 pushed += 1
                 self._bus_trace(sess)
                 if st.remind_count == self._MAX_REMINDERS:
@@ -289,6 +369,11 @@ class IntentReminderDaemon:
                     print(f"[ccls_daemon] {sess} 重复自检预算耗尽 "
                           f"({self._MAX_REMINDERS}次) → 转静默，等下一轮用户请求",
                           file=sys.stderr, flush=True)
+        # 落盘：仅在有提醒产出时写（每轮无条件写会以 10s 频率刷盘）。
+        # 代价是"重载前的最后一次 tick"若没推提醒就不留痕——可接受：
+        # remind_count 只在推送成功后自增，未推送时磁盘值即最新值。
+        if pushed:
+            _save_states(self._states)
         return pushed
 
     def _bus_trace(self, session: str) -> None:
