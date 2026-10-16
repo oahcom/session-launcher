@@ -72,9 +72,6 @@ def main():
                          help="驱动方式: loop / feed / ondemand（默认从 persona JSON 读取）")
     p_start.add_argument("--feed-cat", default="",
                          help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
-    p_start.add_argument("--route-policy", default="sticky",
-                         choices=["sticky", "round-robin", "priority"],
-                         help="路由策略")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
     p_start.add_argument("--instance-id", type=int, default=0,

@@ -628,6 +628,30 @@ class TestInjectRoleKnowledge:
         # 回退路径注入 base.md（含角色职责红线）或 _fallback_base_content（含安全红线）
         assert ("安全红线" in content) or ("角色职责红线" in content)
 
+    def test_assembled_without_action_templates_gets_them(self, tmp_path):
+        """P12f: assembler 输出无动作模板 → 补上（33 个非手写角色走这条路）"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text("content")
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 定位\n只有定位"):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("archivist", "Archivist"))
+        content = md_path.read_text()
+        assert "动作模板" in content
+        assert "bus_write code" in content
+
+    def test_assembled_with_action_templates_not_duplicated(self, tmp_path):
+        """P12g: assembler 已含动作模板 → 不重复注入（pm/writer/reviewer/scout 手写版）"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text("content")
+        handwritten = "## 定位\n## 动作模板（填空即执行）\n  手写内容"
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=handwritten):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("pm", "PM"))
+        content = md_path.read_text()
+        assert content.count("动作模板") == 1
+
 
 # ===================================================================
 # P13

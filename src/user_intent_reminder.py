@@ -123,6 +123,11 @@ def inject_reminder(message: str, source: str = "") -> str:
 
     防御：CORE_QUESTIONS 缺一或问句为空时返回原消息（不抛错、不丢失）。
     """
+    # 分类结果必须能被调用方取出：daemon 的重复提醒曾硬编码 Intent.TASK，
+    # 于是疑问被按任务措辞提醒。此处挂到函数属性上（inject_reminder.intent），
+    # 调用方复用同一份判定而不是各自重算 —— 重算会在 message 已被包裹后
+    # 拿到不同结果（含提醒前缀的文本尾部是「再结束本轮。」，判定必然漂移）。
+    inject_reminder.intent = classify_intent(message) if is_user_source(source) else None
     if not is_user_source(source):
         return message
     if _REMINDER_MARKER in message:
@@ -132,12 +137,3 @@ def inject_reminder(message: str, source: str = "") -> str:
     if not _should_inject(message):
         return message  # R70: 非疑问/任务 → 跳过
     return f"{_REMINDER_HEADER}\n{message}"
-
-
-def read_intent(role: str) -> Intent:
-    """Read persisted user intent for a role.
-
-    ponytail: 意图状态持久化（intent_state.json）已废弃，此处回退到
-    Intent.TASK（与 daemon 原有 fallback 行为一致），不引入新依赖。
-    """
-    return Intent.TASK

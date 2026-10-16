@@ -384,6 +384,12 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     # 优先使用 role_assembler 输出（含 base.md + 角色 prompt + driver mixin）
     assembled = _role_assembler_output(name, role)
     if assembled:
+        # 动作模板只有 4 个角色手写在 prompts/roles/*.md 里，其余角色的
+        # workspace 缺这块（33/37 实测无「禁区」）。_action_templates 是同内容的
+        # 动态版，却从未被调用——这里接上。已有手写版的角色输出里已含该块，
+        # 跳过以免同一段在 KNOWLEDGE 块内重复两次。
+        if "动作模板" not in assembled:
+            assembled += "\n\n" + _action_templates(role)
         knowledge_block = (
             f"\n\n<!-- KNOWLEDGE:START -->\n"
             f"{assembled}\n"
