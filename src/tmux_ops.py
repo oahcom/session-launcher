@@ -200,14 +200,9 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3, retry_delay: floa
     """
     for attempt in range(retries):
         try:
-            # 退出可能的分页器/输出界面（/status 等命令的输出卡住 Claude）
-            # q 退出 pager 后必须 C-c 清空输入缓冲，否则 q 会粘在下一条消息前
-            # 导致 q/goal [] 畸形，触发空目标死循环（bus #141691 根因）
-            subprocess.run(
-                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "q"],
-                capture_output=True, timeout=3,
-            )
-            time.sleep(0.05)
+            # C-c 同时承担退 pager 与清输入缓冲两件事，不要为此单独发 q。
+            # q 在无 pager 时会被 Claude CLI 输入框当普通文本接收，粘在下条消息
+            # 前形成 q/goal 畸形（实测 pane: "❯ q/goal [deadlock] task_spec 超时"）。
             subprocess.run(
                 ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-c"],
                 capture_output=True, timeout=3,
