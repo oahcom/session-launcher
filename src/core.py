@@ -369,7 +369,10 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
-        if not o.detach:
+        # isatty 守卫与下方 attach 路径一致：systemd/管道环境无 TTY，
+        # 直接 execvp 会 "open terminal failed: not a terminal" 并以 1 退出，
+        # 被 Restart=on-failure 当成崩溃反复重启（实测 ccs@maintainer 6 次熔断）。
+        if not o.detach and sys.stdin and sys.stdin.isatty():
             os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
         print(f"📋 {tmux_name} 已在运行")
         return {"success": True, "role": o.role, "tmux_session": tmux_name,
