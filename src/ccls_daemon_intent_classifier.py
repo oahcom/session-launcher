@@ -28,6 +28,13 @@ from pathlib import Path
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 BUS_CLIENT = os.path.join(HERMES_HOME, "scripts", "bus_client.py")
+# 漂移告警时效：检测器每 3600s 重跑一次（routing_daemon.DRIFT_INTERVAL）。
+# 关键：不再漂移的角色【不会被更新】，其旧行的 ts 停留在最后一次漂移时刻，
+# 因此 TTL 必须【略大于一个检测周期】—— 否则本轮刚报的告警会在下轮检测前
+# 就被判过期；取 1.5 倍既覆盖调度抖动，又能在「上轮报过、本轮没报」后
+# 于约 1.5~2.5 小时内自然过期。实测：detect_drift 修复时间窗后 scout 已
+# 不再漂移，但其 17:15 的旧告警仍会持续注入 pane。
+_DRIFT_ALERT_TTL = 5400  # 1.5 × DRIFT_INTERVAL
 PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 
 
@@ -175,9 +182,15 @@ class IntentReminderDaemon:
             # （partner.py:210）。直接取 facts；非 dict 时回退为自身。
             _data = json.loads(out)
             facts = _data.get("facts", _data) if isinstance(_data, dict) else _data
+            # 时效门：检测器每小时重跑，不再漂移的角色【不会覆写】其旧告警，
+            # 旧条会长期留在最近 30 条内并被反复注入（幽灵告警）。
+            # 实测 scout 在时间窗修复后已不再漂移，但其 0.9h 前的旧告警仍会被注入。
+            # 此处只认最近一轮检测周期（2×DRIFT_INTERVAL=2h）内的告警。
+            _cutoff = time.time() - _DRIFT_ALERT_TTL
             hits = [f for f in facts
                     if "role_drift" in (f.get("tags") or "")
-                    and f.get("title", "").startswith(f"[role_drift] {role} ")]
+                    and f.get("title", "").startswith(f"[role_drift] {role} ")
+                    and float(f.get("timestamp") or 0) >= _cutoff]
             if not hits:
                 return ""
             last = hits[0]["title"]
