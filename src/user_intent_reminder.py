@@ -91,6 +91,9 @@ def repeat_reminder(intent: Intent, round_no: int = 1) -> str:
     WHY: 用户要求 daemon 在处理期间"重复提醒" ccs 自检两个问题，
     防止答非所问或偷懒。round_no 标记轮次，让 ccs 可见这是第几次重复。
     intent 用于措辞微调（疑问强调"先回答用户问题"，任务强调"严格按指令"）。
+
+    调用方仅可在**确知该角色存在未对齐用户请求**时调用（触发源为 bus 里的
+    core.send 注入痕迹）。前提不成立时不调用——不得凭"角色空闲"推断用户在等。
     """
     q, t = _CORE_QUESTIONS[0], _CORE_QUESTIONS[1]
     focus = ("（你收到的是疑问，先确保回答了用户的问题）" if intent == Intent.QUESTION

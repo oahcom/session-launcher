@@ -6,11 +6,15 @@ User spec:
   "deamon 当用户输入给 ccs 时判断这些是不是疑问或者任务，
    deamon 需要重复提醒 ccs（你真的解决的用户的问题了吗？你真的有严格按用户的提示去完成任务吗？)"
 
-设计决策（v2 修复 Codex 20 维审查发现的 P0/P1）：
+设计决策（v3 触发源纠偏 — 见 ~/.hermes/workspace/ccs-intent-daemon-realign/REQUIREMENT.md）：
+- 触发源：pane 无新产出 → **该角色存在未对齐用户请求**。前者对 infinite 常驻角色
+  等价于「角色空闲」（其设计上的正常态），会形成 注入→应答→pane变→重置预算→再注入
+  的自激循环（实测 pm 250 轮 / coordinator 193 轮 / engineer 175 轮）。改后
+  无用户请求即零注入，且回到用户原始要求「当用户输入信息给 ccs 时候…重复提醒」。
+- 请求证据复用 core.send 既有写入，不新增状态文件（bus ON CONFLICT(t) 天然去重）。
+- 提醒文案改回用户要求的「你收到的是用户直接指令」——前提已由 bus 痕迹确证。
+- 删除 _recent_violations_summary 回灌（drift 告警语义另有缺陷，且属纯噪音）。
 - P0#2 死去重：原 hash(constant_string) 使第二次起永远 False → 改为纯冷却门控。
-- D3 误判 ccs 自身输出：daemon **不分类 ccs 输出**，仅靠 pane 无新产出判定停滞；
-       提醒框架为「停滞自检」（复用 _CORE_QUESTIONS 两问），不声称收到用户指令
-       （user 意图判定属 core.send→inject_reminder，daemon 不负该责，避免虚假前提）。
 - X1 缺单实例锁：加 fcntl.flock pidfile（对齐架构红线 3）。
 - C1 任务动词只看前 12 字：改为全串扫描。
 - C2 英文任务漏判：加英文任务动词前缀。
@@ -28,18 +32,15 @@ from pathlib import Path
 
 HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 BUS_CLIENT = os.path.join(HERMES_HOME, "scripts", "bus_client.py")
-# 漂移告警判定改为「以最新一轮检测结果为准」—— 见 _recent_violations_summary，
-# 读 detector 每轮写出的 [role_drift_summary] 全量快照。
-# 曾试过时间衰减 TTL（1.5 × DRIFT_INTERVAL），但治标不治本：已恢复的角色在
-# TTL 到期前仍被注入幽灵告警，且 TTL 取值无法同时满足「不漏报本轮」与
-# 「尽快清掉上轮」，故弃用。
 PID_FILE = Path(HERMES_HOME) / "run" / "ccls_intent_daemon.pid"
 
 
-# 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent / _CORE_QUESTIONS，
-# 不再各自维护副本（v3 收敛：消除审查发现的重复定义与符号覆盖冲突）。
+# 意图判定单一真相源：复用 user_intent_reminder 的 classify_intent / Intent /
+# _CORE_QUESTIONS / repeat_reminder，不再各自维护副本
+# （v3 收敛：消除审查发现的重复定义与符号覆盖冲突）。
 try:
-    from user_intent_reminder import classify_intent, Intent, _CORE_QUESTIONS  # type: ignore
+    from user_intent_reminder import (  # type: ignore
+        classify_intent, Intent, _CORE_QUESTIONS, repeat_reminder)
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -51,6 +52,7 @@ except Exception:  # pragma: no cover - 同目录兜底
     classify_intent = _mod.classify_intent
     Intent = _mod.Intent
     _CORE_QUESTIONS = _mod._CORE_QUESTIONS
+    repeat_reminder = _mod.repeat_reminder
 
 # 生命周期加载（ponytail: 复用 survival_monitor 的 _load_role_lifecycles，
 # 通过 realpath 规范化防路径遍历；ondemand 角色不主动唤醒，避免无谓轰击）。
@@ -93,31 +95,46 @@ def _tmux_sessions() -> list[str]:
     except Exception:
         return []
 
-def _capture_pane_end(session: str) -> str:
-    """Read last ~500 chars of a tmux pane (active window/pane)."""
-    try:
-        out = subprocess.check_output(
-            ["tmux", "capture-pane", "-t", session, "-p", "-S", "-500"],
-            text=True, timeout=3, stderr=subprocess.DEVNULL)
-        return out
-    except Exception:
-        return ""
-
 @dataclass
 class _SessionState:
     """Per-session reminder state."""
-    last_snippet: str = ""
+    request_ts: float = 0.0   # 该角色最近一次用户请求时刻（bus 注入痕迹 timestamp）
     last_remind_ts: float = 0.0
     remind_count: int = 0
 
 
 class IntentReminderDaemon:
-    """后台轮询：检测 ccs 是否有疑问未答/任务未尽 → 重复提醒。
+    """后台轮询：用户向 ccs 提出请求后，重复提醒其自检是否真解决了用户问题。
+
+    触发源 = 该角色存在**未对齐的用户请求**，取自 bus 里 core.send 写下的注入
+    痕迹（title 前缀 `[user_intent_reminder] 已注入意图提醒 → <role>`，其
+    timestamp 即「最近一次用户请求」）。复用 core.send 既有写入，无需新状态；
+    bus 的 ON CONFLICT(t) 保证每角色恒只留最新一条，天然免去去重维护。
+
+    曾用「pane 快照无变化」判停滞 —— 该判据对 infinite 常驻角色等价于「角色空闲」，
+    而空闲是其设计上的正常态：被判停滞 → 每 30s 注入 → 角色回一句"是/是/待机" →
+    pane 变化 → 预算重置 → 再注入，形成自激循环（实测 pm 250 轮、coordinator 193 轮、
+    engineer 175 轮；coordinator 应答"告警同前。待机。"逐字重复 98 次，每次消耗一个
+    完整 LLM 回合）。改用请求驱动后，无用户请求即零注入，空转从根上消失，
+    同时回到用户原始要求：「当用户输入信息给 ccs 时候…重复提醒」。
 
     启动: python3 ccls_daemon_intent_classifier.py --daemon
     """
     _INTERVAL = 10.0        # 轮询间隔
     _REMIND_COOLDOWN = 30.0  # 同 session 冷却（纯冷却门控，修复 P0#2）
+    # 单次用户请求的重复提醒预算。冷却只限频率不限总量；同一请求超过此数仍未
+    # 对齐（应答恒为同一句"是/是/待命"）说明角色是**选择空闲**而非卡住，转静默
+    # 避免空转消耗。3 次跨 90s 已足够让真跑偏的角色察觉。
+    # 新一轮用户请求到达 → 预算重置 → 可再次提醒。
+    _MAX_REMINDERS = 3
+    # 用户请求的提醒有效期：超过则视为已过期，不再重复提醒（旧请求不该无限期
+    # 挂着消耗回合；也不该在新请求到来时被复活）。
+    _REQUEST_TTL = 1800.0
+    # 本文件路径，供 run() 检测源码更新（见 run 内注释）。
+    _SRC_FILE = os.path.abspath(__file__)
+    # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
+    # systemd Restart=always 以新代码拉起。线程模式下无人重拉，故不退出。
+    _supervised = False
 
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
@@ -125,86 +142,50 @@ class IntentReminderDaemon:
         self._stop = threading.Event()
 
     def _push_reminder(self, session: str, round_no: int = 1) -> bool:
-        """向 tmux pane 逐行 literal 注入「停滞自检」提醒。返回 True 表示已推送。"""
+        """向 tmux pane 注入「重复自检」提醒。返回 True 表示已推送。"""
         st = self._states.setdefault(session, _SessionState())
         now = time.monotonic()
         if now - st.last_remind_ts < self._REMIND_COOLDOWN:  # 纯冷却门控 (P0#2)
             return False
-        # 本 daemon 在「pane 无新产出」(停滞) 时触发，而非「收到用户指令」时触发；
-        # 因此只复用 user_intent_reminder._CORE_QUESTIONS 这一单一真相源的两问，
-        # 改用「停滞自检」框架——绝不声称"你收到用户直接指令"(那是 core.send→inject_reminder 的职责)，
-        # 否则会向未收到任何用户输入的 /loop 角色注入虚假前提，制造空转答案
-        # (实证：ccs-coordinator 曾回 "已完成。不再回应重复自检。"，对不存在的用户任务作答)。
-        reminder = self._stagnation_reminder(round_no)
+        # 触发前提已成立（该角色确有未对齐的用户请求），故用用户要求的原始措辞。
+        # 这与 core.send 的首轮注入同源（_REMINDER_HEADER / repeat_reminder），
+        # 不再需要 v2 的「停滞自检」中性框架——那是为了在「不知有无用户输入」时
+        # 避免虚假前提而设的妥协，现已有 bus 痕迹作为确证。
+        reminder = repeat_reminder(Intent.TASK, round_no)
         try:
             _inject_text(session, reminder)
-            # G1 生长：把 conversation_monitor 已检测但仅写 bus 的越界提案
-            # 回灌给角色自身（只读提示，不自动执行），闭合治理回路。
-            vsum = self._recent_violations_summary(session)
-            if vsum:
-                _inject_text(session, vsum)
             st.last_remind_ts = now
             st.remind_count += 1
             return True
         except Exception as e:
-            # 不静默：注入失败会让角色永久停在停滞态而无人知晓（本轮实测
-            # AttributeError 被此处吞掉，排查多轮）。降级仍在，但留下痕迹。
-            print(f"[ccls_daemon] 停滞自检注入失败 {session}: {e}",
+            # 不静默：注入失败会让角色永久停在未对齐态而无人知晓。
+            print(f"[ccls_daemon] 重复自检注入失败 {session}: {e}",
                   file=sys.stderr, flush=True)
             return False
 
-    def _stagnation_reminder(self, round_no: int = 1) -> str:
-        """停滞自检提醒文本：诚实对齐当前任务，不复述不存在的用户指令。"""
-        q, t = _CORE_QUESTIONS[0], _CORE_QUESTIONS[1]
-        return (
-            f"【停滞自检 · 每轮必对齐】第{round_no}次重复自检：\n"
-            "你的会话已一段时间没有新产出（可能卡住或空转）。在继续前先诚实对齐当前任务：\n"
-            f"1. {q}\n2. {t}\n"
-            "若当前没有可推进的真实任务，停留在职责上，不要编造待办作答。"
-        )
+    def _request_ts(self, session: str) -> float:
+        """读该角色最近一次用户请求时刻，无则 0.0。
 
-    def _recent_violations_summary(self, session: str) -> str:
-        """读取 conversation_monitor 写入 bus 的 role_drift 越界统计。
-
-        返回紧凑提示（最多 2 行），无越界返回空串。
-        任何异常静默降级（不阻塞提醒主流程）。
+        来源为 core.send 在 source∈(user,cli) 时写下的注入痕迹。任何异常
+        返回 0.0（宁可不提醒，也不凭推测注入——误报会直接制造空转）。
         """
+        # 会话名 ccs-<role>[-N] → 角色名（多实例归并到同一角色，与其痕迹标题一致）
         role = session[len("ccs-"):] if session.startswith("ccs-") else session
+        if "-" in role:
+            role = role.rsplit("-", 1)[0]
         try:
             out = subprocess.run(
-                [BUS_CLIENT, "read", "--cat", "architecture", "--limit", "30", "--json"],
+                [BUS_CLIENT, "read", "--cat", "code_fix", "--limit", "50", "--json"],
                 capture_output=True, text=True, timeout=5,
             ).stdout
             import json
-            # bus read --json 输出为对象信封 {"facts": [...]}，与 search --json 同约定
-            # （partner.py:210）。直接取 facts；非 dict 时回退为自身。
-            _data = json.loads(out)
-            facts = _data.get("facts", _data) if isinstance(_data, dict) else _data
-            # 以最新一轮检测结果为准：detector 每轮写一条固定标题的全量快照
-            # （[role_drift_summary]，bus ON CONFLICT(t) 保证只留最新），
-            # 其 evidence.drifted 列出【本轮仍漂移的角色】。
-            # 角色不在名单内 = 已恢复 → 不注入。原实现直接取最近一条 role_drift
-            # 即注入，不看该角色是否仍在漂移，导致已恢复角色被反复注入幽灵告警
-            # （实测 scout/pm/engineer 于 17:26 修复后旧告警仍持续注入）。
-            _sum = next((f for f in facts
-                         if (f.get("title") or "").startswith("[role_drift_summary]")), None)
-            try:
-                _drifted = set(json.loads((_sum or {}).get("evidence") or "{}").get("drifted") or [])
-            except (json.JSONDecodeError, TypeError, AttributeError):
-                _drifted = None  # 快照缺失/损坏 → 无法判定，退回原行为（宁多报不漏报）
-            hits = [f for f in facts
-                    if "role_drift" in (f.get("tags") or "")
-                    and (f.get("title") or "").startswith(f"[role_drift] {role} ")]
-            if not hits:
-                return ""
-            if _drifted is not None and role not in _drifted:
-                return ""  # 本轮快照未列该角色 → 已恢复，不注入
-            last = hits[0]["title"]
-            entries = last.split(":", 1)[-1].strip()
-            return (f"⚠️ 监测到越界操作统计（来自 conversation_monitor）："
-                    f"{role} 漂移 {entries[:120]}")
+            data = json.loads(out)
+            facts = data.get("facts", data) if isinstance(data, dict) else data
+            want = f"[user_intent_reminder] 已注入意图提醒 → {role}"
+            hit = next((f for f in facts if (f.get("title") or "") == want), None)
+            return float((hit or {}).get("timestamp") or 0.0)
         except Exception:
-            return ""
+            return 0.0
 
     def _tick(self) -> int:
         """One poll cycle. Returns # reminders pushed."""
@@ -222,26 +203,35 @@ class IntentReminderDaemon:
                 role_key = role_key.rsplit("-", 1)[0]
             if _load_role_lifecycles().get(role_key, "infinite") == "ondemand":
                 continue
-            text = _capture_pane_end(sess)
-            if not text:
-                continue
-            # 仅当 pane 快照未变（ccs 无新产出）→ 视为停滞 → 自检提醒
-            # D3 修复：不分类 ccs 自身输出，只靠"无新产出"判断停滞
-            if text == st.last_snippet:
-                if self._push_reminder(sess, st.remind_count + 1):
-                    pushed += 1
-                    self._bus_trace(sess)
-            else:
-                st.last_snippet = text  # 存完整 pane 快照（非截断尾）；与下次整段比较才能正确判定"无新产出"
+            req = self._request_ts(sess)
+            if not req:
+                continue  # 无用户请求 → 零注入（infinite 角色的空闲是正常态）
+            if time.time() - req > self._REQUEST_TTL:
+                continue  # 请求已过期，不再重复提醒
+            if req != st.request_ts:
+                # 新一轮用户请求 → 预算重置，可重新提醒
+                st.request_ts = req
+                st.remind_count = 0
+            if st.remind_count >= self._MAX_REMINDERS:
+                continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
+            if self._push_reminder(sess, st.remind_count + 1):
+                pushed += 1
+                self._bus_trace(sess)
+                if st.remind_count == self._MAX_REMINDERS:
+                    # 预算耗尽转静默时留痕一次：否则"角色已对齐"与"daemon 挂了"
+                    # 在观感上无法区分（journald 侧可查）。
+                    print(f"[ccls_daemon] {sess} 重复自检预算耗尽 "
+                          f"({self._MAX_REMINDERS}次) → 转静默，等下一轮用户请求",
+                          file=sys.stderr, flush=True)
         return pushed
 
     def _bus_trace(self, session: str) -> None:
-        # 停滞自检属监控/健康事件，写入 monitor_audit（语义正确），
+        # 重复提醒属监控/健康事件，写入 monitor_audit（语义正确），
         # 不再污染 code_fix（角色据该 cat 找真实修复方案，噪声会稀释信号）。
         try:
             subprocess.run([
                 BUS_CLIENT, "write", "monitor_audit",
-                f"[ccls_daemon] 停滞自检提醒 {session} (无新产出→重复自检)",
+                f"[ccls_daemon] 重复自检提醒 {session} (存在未对齐用户请求)",
                 "--evidence", f"round=R70 session={session}",
                 "--src", "ccls_daemon",
             ], capture_output=True, timeout=5)
@@ -249,8 +239,27 @@ class IntentReminderDaemon:
             pass
 
     def run(self) -> None:
+        """轮询主循环。
+
+        WHY 每轮查源码 mtime：本 daemon 由 systemd(ccs-intent-guardian)常驻托管，
+        进程启动后永不再读源文件——main 分支上的修复对运行中的实例完全不生效
+        （实测 2026-10-16：18:23 与 20:37 两次修复提交后，运行实例仍在执行修复前
+        的判据，继续以旧逻辑每 30s 轰击角色，coordinator 累计 193+ 轮）。
+        supervised 时主动退出，靠单元既有的 Restart=always 以新代码重启——
+        比自建 exec/reload 更省，且天然复用单实例 PID 锁。
+        线程模式（watchdog 内启动）无 supervisor，退出等于永久停摆，故不查。
+        """
+        src_mtime = os.path.getmtime(self._SRC_FILE)
         while not self._stop.is_set():
             self._tick()
+            if self._supervised:
+                try:
+                    if os.path.getmtime(self._SRC_FILE) != src_mtime:
+                        print("[ccls_daemon] 源码已更新 → 退出，等 supervisor 以新代码拉起",
+                              file=sys.stderr, flush=True)
+                        return
+                except OSError:
+                    pass  # 源文件暂不可读（原子替换窗口）：下一轮再判
             self._stop.wait(self._interval)
 
     def start(self) -> threading.Thread:
@@ -309,6 +318,8 @@ if __name__ == "__main__":
         if lock is None:
             print("ccls_daemon already running (pid lock held). Exiting.")
             raise SystemExit(1)
-        IntentReminderDaemon().run()
+        d = IntentReminderDaemon()
+        d._supervised = True  # 由 systemd 托管：源码更新时退出重拉（见 run）
+        d.run()
     else:
         print("Run with --daemon or --selfcheck")
