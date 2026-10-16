@@ -107,12 +107,20 @@ class _SessionState:
     remind_count: int = 0
     # 该请求的意图（evidence intent= 字段）。取不到时调用方降级 TASK。
     intent: "Intent | None" = None
+    # 已就"角色生成中"打过一次日志（防每 tick 刷屏）。不持久化：重启后重报一次无妨。
+    deferred_logged: bool = False
 
 
 def _load_states() -> dict[str, _SessionState]:
     """读回落盘的提醒预算。损坏/缺失一律返回空表（降级为原内存行为，不阻塞启动）。
 
     只保留与本进程活着的会话无关的语义：键是 tmux session 名，由调用方决定去留。
+
+    **不读回 last_remind_ts**：它是 time.monotonic()（自开机计时），而本文件在
+    持久盘上跨重启存活。重启后 monotonic 归零，旧值（上次开机时长，可达数天）
+    会让冷却判据 `now - last_remind_ts < 30` 恒真 → 该 session 的提醒静默停发；
+    且新用户请求只重置 request_ts/remind_count，救不回。冷却本就是同进程内的
+    节流概念，跨重启无须继承 —— 丢掉它等于允许重启后立即提醒一次，无害。
     """
     try:
         raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -120,13 +128,20 @@ def _load_states() -> dict[str, _SessionState]:
             return {}
         out: dict[str, _SessionState] = {}
         for k, v in raw.items():
-            if isinstance(v, dict):
+            if not isinstance(v, dict):
+                continue
+            # 逐条 try：单条脏数据（remind_count=null/dict、request_ts 非数）只丢该条。
+            # 若让它抛到外层 except，整表预算会被清空 —— 所有角色重新获得满额预算，
+            # 正是本文件反复防的"预算空烧"。
+            try:
                 out[k] = _SessionState(
                     request_ts=float(v.get("request_ts", 0.0)),
-                    last_remind_ts=float(v.get("last_remind_ts", 0.0)),
+                    last_remind_ts=0.0,  # 见 docstring：monotonic 不可跨重启继承
                     remind_count=int(v.get("remind_count", 0)),
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
+            except (TypeError, ValueError):
+                continue
         return out
     except Exception as e:
         if STATE_FILE.exists():  # 存在却读不出 = 真损坏，留日志；不存在是首启，正常
@@ -136,13 +151,16 @@ def _load_states() -> dict[str, _SessionState]:
 
 
 def _save_states(states: dict[str, _SessionState]) -> None:
-    """原子写回预算状态。失败只留日志 —— 落盘是优化，不该让 daemon 崩。"""
+    """原子写回预算状态。失败只留日志 —— 落盘是优化，不该让 daemon 崩。
+
+    不写 last_remind_ts（monotonic，跨重启无意义），只持久化能跨重启继承的
+    请求时刻与已用预算。
+    """
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(
             {k: {"request_ts": s.request_ts,
-                 "last_remind_ts": s.last_remind_ts,
                  "remind_count": s.remind_count}
              for k, s in states.items()},
             ensure_ascii=False), encoding="utf-8")
@@ -211,9 +229,15 @@ class IntentReminderDaemon:
         # 恰与"提醒它自检"的时机需求相反。返回 False 让调用方下轮重试。
         try:
             if _role_is_busy(session):
-                print(f"[ccls_daemon] {session} 生成中 → 延后提醒（不计预算）",
-                      file=sys.stderr, flush=True)
+                # 只在"由闲转忙"时留痕一次：每 tick(10s) 每忙角色各打一行，
+                # 50 角色忙 12 分钟即 ~3600 行噪音，与本文件空枚举分支
+                # 「只在状态变化时留痕」的既定风格一致。
+                if not st.deferred_logged:
+                    st.deferred_logged = True
+                    print(f"[ccls_daemon] {session} 生成中 → 延后提醒（不计预算）",
+                          file=sys.stderr, flush=True)
                 return False
+            st.deferred_logged = False  # 已转闲，下次变忙时再报
         except Exception:
             pass  # 忙检测不可用则照常投递，宁可误投也不静默停发
         # 触发前提已成立（该角色确有未对齐的用户请求），故用用户要求的原始措辞。

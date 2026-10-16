@@ -3,12 +3,42 @@
 驗證：(1) 意圖分類三類判定；(2) 請求驅動觸發——僅在角色存在未對齊用戶請求
 時重複提醒，無請求零注入；(3) 單次請求預算上限與新請求重置。
 """
+import json
+import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
 
+import ccls_daemon_intent_classifier as _mod
 from ccls_daemon_intent_classifier import classify_intent, Intent, IntentReminderDaemon
+
+
+class _HermeticStateFile(unittest.TestCase):
+    """把 STATE_FILE 重定向到临时目录，避免测试写生产预算文件。
+
+    缺陷實證（2026-10-17 三方審查 P1）：`_tick` 推送成功後 `_save_states` 直接寫
+    `~/.hermes/run/intent_reminder_state.json`。未打樁的用例跑一次就用測試態
+    覆蓋 daemon 的真實預算（實測殘留 last_remind_ts: 300，只可能來自測試 mock 的
+    monotonic 序列）—— daemon 被 systemd 重拉後讀到它，即復現「冷卻恆真→靜默停發」。
+    同類缺陷本項目修過（test_core 寫生產 workflows.db），此處不得重蹈。
+    """
+    _state_patch = None
+    _state_dir = None
+
+    def setUp(self):
+        super().setUp()
+        self._state_dir = tempfile.TemporaryDirectory()
+        self._state_patch = patch.object(
+            _mod, "STATE_FILE", Path(self._state_dir.name) / "intent_reminder_state.json")
+        self._state_patch.start()
+
+    def tearDown(self):
+        self._state_patch.stop()
+        self._state_dir.cleanup()
+        super().tearDown()
 
 
 class TestClassifyIntent(unittest.TestCase):
@@ -43,7 +73,7 @@ class TestClassifyIntent(unittest.TestCase):
         self.assertEqual(classify_intent("你好"), Intent.OTHER)
 
 
-class TestRequestDrivenTrigger(unittest.TestCase):
+class TestRequestDrivenTrigger(_HermeticStateFile):
     """驗證觸發源為「該角色存在未對齊用戶請求」，而非 pane 無新產出。
 
     缺陷實證（2026-10-16）：原判據 `text == st.last_snippet` 對 infinite 常駐
@@ -53,6 +83,7 @@ class TestRequestDrivenTrigger(unittest.TestCase):
     """
 
     def setUp(self):
+        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
         self.daemon = IntentReminderDaemon(interval=0.01)
         self.daemon._states.clear()
 
@@ -307,7 +338,7 @@ class TestSingleBusReadPerTick(unittest.TestCase):
                          f"4 個會話應只讀 1 次 bus，實際 {mock_run.call_count} 次")
 
 
-class TestDeliveryFailureHandling(unittest.TestCase):
+class TestDeliveryFailureHandling(_HermeticStateFile):
     """投遞失敗必須被識別，不得計為成功。
 
     缺陷實證（2026-10-16 獨立審查 D-2 P1）：`_tmux_send` 重試耗盡時
@@ -317,6 +348,7 @@ class TestDeliveryFailureHandling(unittest.TestCase):
     """
 
     def setUp(self):
+        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
         self.daemon = IntentReminderDaemon(interval=0.01)
         self.daemon._states.clear()
         self._fixed_ts = time.time()
@@ -371,7 +403,7 @@ class TestDeliveryFailureHandling(unittest.TestCase):
         self.assertEqual(self.daemon._states["ccs-engineer"].remind_count, 1)
 
 
-class TestTmuxFlakeResilience(unittest.TestCase):
+class TestTmuxFlakeResilience(_HermeticStateFile):
     """tmux 枚舉單輪為空 = 抖動，不得清空狀態（否則預算被重置）。
 
     缺陷實證（2026-10-16 獨立審查 D-4 P2）：`_tmux_sessions` 超時/抖動時返回 []，
@@ -406,7 +438,7 @@ class TestTmuxFlakeResilience(unittest.TestCase):
                          f"單輪抖動不得重置預算，實際注入 {len(injects)} 次")
 
 
-class TestReminderQuality(unittest.TestCase):
+class TestReminderQuality(_HermeticStateFile):
     """bus 痕跡入 monitor_audit，不污染 code_fix。"""
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
@@ -464,7 +496,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestEmptyPollReclaimsEventually(unittest.TestCase):
+class TestEmptyPollReclaimsEventually(_HermeticStateFile):
     """連續空枚舉超過閾值 → 認定會話真退出，照常回收狀態。
 
     回歸（2026-10-16 二輪審查 P1-3）：上一輪的抖動守衛 `if not live: return`
@@ -474,6 +506,9 @@ class TestEmptyPollReclaimsEventually(unittest.TestCase):
     """
 
     def setUp(self):
+        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
+        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
+        super().setUp()  # 激活 _HermeticStateFile 的状态隔离
         self.daemon = IntentReminderDaemon(interval=0.01)
 
     def tearDown(self):
@@ -521,3 +556,44 @@ class TestEmptyPollReclaimsEventually(unittest.TestCase):
                 d._tick()  # 再空一輪
         self.assertIn("ccs-engineer", d._states,
                       "恢復後計數應歸零，單輪空不回收")
+
+
+class TestStatePersistence(_HermeticStateFile):
+    """預算落盤的跨重啟語義與髒數據韌性。
+
+    缺陷實證（2026-10-17 三方審查）：
+    (1) last_remind_ts 是 time.monotonic()（自開機計時）卻落盤 → 重啟後 monotonic
+        歸零，舊值（上次開機時長）使冷卻判據 `now - last < 30` 恆真 → 該 session
+        提醒靜默停發數天，且新請求只重置預算不重置冷卻，救不回。
+    (2) 單條髒數據（remind_count=null/dict）拋 TypeError 被外層 except 吞掉 →
+        整表預算清空 → 所有角色重新獲得滿額預算（本文件反覆防的"預算空燒"）。
+    """
+
+    def test_monotonic_cooldown_not_restored_across_restart(self):
+        """重啟後不得繼承 monotonic 冷卻值（否則冷卻恆真→靜默停發）。"""
+        _mod.STATE_FILE.write_text(json.dumps({
+            "ccs-qa": {"request_ts": 123.0, "last_remind_ts": 999999.0,
+                       "remind_count": 2}}), encoding="utf-8")
+        st = _mod._load_states()["ccs-qa"]
+        self.assertEqual(st.last_remind_ts, 0.0,
+                         "monotonic 冷卻值不可跨重啟繼承（會導致永久靜默）")
+        self.assertEqual(st.remind_count, 2, "已用預算應保留（防重啟刷預算）")
+        self.assertEqual(st.request_ts, 123.0)
+
+    def test_save_omits_monotonic_cooldown(self):
+        """落盤內容不含 last_remind_ts（寫了也無意義且有害）。"""
+        _mod._save_states({"ccs-qa": _mod._SessionState(
+            request_ts=1.0, last_remind_ts=888.0, remind_count=1)})
+        raw = json.loads(_mod.STATE_FILE.read_text(encoding="utf-8"))
+        self.assertNotIn("last_remind_ts", raw["ccs-qa"],
+                         "monotonic 值不得落盤")
+
+    def test_one_dirty_entry_does_not_clear_whole_table(self):
+        """單條髒數據只丟該條，不得清空整表預算。"""
+        _mod.STATE_FILE.write_text(json.dumps({
+            "good": {"request_ts": 1.0, "remind_count": 1},
+            "bad": {"request_ts": None, "remind_count": None},
+        }), encoding="utf-8")
+        st = _mod._load_states()
+        self.assertIn("good", st, "合法條目不得因鄰條髒數據而丟失")
+        self.assertNotIn("bad", st, "髒條目應被跳過")
