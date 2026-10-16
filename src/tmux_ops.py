@@ -88,6 +88,11 @@ CODEX_READY_RETRIES = 15
 CODEX_READY_INTERVAL = 0.5
 
 _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
+# swap 余量下限：MemAvailable 充足但 swap 见底时，新 claude 仍会卡在内核
+# __mem_cgroup_handle_over_high（实测 2026-10-16：SwapFree=0 时 4 个 claude
+# 停在 Dl+ 不可中断睡眠，pane 空白、界面不出现）。只看 MemAvailable 的
+# 原判据对此完全无感——available 显示 6.1GB 却起不来角色。
+_SWAP_FREE_MIN_MB = 128
 
 _CCS_LAUNCH_INTERVAL = 8  # 连续启动 CCS 之间至少等待秒数
 
@@ -99,16 +104,28 @@ def _check_memory_before_launch(role: str) -> str | None:
     """检查是否有足够内存启动新 CCS。内存不足返回错误描述，否则返回 None。"""
     global _last_ccs_launch_ts
     try:
-        meminfo = Path("/proc/meminfo").read_text()
-        for line in meminfo.split("\n"):
-            if line.startswith("MemAvailable:"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    avail_mb = int(parts[1]) // 1024
-                    if avail_mb < _MEM_FREE_MIN_MB:
-                        return (f"可用内存仅 {avail_mb}MB（< {_MEM_FREE_MIN_MB}MB），"
-                                f"跳过 {role} 启动")
-                break
+        # /proc/meminfo 里 MemAvailable 排在 SwapTotal/SwapFree 之前，逐个
+        # startswith 判并 break 会让 swap 读不到 → 先整体解析，再判断。
+        fields = {}
+        for line in Path("/proc/meminfo").read_text().split("\n"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].endswith(":"):
+                try:
+                    fields[parts[0][:-1]] = int(parts[1])
+                except ValueError:
+                    continue
+        avail_mb = fields.get("MemAvailable", 0) // 1024
+        swap_total_mb = fields.get("SwapTotal", 0) // 1024
+        swap_free_mb = fields.get("SwapFree", 0) // 1024
+        # swap 见底：新进程会卡在内核 __mem_cgroup_handle_over_high（不可中断
+        # 睡眠）——pane 空白、Claude 界面不出现。MemAvailable 对此无感，必须
+        # 独立判。swap_total=0 表示未启用 swap，不构成拦阻理由。
+        if swap_total_mb > 0 and swap_free_mb < _SWAP_FREE_MIN_MB:
+            return (f"swap 仅剩 {swap_free_mb}MB（< {_SWAP_FREE_MIN_MB}MB），"
+                    f"跳过 {role} 启动：新进程会卡在内核内存回收")
+        if avail_mb < _MEM_FREE_MIN_MB:
+            return (f"可用内存仅 {avail_mb}MB（< {_MEM_FREE_MIN_MB}MB），"
+                    f"跳过 {role} 启动")
     except Exception:
         logging.getLogger("tmux_ops").warning("内存检查失败，跳过可用内存校验")
 
