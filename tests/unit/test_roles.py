@@ -398,6 +398,22 @@ class TestActionTemplates:
         role = {"name": "qa", "output_targets": [], "input_signals": []}
         assert "禁区" in _roles._action_templates(role)
 
+    def test_command_forms_match_alias_signature(self):
+        """P7f: 生成的命令必须可执行（参数个数对齐 alias 实际签名）
+
+        bus_client.py 的 `write` 只接 2 个位置参数（cat, text），`read` 的
+        限额是 --limit 选项。旧模板写 3 个位置参数（cat + 标题 + 内容）与
+        位置式限额，实测均报 `unrecognized arguments`。
+        """
+        import routing.roles as _roles
+        role = {"name": "qa", "output_targets": ["bus cat=code"],
+                "input_signals": [{"type": "bus", "spec": {"category": "task"}}]}
+        result = _roles._action_templates(role)
+        assert 'bus_write code "CODE: ' in result
+        # 标题与内容合并为单个引号参数：引号内的破折号是合法内容，不是第 3 参数
+        assert result.count('bus_write code "') == 1
+        assert "bus_read task --limit 5" in result
+
 
 # ===================================================================
 # P8

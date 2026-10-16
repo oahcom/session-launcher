@@ -211,15 +211,19 @@ def _action_templates(role: dict) -> str:
     consume = [c for c in _sl_consume(role.get("input_signals", [])) if c != "*"]
 
     lines = ["## 动作模板（填空即执行）"]
-    lines.append("# bus_write/bus_read/bus_unread/bus_search 是 system alias（定义在 .bashrc）")
+    lines.append("# bus_write/bus_read 是 system alias（定义在 .bashrc）")
+    # 参数形式对齐 alias 实际签名：bus_write 经 alias 只多传 --src，
+    # `write` 子命令只接 2 个位置参数（cat, text）——旧模板写 3 个
+    # （cat + 标题 + 内容），实测报 `unrecognized arguments: <内容>`。
+    # bus_read 的 alias 是 `read --cat`，限额用 --limit 而非位置参数。
     for cat in produce:
         lines.append(f"\n写 {cat} → 输出完成")
-        lines.append(f'  bus_write {cat} "{cat.upper()}: 【标题】" "【内容/路径】"')
+        lines.append(f'  bus_write {cat} "{cat.upper()}: 【标题】—— 【内容摘要/路径】"')
     consume_targets = consume[:3]
     if consume_targets:
         lines.append("\n读消息")
         for cat in consume_targets:
-            lines.append(f"  bus_read {cat} 5")
+            lines.append(f"  bus_read {cat} --limit 5")
 
     # ── 跨角色协作示例（仅拥有唤醒权限的角色） ──
     # 构建拥有唤醒权限的角色列表
