@@ -123,6 +123,8 @@ class IntentReminderDaemon:
     # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
     # systemd Restart=always 以新代码拉起。线程模式下无人重拉，故不退出。
     _supervised = False
+    # 待确认的源码 mtime：非 0 表示上一轮见到过变化，本轮再相同才认定稳定（防抖）。
+    _pending_mtime = 0.0
 
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
@@ -263,16 +265,29 @@ class IntentReminderDaemon:
         supervised 时主动退出，靠单元既有的 Restart=always 以新代码重启——
         比自建 exec/reload 更省，且天然复用单实例 PID 锁。
         线程模式（watchdog 内启动）无 supervisor，退出等于永久停摆，故不查。
+
+        WHY 要求"映入后稳定一轮"：源文件正被编辑（多人/多 agent 同时改 main）时，
+        每次重拉都会立刻读到又变了的 mtime → 立即再退出 → systemd 连续重拉，
+        RestartSteps=5 的退避触顶后服务永久停摆。实测 2026-10-16 21:03-21:04：
+        21:03:41/21:04:03/21:04:28 三次「源码已更新→退出」，restart counter 累到 3，
+        随后 ccs-intent-guardian 停摆。故 mtime 需连续两轮相同才算稳定，
+        只有稳定后才退出，避免边写边拉的自激循环。
         """
         src_mtime = os.path.getmtime(self._SRC_FILE)
         while not self._stop.is_set():
             self._tick()
             if self._supervised:
                 try:
-                    if os.path.getmtime(self._SRC_FILE) != src_mtime:
-                        print("[ccls_daemon] 源码已更新 → 退出，等 supervisor 以新代码拉起",
-                              file=sys.stderr, flush=True)
-                        return
+                    cur = os.path.getmtime(self._SRC_FILE)
+                    if cur != src_mtime:
+                        if cur == self._pending_mtime:
+                            # 连续两轮 mtime 一致 → 编辑已停止，可安全退出重拉
+                            print("[ccls_daemon] 源码已更新（稳定）→ 退出，"
+                                  "等 supervisor 以新代码拉起", file=sys.stderr, flush=True)
+                            return
+                        self._pending_mtime = cur  # 首次见到变化：待下一轮确认
+                    else:
+                        self._pending_mtime = 0.0
                 except OSError:
                     pass  # 源文件暂不可读（原子替换窗口）：下一轮再判
             self._stop.wait(self._interval)
