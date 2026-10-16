@@ -45,6 +45,21 @@ python3 src/ccs.py status <role>
 python3 src/ecosystem_health.py --json   # 或 --ci（异常时 exit 1）
 ```
 
+### 意图守护 daemon（ccls_daemon_intent_classifier.py）
+`ccs-intent-guardian.service` 托管。触发源 = 该角色存在**未对齐的用户请求**
+（读 bus 中 `core.send` 写的 `[user_intent_reminder] 已注入意图提醒 → <role>` 痕迹，其
+`ts` 即最近一次用户请求）。有请求才提醒，预算 `_MAX_REMINDERS=3`、TTL `_REQUEST_TTL=1800s`；
+**无请求即零注入**。
+
+曾用「pane 快照无变化」判停滞 —— 对 infinite 常驻角色该判据等价于「角色空闲」，
+而空闲是其正常态，于是形成自激循环：注入 → 角色回"是/是/待机" → pane 变化 →
+预算重置 → 再注入。实测 coordinator 767 条发言里 64% 是此类空转、pm 42%、engineer 56%
+（有真实任务的 scout/qa/lr ≈ 0%）；每次注入烧掉一个完整 LLM 回合、产出为零。
+改用请求驱动后实测 110min 零空转（2026-10-16）。
+
+- 源码更新后 daemon 主动退出，交 systemd `Restart=always` 以新代码拉起 → 重启计数增长属**设计**，非崩溃循环
+- 改触发器/预算后必须重启该 service，否则跑的是旧代码
+
 ### 路由策略
 - sticky（默认）：同角色消息路由到同一 CCS
 - round-robin：轮询分发

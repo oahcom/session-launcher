@@ -64,7 +64,7 @@ class TestRequestDrivenTrigger(unittest.TestCase):
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \
              patch("ccls_daemon_intent_classifier._inject_text",
-                   side_effect=lambda s, t: injects.append(t)), \
+                   side_effect=lambda s, t: (injects.append(t), True)[1]), \
              patch("ccls_daemon_intent_classifier.subprocess.run"), \
              patch("ccls_daemon_intent_classifier.time.monotonic",
                    side_effect=range(0, 10 ** 7, 100)):
@@ -250,19 +250,27 @@ class TestDeliveryFailureHandling(unittest.TestCase):
 
     @patch("ccls_daemon_intent_classifier._tmux_sessions",
            return_value=["ccs-engineer"])
-    @patch("ccls_daemon_intent_classifier._inject_text", return_value=False)
-    def test_delivery_failure_not_counted_as_success(self, mock_inject, mock_tmux):
-        """投遞恆失敗 → 不得累加預算、不得寫 bus 假痕跡。"""
-        # 冷卻需先放行，否則 _push_reminder 提前 return，本用例會空轉通過
-        with patch("ccls_daemon_intent_classifier.subprocess.run") as mock_run, \
-             patch("ccls_daemon_intent_classifier.time.monotonic",
-                   return_value=self.daemon._REMIND_COOLDOWN + 1):
-            pushed = self.daemon._tick()
-        self.assertTrue(mock_inject.called, "應已嘗試投遞（否則用例空轉）")
-        self.assertEqual(pushed, 0, "投遞失敗不得計入 pushed")
-        self.assertEqual(self.daemon._states["ccs-engineer"].remind_count, 0,
-                         "投遞失敗不得消耗預算（否則永久靜默）")
-        mock_run.assert_not_called()  # 不得寫 monitor_audit 假痕跡
+    def test_delivery_failure_not_counted_as_success(self, mock_tmux):
+        """投遞非明確成功（False/None/0/""）→ 不得累加預算、不得寫 bus 假痕跡。
+
+        判據用 `is not True`：_tmux_send 歷史上有過「超限後靜默返回 None」的版本，
+        只判 `is False` 會在那種實現下重新靜默失效。
+        """
+        for bad in (False, None, 0, ""):
+            with self.subTest(returned=bad):
+                self.daemon._states.clear()
+                with patch("ccls_daemon_intent_classifier._inject_text",
+                           return_value=bad) as mock_inject, \
+                     patch("ccls_daemon_intent_classifier.subprocess.run") as mock_run, \
+                     patch("ccls_daemon_intent_classifier.time.monotonic",
+                           return_value=self.daemon._REMIND_COOLDOWN + 1):
+                    pushed = self.daemon._tick()
+                self.assertTrue(mock_inject.called, "應已嘗試投遞（否則用例空轉）")
+                self.assertEqual(pushed, 0, f"投遞返回 {bad!r} 不得計入 pushed")
+                self.assertEqual(
+                    self.daemon._states["ccs-engineer"].remind_count, 0,
+                    f"投遞返回 {bad!r} 不得消耗預算（否則永久靜默）")
+                mock_run.assert_not_called()  # 不得寫 monitor_audit 假痕跡
 
     @patch("ccls_daemon_intent_classifier._tmux_sessions",
            return_value=["ccs-engineer"])
@@ -295,7 +303,7 @@ class TestTmuxFlakeResilience(unittest.TestCase):
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \
              patch("ccls_daemon_intent_classifier._inject_text",
-                   side_effect=lambda s, t: injects.append(t)), \
+                   side_effect=lambda s, t: (injects.append(t), True)[1]), \
              patch("ccls_daemon_intent_classifier.subprocess.run"), \
              patch("ccls_daemon_intent_classifier.time.monotonic",
                    side_effect=range(0, 10 ** 7, 100)):
@@ -368,3 +376,62 @@ class TestInjectTextAsSingleMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyPollReclaimsEventually(unittest.TestCase):
+    """連續空枚舉超過閾值 → 認定會話真退出，照常回收狀態。
+
+    回歸（2026-10-16 二輪審查 P1-3）：上一輪的抖動守衛 `if not live: return`
+    對抖動是對的，但把「全部 ccs-* 真的都退出了」也一起吞了 → _states 永久泄漏，
+    且空枚舉不打日誌，監控側無法區分「抖動」與「daemon 卡死」。
+    修法對齊架構紅線「3 次連續失敗才標 down」：連續空才回收，且每輪留日誌。
+    """
+
+    def setUp(self):
+        self.daemon = IntentReminderDaemon(interval=0.01)
+
+    def tearDown(self):
+        self.daemon._stop.set()
+
+    def test_single_empty_poll_keeps_state(self):
+        """單輪空（抖動）→ 狀態保留，預算不被重置。"""
+        d = self.daemon
+        d._states.clear()
+        import ccls_daemon_intent_classifier as m
+        d._states["ccs-engineer"] = m._SessionState(remind_count=2)
+        with patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=[]):
+            d._tick()
+        self.assertIn("ccs-engineer", d._states, "單輪抖動不得回收狀態")
+        self.assertEqual(d._states["ccs-engineer"].remind_count, 2,
+                         "單輪抖動不得重置預算")
+
+    def test_sustained_empty_polls_reclaim_state(self):
+        """連續空枚舉達閾值 → 狀態被回收（會話真的都沒了）。"""
+        d = self.daemon
+        d._states.clear()
+        import ccls_daemon_intent_classifier as m
+        d._states["ccs-engineer"] = m._SessionState()
+        with patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=[]), \
+             patch("sys.stderr"):
+            for _ in range(d._EMPTY_POLL_THRESHOLD):
+                d._tick()
+        self.assertNotIn("ccs-engineer", d._states,
+                         f"連續 {d._EMPTY_POLL_THRESHOLD} 輪空應回收狀態（否則永久泄漏）")
+
+    def test_recovery_resets_empty_counter(self):
+        """抖動恢復後計數歸零——下次單輪空不應被當作連續。"""
+        d = self.daemon
+        d._states.clear()
+        import ccls_daemon_intent_classifier as m
+        d._states["ccs-engineer"] = m._SessionState()
+        with patch("sys.stderr"):
+            with patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=[]):
+                d._tick()
+                d._tick()  # 連續 2 輪（未達閾值 3）
+            with patch("ccls_daemon_intent_classifier._tmux_sessions",
+                       return_value=["ccs-engineer"]):
+                d._tick()  # 恢復
+            with patch("ccls_daemon_intent_classifier._tmux_sessions", return_value=[]):
+                d._tick()  # 再空一輪
+        self.assertIn("ccs-engineer", d._states,
+                      "恢復後計數應歸零，單輪空不回收")

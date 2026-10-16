@@ -119,6 +119,9 @@ class IntentReminderDaemon:
     # 用户请求的提醒有效期：超过则视为已过期，不再重复提醒（旧请求不该无限期
     # 挂着消耗回合；也不该在新请求到来时被复活）。
     _REQUEST_TTL = 1800.0
+    # 连续空枚举多少轮才认定"会话真的都没了"（此前不回收状态）。对齐架构红线
+    # 「3 次连续失败才标 down」：单次 tmux 抖动不算，连续则是真退出。
+    _EMPTY_POLL_THRESHOLD = 3
     # 本文件路径，供 run() 检测源码更新（见 run 内注释）。
     _SRC_FILE = os.path.abspath(__file__)
     # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
@@ -130,6 +133,7 @@ class IntentReminderDaemon:
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
         self._states: dict[str, _SessionState] = {}
+        self._empty_polls = 0
         self._stop = threading.Event()
 
     def _push_reminder(self, session: str, round_no: int = 1) -> bool:
@@ -149,9 +153,13 @@ class IntentReminderDaemon:
             # 旧写法丢弃返回值 → 投递全失败也计成功，三重后果：用户请求一次没送到
             # 预算却已耗尽（此后永久静默）、bus 留下"已提醒"的假痕迹（把"没送到"
             # 伪装成"已对齐"）、daemon 侧无任何失败信号。
+            # 判据用 `is not True` 而非 `is False`：只认明确的成功，任何其他返回
+            # （None/0/""/异常值）都算失败。_tmux_send 的实现历史上有过"超限后静默
+            # 返回 None"的版本（见其 docstring），`is False` 会在那种实现下重新
+            # 静默失效——这是防御性判据，不是对当前实现的断言。
             delivered = _inject_text(session, reminder)
-            if delivered is False:
-                print(f"[ccls_daemon] 重复自检投递失败（重试耗尽）{session}",
+            if delivered is not True:
+                print(f"[ccls_daemon] 重复自检投递失败 {session}（返回 {delivered!r}）",
                       file=sys.stderr, flush=True)
                 return False
             st.last_remind_ts = now
@@ -226,12 +234,19 @@ class IntentReminderDaemon:
         pushed = 0
         live = set(_tmux_sessions())
         # 空枚举几乎总是 tmux 抖动（`tmux ls` 3s timeout / socket 重建），不是
-        # "所有 session 都消失了"。此时若照常回收 _states，下一轮 setdefault 会
-        # 把 remind_count 归零 → 同一用户请求再拿满额预算（实测单次抖动使注入
-        # 翻倍 3→6）。跳过本轮，等真枚举回来再判〔对齐架构红线「3 次连续失败才
-        # 标 down」的同一个道理：单次失败不算〕。
+        # "所有 session 都消失了"。若照常回收 _states，下一轮 setdefault 会把
+        # remind_count 归零 → 同一用户请求再拿满额预算（实测单次抖动使注入翻倍 3→6）。
+        # 故按架构红线「3 次连续失败才标 down」的同一判据：连续为空才认定真退出，
+        # 那时照常回收状态（否则全部 session 真退出时 _states 永久泄漏）。
+        # 每轮空都留日志：否则"抖动"与"daemon 卡死"在观感上无法区分。
         if not live:
-            return pushed
+            self._empty_polls += 1
+            print(f"[ccls_daemon] 未枚举到任何 ccs-* 会话（连续第 {self._empty_polls} 轮）",
+                  file=sys.stderr, flush=True)
+            if self._empty_polls < self._EMPTY_POLL_THRESHOLD:
+                return pushed
+        else:
+            self._empty_polls = 0
         # P1 修复：剔除已不存在的 session
         for dead in set(self._states) - live:
             del self._states[dead]
