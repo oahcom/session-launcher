@@ -80,6 +80,13 @@ def classify_intent(message: str) -> Intent:
         return Intent.OTHER
     if text[-1] in _QUESTION_TAIL or any(w in text for w in _QUESTION_WORDS):
         return Intent.QUESTION
+    # slash command 带实质参数才是任务（`/goal 修复X` → TASK）；
+    # 裸命令（`/goal`、`/compact`）无参数 → OTHER，不注入提醒。
+    # WHY: 引擎下发的 `/goal <任务>` 此前被判 OTHER → 零提醒。
+    if text.startswith("/"):
+        _parts = text.split(None, 1)
+        if len(_parts) > 1 and len(_parts[1].strip()) >= 4:
+            return Intent.TASK
     if any(v in text for v in _TASK_CN) or text.lower().startswith(_TASK_EN):
         return Intent.TASK
     return Intent.OTHER
@@ -136,4 +143,6 @@ def inject_reminder(message: str, source: str = "") -> str:
         return message  # 回退数据缺失 → 原样投递
     if not _should_inject(message):
         return message  # R70: 非疑问/任务 → 跳过
-    return f"{_REMINDER_HEADER}\n{message}"
+    # 提醒放消息之后，不在之前：slash command（/goal、/compact）必须保持首行，
+    # 前置提醒会让 Claude CLI 把 `/goal ...` 当普通文本而非命令解析。
+    return f"{message}\n\n{_REMINDER_HEADER}"
