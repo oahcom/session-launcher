@@ -59,9 +59,16 @@ def test_start_rejects_invalid_workspace():
 # ─────────────────────────────────────────────
 def test_send_fail_streak_threshold():
     streak_file = TMP / "send_fail_streak.json"
+    # 必须 mock 门禁：CrossRoleRouter().intercept() 会把每条消息写进
+    # 生产 workflows.db 的 workflow_logs（gatekeeper._log_cross_role_send）。
+    # 本用例 send 3 次 → 生产库多 3 行 actor='pipeline' target='test' 'hello'。
+    # 实测：跑该文件后计数 +3（116→119，2026-10-16）。
+    _router = MagicMock()
+    _router.intercept.return_value = True
     with patch.object(core, "_SEND_FAIL_STREAK_FILE", streak_file), \
          patch("core._is_alive", return_value=False), \
          patch("tmux_ops.make_tmux_name", return_value="ccs-test"), \
+         patch("routing.gatekeeper.CrossRoleRouter", return_value=_router), \
          patch("core._write_bus_notice") as notice:
         # 第 1、2 次：不写 fallback
         for _ in range(2):
