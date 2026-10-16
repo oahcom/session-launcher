@@ -76,8 +76,9 @@ class TestConfirmDeliveryTaskNotFound:
     def test_task_not_found_returns_immediate_failure(self, mock_paths):
         """P1a: task_id 不在 workflow DB → 立即返回 confirmed=False"""
         from routing.partner import PartnerClient
-        pc = PartnerClient("tester")
-        result = pc.confirm_delivery("nonexistent_task", "engineer", timeout=5)
+        with patch.object(PartnerClient, "_write_bus"):  # 生产 bus 隔离：未 mock 时真写 bus
+            pc = PartnerClient("tester")
+            result = pc.confirm_delivery("nonexistent_task", "engineer", timeout=5)
         assert result["confirmed"] is False
         assert "不存在" in result["reason"]
         assert result["elapsed_sec"] == 0.0
@@ -121,10 +122,11 @@ class TestConfirmDeliveryBusNotifException:
             with patch.object(PartnerClient, "_get_task",
                               return_value={"task_id": "task_001", "status": "created"}):
                 with patch("routing.partner.is_ccs_running", return_value=True):
-                    with patch("routing.partner.time.sleep"):
-                        with patch("routing.partner.time.time", side_effect=[0, 300]):
-                            pc = PartnerClient("tester")
-                            result = pc.confirm_delivery("task_001", "engineer", timeout=1)
+                    with patch.object(PartnerClient, "_write_bus"):  # 生产 bus 隔离
+                        with patch("routing.partner.time.sleep"):
+                            with patch("routing.partner.time.time", side_effect=[0, 300]):
+                                pc = PartnerClient("tester")
+                                result = pc.confirm_delivery("task_001", "engineer", timeout=1)
         assert result["confirmed"] is False
 
 
@@ -142,10 +144,11 @@ class TestConfirmDeliveryDegradation:
             with patch.object(PartnerClient, "_check_bus_notification", return_value=False):
                 with patch.object(PartnerClient, "_get_task",
                                   return_value={"task_id": "task_001", "status": "created"}):
-                    with patch("routing.partner.time.sleep"):
-                        with patch("routing.partner.time.time", side_effect=[0, 300]):
-                            pc = PartnerClient("tester")
-                            result = pc.confirm_delivery("task_001", "engineer", timeout=1)
+                    with patch.object(PartnerClient, "_write_bus"):  # 生产 bus 隔离
+                        with patch("routing.partner.time.sleep"):
+                            with patch("routing.partner.time.time", side_effect=[0, 300]):
+                                pc = PartnerClient("tester")
+                                result = pc.confirm_delivery("task_001", "engineer", timeout=1)
         assert result["confirmed"] is False
         assert "超时" in result["reason"]
 
