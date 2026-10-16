@@ -369,11 +369,16 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):
-        # isatty 守卫与下方 attach 路径一致：systemd/管道环境无 TTY，
-        # 直接 execvp 会 "open terminal failed: not a terminal" 并以 1 退出，
-        # 被 Restart=on-failure 当成崩溃反复重启（实测 ccs@maintainer 6 次熔断）。
-        if not o.detach and sys.stdin and sys.stdin.isatty():
-            os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
+        # 交互式调用必须 attach，否则用户看到的是"命令跑完了但界面没出现"。
+        # 判据用 isatty：systemd 环境无 TTY，execvp 会 "open terminal failed"
+        # 并以 1 退出（实测 ccs@maintainer 熔断 6 次）。降级路径要出声——
+        # 静默跳过 attach 正是"没有进入 claude 界面"这一类投诉的成因。
+        if not o.detach:
+            if sys.stdin and sys.stdin.isatty():
+                os.execvp("tmux", ["tmux", "attach", "-t", tmux_name])
+            else:
+                print(f"🎯 {tmux_name} 已在运行；非交互环境未 attach"
+                      f"（进入请执行 tmux attach -t {tmux_name}）")
         print(f"📋 {tmux_name} 已在运行")
         return {"success": True, "role": o.role, "tmux_session": tmux_name,
                 "instance_id": o.instance_id}
