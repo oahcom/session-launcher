@@ -24,13 +24,13 @@ echo ""
 
 check "角色定义验证" python3 "$HOME/hermes-session-roles/src/validate_roles.py"
 
-check "系统自愈检查" python3 "$HOME/session-launcher/scripts/ecosystem_health_daemon.py" --check
+check "系统自愈检查" python3 "$HOME/session-launcher/scripts/ecosystem_health_daemon.py" --quiet
 
 check "Bus 读写" python3 "$HOME/.hermes/scripts/bus_client.py" stats
 
 check "路由完整性" python3 -c "
 import sys; sys.path.insert(0, '$HOME/session-pipeline/src')
-from router import get_router; r = get_router()
+from routing.router import get_router; r = get_router()
 for cat in ['bug_report','code_fix','task_spec','security']:
     c = r.get_consumers(cat)
     assert len(c) >= 2, f'{cat} only {len(c)} consumers'
@@ -51,24 +51,21 @@ print('all files compile')
 check "Workspace 结构" python3 -c "
 from pathlib import Path
 ws = Path.home() / 'ccs-workspaces'
-missing = []
-for d in ws.iterdir():
-    if d.name.startswith('tmp'): continue
-    if d.is_dir() and not (d / 'CLAUDE.md').exists():
-        missing.append(d.name)
-real_ws = [d for d in ws.iterdir() if d.is_dir() and not d.name.startswith('tmp')]
+# 只校验真实角色 workspace：跳过 tmp*/隐藏目录（.git/.codex/.pytest_cache 等）
+# 与夹具残留（test_role/dev/e2e_test）。此前未过滤 → 恒 FAIL，检查形同虚设。
+_SKIP = {'test_role', 'dev', 'e2e_test'}
+dirs = [d for d in ws.iterdir()
+        if d.is_dir() and not d.name.startswith(('tmp', '.')) and d.name not in _SKIP]
+missing = [d.name for d in dirs if not (d / 'CLAUDE.md').exists()]
 assert not missing, f'missing CLAUDE.md: {missing}'
-print(f'{len(real_ws)} workspaces OK')
+print(f'{len(dirs)} workspaces OK')
 "
 
-check "核心文件" python3 -c "
-from pathlib import Path
-src = Path('$HOME/session-launcher/src')
-required = ['core.py', 'ccs.py', 'ops/workspace.py']  # lifecycle_manager 已迁移至 session-pipeline, gateway.py 已删除
-missing = [f for f in required if not (src / f).exists()]
-assert not missing, f'missing: {missing}'
-print(f'{len(required)} core files present')
-"
+check "测试套件（launcher）" bash -c 'set -o pipefail; cd "$HOME/session-launcher" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
+
+check "测试套件（pipeline）" bash -c 'set -o pipefail; cd "$HOME/session-pipeline" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
+
+check "测试套件（roles）" bash -c 'set -o pipefail; cd "$HOME/hermes-session-roles" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
 
 echo ""
 echo "=============================================="
