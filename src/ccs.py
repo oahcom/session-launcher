@@ -125,8 +125,15 @@ def main():
     p_send = sub.add_parser("send", help="向 CCS 发消息")
     p_send.add_argument("role", help="角色名")
     p_send.add_argument("message", help="消息内容")
-    p_send.add_argument("--from", dest="from_role", default="cli",
-                        help="来源角色名（三源验证用）")
+    # 默认来源：优先 $CCS_ROLE（launcher 启动时注入，见 core.py "-e CCS_ROLE=<role>"）。
+    # 角色 prompt 教的用法是不带 --from 的裸 `ccs send <角色> 消息`
+    # （ccs-workspaces/*/CLAUDE.md），旧默认 "cli" 会让**角色发出的消息被
+    # 当成人类请求**：user_intent_reminder 据此注入提醒 + 写痕迹，而 bus 对同内容
+    # UPSERT 刷新 ts → 痕迹永不过期 → 被提醒方反复空转（实测单条 fact 重写 276 次）。
+    # 未设 CCS_ROLE 时才是真人类手敲 CLI，保留 "cli"。
+    p_send.add_argument("--from", dest="from_role",
+                        default=os.getenv("CCS_ROLE") or "cli",
+                        help="来源角色名（默认 $CCS_ROLE，未设则 cli）")
     p_send.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
     p_send.add_argument("--dry-run", action="store_true",
