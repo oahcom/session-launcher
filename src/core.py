@@ -197,6 +197,10 @@ from ops.ccs_config import (
 # ── 命名常量 ──
 _CCS_READY_RETRIES = 15   # 启动 CCS 后轮询 tmux 就绪的次数
 _BUS_MSG_TRUNCATE = 200   # bus 通知消息内容截断长度
+# 系统组件代发消息时的来源标识（wake_ccs 无 by_role 时使用）。
+# 不能用空串：空串既不触发 user_intent_reminder 的人类判据，也不进
+# gatekeeper 的 _AUTOMATED_SOURCES 白名单，语义落在两者之间的灰区。
+_AUTOMATION_SOURCE = "pipeline"
 
 # ── 已知 MCP server 注册表（name → {command, args, env}）──
 # ponytail: 从全局 settings.json 和所有插件 .mcp.json 加载
@@ -1055,7 +1059,13 @@ def wake_ccs(role_name: str, context: str = "",
     alive = _is_alive(f"{TMUX_PREFIX}{role_name}")
     if alive:
         if context:
-            return send(role_name, context)
+            # 必须透传 by_role 作 source：丢空会导致 source="" → 既不走三源验证门禁
+            # （core.py:873 `source != "cli"` 之外的路径），又让角色间唤醒无法归因。
+            # 回归实证（R88）：`ccs send` 的 CLI 默认 source="cli" 被当作人类来源，
+            # 每次唤醒写入一条 `已注入意图提醒` 痕迹；bus 对同内容 UPSERT 刷新 ts →
+            # 痕迹永不过期（_REQUEST_TTL=1800 形同虚设）→ qa 被反复唤醒空转，
+            # 单条 fact 实测被重写 264 次。保留 "" 会让该判据无法区分人机。
+            return send(role_name, context, source=by_role or _AUTOMATION_SOURCE)
         return {"success": True, "action": "already_running", "role": role_name}
     return force_start_ccs(role_name, by_role=by_role)
 
