@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -89,6 +90,20 @@ class WorkflowClient:
     def create_task_v2(self, title: str, assignee: str,
                        template_id: str, initiator_role: str,
                        description: str = "") -> tuple:
+        """建任务 + 工作流实例。
+
+        template_id 为空时委托 session-pipeline 的同名实现——后者含完整的
+        模板自动推荐、assignee 对齐首步、5 分钟去重与跨角色 fan-out 防御。
+        WHY 委托而非复制：本文件与 pipeline 版是**分叉**的两份（本份独有
+        find_zombies / workflow_stats 供 `wf cleanup` 用，pipeline 版独有
+        推荐与对齐）。复制会让两者再次漂移——实测 2026-10-17：pipeline 侧
+        修好自动推荐后，角色走的仍是本份的 `template_id is required` 硬闸门，
+        建流入口依然不可用（role prompt pm.md:33 教的正是不带 -t 的形式）。
+        显式传 template_id 时保持原路径不动，避免改变既有行为。
+        """
+        if not template_id:
+            return self._delegate_create_task_v2(
+                title, assignee, initiator_role, description)
         # 标题质量门禁：拒绝占位符标题
         if self._title_is_placeholder(title):
             raise ValueError(
@@ -100,6 +115,43 @@ class WorkflowClient:
         wf_id = self._create_workflow_instance(task_id, template_id, assignee, initiator_role)
         self._log(action="routed", detail=f"{initiator_role}→{assignee}")
         return (task_id, wf_id)
+
+    def _delegate_create_task_v2(self, title: str, assignee: str,
+                                 initiator_role: str, description: str) -> tuple:
+        """委托 pipeline 版 create_task_v2（template_id 缺省路径）。
+
+        用子进程而非 in-process import：两个项目都有 `workflow` 包，
+        in-process 会被已加载的 launcher 版遮蔽（实测 ModuleNotFoundError:
+        workflow.gateway —— pipeline 的 gateway.py 不在 launcher 包里）。
+        子进程给 pipeline/src 干净的 sys.path，成本是 ~0.3s 进程启动。
+        """
+        import subprocess
+        from paths import SESSION_PIPELINE_SRC as _psrc
+        _code = (
+            "import sys, json\n"
+            f"sys.path.insert(0, {str(_psrc)!r})\n"
+            "from workflow.client import WorkflowClient\n"
+            f"wc = WorkflowClient({self.role!r}, db_path={self.db_path!r})\n"
+            "try:\n"
+            f"    tid, wid = wc.create_task_v2({title!r}, {assignee!r}, '', "
+            f"{initiator_role!r}, description={description!r})\n"
+            "    print(json.dumps({'ok': True, 'task_id': tid, 'wf_id': wid}))\n"
+            "except Exception as e:\n"
+            "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
+            "finally:\n"
+            "    wc.close()\n"
+        )
+        _r = subprocess.run([sys.executable, "-c", _code],
+                            capture_output=True, text=True, timeout=60)
+        _out = (_r.stdout or "").strip().splitlines()
+        _last = _out[-1] if _out else ""
+        if not _last.startswith("{"):
+            raise ValueError(
+                f"委托 pipeline 建流失败: {(_r.stderr or _r.stdout or 'no output')[-400:]}")
+        _res = json.loads(_last)
+        if not _res.get("ok"):
+            raise ValueError(_res.get("error", "unknown"))
+        return (_res["task_id"], _res["wf_id"])
 
     def _create_task_impl(self, title: str, description: str,
                           assignee: str, priority: int,
