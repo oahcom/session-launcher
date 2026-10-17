@@ -56,7 +56,11 @@ for key in ["class CrossRoleRouter","WORKGROUP_MATRIX","SENSITIVE_KEYWORDS_RED",
 co = files.get("core.py", "")
 if "CrossRoleRouter().intercept" not in co:
     errors.append("WL-P0-03: intercept not wired into core.send")
-sd = co[co.find("def send"):co.find("def send")+600]
+# 取 send 的完整函数体（到下一个顶层 def 为止），而非固定 600 字符窗口：
+# send 随迭代增长后调用点已到 816 字符处，固定窗口会把"存在"误报为"缺失"。
+_sd_i = co.find("def send")
+_sd_end = co.find("\ndef ", _sd_i + 5)
+sd = co[_sd_i:_sd_end] if _sd_end > 0 else co[_sd_i:]
 if "check_ccs_command_permission" not in sd:
     errors.append("WL-P0-03: check_ccs_command_permission not in send")
 
