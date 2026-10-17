@@ -75,6 +75,17 @@ def main():
     p_cleanup.add_argument("--limit", type=int, default=50)
     p_cleanup.add_argument("--yes", action="store_true", help="执行取消(默认 dry-run)")
 
+    # 审批入口：引擎为 handoff/review/subflow 步骤签发 approval_token 并通过
+    # ccs send 推给审批人，但没有 CLI 能把它提交回来 —— 角色只能眼看步骤卡在
+    # step_done_ready，最终靠 daemon 的 TTL+30min 兜底自动 approve（质量闸门失效）。
+    # 实测 24h：step_done_ready 410 次 vs step_confirmed 5 次。
+    p_confirm = sub.add_parser("confirm", help="审批步骤（提交 approval_token）")
+    p_confirm.add_argument("wf_id")
+    p_confirm.add_argument("step_id")
+    p_confirm.add_argument("--token", "-t", required=True, help="引擎下发的审批密钥")
+    p_confirm.add_argument("--reject", action="store_true", help="驳回而非通过")
+    p_confirm.add_argument("--reason", "-r", default="")
+
     args = p.parse_args()
     role = args.role or os.getenv("CCS_ROLE", "")
     if not args.cmd:
@@ -140,6 +151,13 @@ def main():
         with WorkflowClient(r) as wf:
             wf.cancel(args.wf_id, args.reason)
             print(f"已取消: {args.wf_id}")
+
+    elif args.cmd == "confirm":
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
+        with WorkflowClient(r) as wf:
+            wf.confirm(args.wf_id, args.step_id, token=args.token,
+                       approved=not args.reject, reason=args.reason)
+            print(f"{'已驳回' if args.reject else '已通过'}: {args.wf_id}/{args.step_id}")
 
     elif args.cmd == "my":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
