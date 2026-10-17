@@ -438,7 +438,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         o.drive, o.init_prompt, o.bus_track)
 
     # 5-6 启动 tmux + claude 并等待就绪
-    launch_err = _launch_tmux(tmux_name, ws_path)
+    launch_err = _launch_tmux(tmux_name, ws_path, role=o.role)
     if launch_err:
         return {"success": False, "error": launch_err}
 
@@ -584,7 +584,7 @@ def _router_env() -> dict[str, str]:
     return env
 
 
-def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
+def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
     # 权限由 workspace settings.json permissions.allow 控制
     _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
@@ -617,6 +617,11 @@ def _launch_tmux(tmux_name: str, ws_path: Path) -> str | None:
             "tmux", "new-session", "-d", "-s", tmux_name,
             "-c", str(ws_path),
             "-e", "FORCE_PERSONA=0",
+            # CCS_ROLE: wf CLI 的 `-r` 默认值来源（wf.py:27 `default=os.getenv("CCS_ROLE")`）。
+            # 不注入时角色只能写 `wf -r <自己的名字>`，而角色无从可靠得知自己名字；
+            # 实测 32 个 claude 进程中 CCS_ROLE 设置数 = 0，故所有 `wf ...` 调用
+            # 都因缺 -r 而报 "请指定角色"，逼角色去猜或全盘搜 DB。
+            "-e", f"CCS_ROLE={role}",
             "-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
             "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
             "-e", f"PATH={_claude_path}",
@@ -775,6 +780,13 @@ def stop(role: str, instance_id: int = 0,
     from tmux_ops import make_tmux_name
     tmux_name = make_tmux_name(role, instance_id)
     was_alive = _is_alive(tmux_name)
+    # 预检：dry_run 只报计划，不做任何副作用。此前该参数被接收但从未读取，
+    # `ccs stop X --dry-run` 会真的 kill CCS 并删哨兵（含在跑工作流的角色）。
+    if dry_run:
+        return {"success": True, "dry_run": True, "role": role,
+                "instance_id": instance_id, "was_alive": was_alive,
+                "planned": ["stop_watchdog", "stop_tracker", "kill_feed_listener",
+                            f"tmux kill-session -t {tmux_name}", "delete_sentinel"]}
     # 回收守护线程：set_event + join(timeout=5)，幂等
     try:
         from ops.watchdog import stop_watchdog
@@ -847,6 +859,15 @@ def send(role: str, message: str, source: str = "",
     instance_id>0 向指定实例发送，0 向主实例发送。
     """
     from tmux_ops import make_tmux_name
+
+    # 预检：dry_run 只报计划，不做任何副作用（含写 bus 与投递）。此前该参数
+    # 被接收但从未读取，`ccs send X msg --dry-run` 会真的把文本写进 pane，
+    # 并可能触发角色执行——预检变成真实投递。
+    if dry_run:
+        return {"success": True, "dry_run": True, "role": role,
+                "instance_id": instance_id, "source": source,
+                "planned": [f"tmux send-keys -t {make_tmux_name(role, instance_id)}"],
+                "message_preview": message[:200]}
 
     # 跨角色路由拦截（三源验证 + 敏感命令门禁）
     if role != "self" and source != "cli":
