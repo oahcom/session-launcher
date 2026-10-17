@@ -33,7 +33,12 @@ def main():
     p_create.add_argument("title")
     p_create.add_argument("--desc", "-d", default="", help="任务描述（替换 {task_definition} 占位符）")
     p_create.add_argument("--assignee", "-a", default="")
-    p_create.add_argument("--template", "-t", required=True)
+    # --template 可选：角色的职责是判断需求，不该先知道内部模板名。
+    # 不传时交给 TemplateRegistry.recommend() 按标题+发起角色+bus 分类自动选
+    # （create_task_v2 的 template_id="" 分支本就支持）。原 required=True 使
+    # “PM 说‘做个网页’→建工作流”这条入口物理不可用。
+    p_create.add_argument("--template", "-t", default="",
+                          help="工作流模板；不传则按需求自动推荐")
     p_create.add_argument("--initiator", "-i", default="")
 
     p_complete = sub.add_parser("complete", help="完成任务")
@@ -85,6 +90,13 @@ def main():
     p_confirm.add_argument("--token", "-t", required=True, help="引擎下发的审批密钥")
     p_confirm.add_argument("--reject", action="store_true", help="驳回而非通过")
     p_confirm.add_argument("--reason", "-r", default="")
+
+    # 模板匹配是词法匹配，而角色拿到的是自然语言需求（"做一个高质量网页"）
+    # vs 内部行话（"产品经理需求拆解"）—— 2-gram 无交集就会推荐为空。
+    # 与其堆同义词表，不如把选择权交给角色的知识（prompt 就是这么设计的）。
+    p_tpl = sub.add_parser("templates", help="列出可用工作流模板（供角色选型）")
+    p_tpl.add_argument("--json", action="store_true")
+    p_tpl.add_argument("--match", "-m", default="", help="按需求描述粗匹配排序")
 
     args = p.parse_args()
     role = args.role or os.getenv("CCS_ROLE", "")
@@ -158,6 +170,36 @@ def main():
             wf.confirm(args.wf_id, args.step_id, token=args.token,
                        approved=not args.reject, reason=args.reason)
             print(f"{'已驳回' if args.reject else '已通过'}: {args.wf_id}/{args.step_id}")
+
+    elif args.cmd == "templates":
+        import sys as _sys
+        from paths import SESSION_PIPELINE_SRC as _psrc
+        if str(_psrc) not in _sys.path:
+            _sys.path.insert(0, str(_psrc))
+        from template_registry import TemplateRegistry
+        reg = TemplateRegistry()
+        try:
+            rows = reg.list(active_only=True)
+            if args.match:
+                # 粗匹配仅做排序参考；未命中排在后面，仍全部列出——
+                # 选型靠角色判断，不靠词法打分。
+                ranked = {x["template_id"] for x in
+                          reg.recommend(args.match, initiator_role=role) or []}
+                rows = sorted(rows, key=lambda t: t.get("template_id") not in ranked)
+            if args.json:
+                print(json.dumps([{
+                    "template_id": t.get("template_id"),
+                    "description": t.get("description", ""),
+                    "trigger_scene": t.get("trigger_scene", []),
+                    "executors": t.get("allowed_executors", []),
+                } for t in rows], ensure_ascii=False, indent=2))
+            else:
+                for t in rows:
+                    ex = ",".join(t.get("allowed_executors") or []) or "-"
+                    print(f"{t.get('template_id','?'):26s} [{ex}] {str(t.get('description',''))[:70]}")
+        finally:
+            reg.close()
+
 
     elif args.cmd == "my":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()

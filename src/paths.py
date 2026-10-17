@@ -22,9 +22,12 @@ from hermes_bus.config import (
 __all__ = ["BUS_CLIENT", "BUS_PROTOCOL",
            "SISTER_BUS_CCS_SOCK", "SISTER_BUS_FEED_SOCK",
            "SISTER_BUS_DKK_SOCK", "SISTER_BUS_SSK_SOCK",
-           "STARVE_STATE"]
+           "STARVE_STATE", "SESSION_PIPELINE_SRC"]
 # ── 路径常量：由本项目自行管理，不依赖 bus config ──
 _SESSION_PIPELINE_SRC = Path(_HOME / "session-pipeline" / "src")
+# 公开别名：launcher 侧需要直接 import pipeline 模块时（如 wf templates 用
+# TemplateRegistry）复用本常量，避免在调用点硬编码路径。
+SESSION_PIPELINE_SRC = _SESSION_PIPELINE_SRC
 SESSION_ROLES_ROOT = Path(_HOME / "hermes-session-roles")
 CCS_WORKSPACES = Path(_HOME / "ccs-workspaces")
 LIFECYCLE_SENTINEL_DIR = Path(_HOME / ".hermes" / "run" / "ccs-sentinels")
