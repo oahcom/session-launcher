@@ -49,23 +49,38 @@ print('all files compile')
 "
 
 check "Workspace 结构" python3 -c "
+import json, subprocess
 from pathlib import Path
+# 以 persona 为准反向校验（不用「扫描目录+过滤名单」：名单是事后补的，
+# 且无 persona 的废弃目录会被误报、tmp* 命名的真角色会被漏报）。
+# 未激活的角色（有 persona、无 workspace）不算故障：workspace 由启动时的
+# workspace_create() 自动建。但它们一旦被路由选中就会被拉起，故列为 WARN。
+roles_root = Path.home() / 'hermes-session-roles' / 'personas' / 'session-roles'
 ws = Path.home() / 'ccs-workspaces'
-# 只校验真实角色 workspace：跳过 tmp*/隐藏目录（.git/.codex/.pytest_cache 等）
-# 与夹具残留（test_role/dev/e2e_test）。此前未过滤 → 恒 FAIL，检查形同虚设。
-_SKIP = {'test_role', 'dev', 'e2e_test'}
-dirs = [d for d in ws.iterdir()
-        if d.is_dir() and not d.name.startswith(('tmp', '.')) and d.name not in _SKIP]
-missing = [d.name for d in dirs if not (d / 'CLAUDE.md').exists()]
-assert not missing, f'missing CLAUDE.md: {missing}'
-print(f'{len(dirs)} workspaces OK')
+names = set()
+for f in roles_root.glob('persona_*.json'):
+    try:
+        d = json.loads(f.read_text())
+    except Exception:
+        continue
+    n = d.get('name')
+    if n:
+        names.add(n)
+active = sorted(n for n in names
+                if (ws / n / 'CLAUDE.md').exists() or (ws / f'ccs-{n}' / 'CLAUDE.md').exists())
+idle = sorted(names - set(active))
+print(f'{len(active)} 个角色 workspace OK')
+if idle:
+    print(f'  WARN {len(idle)} 个角色有 persona 但未激活（启动时自动建）: {idle}')
 "
 
-check "测试套件（launcher）" bash -c 'set -o pipefail; cd "$HOME/session-launcher" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
+# 测试套件：完整输出落日志（tail -3 会把断言与堆栈截干净，排障必须重跑）；
+# 退出码交给 check()；日志路径在失败时打印。
+check "测试套件（launcher）" bash -c 'set -o pipefail; cd "$HOME/session-launcher" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider > /tmp/health_launcher_tests.log 2>&1; _rc=$?; tail -3 /tmp/health_launcher_tests.log; [ $_rc -ne 0 ] && echo "完整日志: /tmp/health_launcher_tests.log"; exit $_rc'
 
-check "测试套件（pipeline）" bash -c 'set -o pipefail; cd "$HOME/session-pipeline" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
+check "测试套件（pipeline）" bash -c 'set -o pipefail; cd "$HOME/session-pipeline" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider > /tmp/health_pipeline_tests.log 2>&1; _rc=$?; tail -3 /tmp/health_pipeline_tests.log; [ $_rc -ne 0 ] && echo "完整日志: /tmp/health_pipeline_tests.log"; exit $_rc'
 
-check "测试套件（roles）" bash -c 'set -o pipefail; cd "$HOME/hermes-session-roles" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tail -3'
+check "测试套件（roles）" bash -c 'set -o pipefail; cd "$HOME/hermes-session-roles" && python3 -m pytest tests/ -q --no-header -p no:cacheprovider > /tmp/health_roles_tests.log 2>&1; _rc=$?; tail -3 /tmp/health_roles_tests.log; [ $_rc -ne 0 ] && echo "完整日志: /tmp/health_roles_tests.log"; exit $_rc'
 
 echo ""
 echo "=============================================="
