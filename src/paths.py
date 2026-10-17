@@ -51,7 +51,6 @@ SESSION_PIPELINE_SRC = Path(_SESSION_PIPELINE_SRC)
 CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"
 
 # ── API Endpoints ──
-ROUTER_API_ENDPOINT = os.environ.get('ROUTER_API_ENDPOINT', 'http://localhost:20128/v1/chat/completions')
 HEALTH_CHECK_ENDPOINTS = os.environ.get('HEALTH_CHECK_ENDPOINTS', 'http://localhost:8890').split(',')
 
 # ── 角色目录 ──
@@ -61,8 +60,6 @@ SESSION_ROLES_PERSONAS = SESSION_ROLES_ROOT / "personas" / "session-roles"
 HERMES_WORKFLOWS = _HOME / ".hermes" / "workflows"
 HERMES_WORKFLOW_CHAINS = HERMES_WORKFLOWS / "chains"
 
-# ── CCS Session 数据目录（供 tmux_ops 等引用）──
-CCS_SESSIONS_DIR = _HOME / ".hermes" / "run" / "ccs-sessions"
 
 
 def ensure_paths() -> None:
