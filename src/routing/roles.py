@@ -56,6 +56,25 @@ _FORBIDDEN_MAP: dict[str, list[str]] = {
     "qa": ["write_code", "edit_config", "deploy", "edit_persona_json"],
     "coordinator": ["write_code", "run_tests", "deploy"],
     "product_architect": ["write_code", "run_tests", "deploy"],
+    # 以下 9 个角色此前无条目 → 落到 conversation_monitor._DEFAULT_FORBIDDEN，
+    # 而该默认表含 run_tests。实测后果（2026-10-20）：
+    #  - engineer 本职是「编码实现 + 自测」，跑 pytest 被判越界 → 引擎反复注入
+    #    「请立即停止」并把该提醒混进任务 prompt（bus #368015），打断正在工作的角色
+    #  - reviewer 职责是验证他人代码，跑测试是核心手段，同样被拦
+    #  - maintainer（#416574）、knowledge_curator（#417927 独立复验）同型误判
+    #  - 生产 DB 42 个步骤有 violation_count，其中 6 个 ≥3 次会触发 cancel_step
+    # 修法：显式声明每个角色真正该禁的，只有 coordinator/architect 这类决策角色
+    # 才禁 run_tests（它们不该自己跑测试，该派给 qa）。
+    "engineer": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    "reviewer": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    "maintainer": ["edit_config", "deploy", "edit_persona_json"],
+    "optimizer": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    "scout": ["edit_config", "deploy", "start_ccs", "edit_persona_json", "write_code"],
+    "writer": ["edit_config", "deploy", "start_ccs", "edit_persona_json", "write_code"],
+    # closer 实测有 3 个 .py 产出（收尾脚本），不禁 write_code
+    "closer": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    "curator": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    "pm": ["edit_config", "deploy", "start_ccs", "edit_persona_json", "write_code"],
 }
 
 
