@@ -304,8 +304,22 @@ class TestForbiddenList:
         """
         import routing.roles as _roles
         assert _roles._forbidden_list("unknown") == ""
-        assert _roles._forbidden_list("engineer") == ""
         assert _roles._forbidden_list("devops") == ""
+
+    def test_engineer_declared_without_run_tests(self):
+        """engineer 必须**显式**声明禁区且不含 run_tests。
+
+        R43（2026-10-20）：engineer 此前不在此表 → conversation_monitor 落到
+        含 run_tests 的 _DEFAULT_FORBIDDEN，跑 pytest 被判越界并注入「请立即停止」
+        （bus #368015）。本条锁定「显式声明 + 不禁跑测试」两个条件：
+        只断言返回空串会让「未定义」和「已定义但不禁测试」无法区分，
+        正是旧断言掩盖该缺陷的方式。
+        """
+        import routing.roles as _roles
+        assert "engineer" in _roles._FORBIDDEN_MAP, \
+            "engineer 必须显式声明，否则落到 conversation_monitor 的默认表"
+        assert "run_tests" not in _roles._FORBIDDEN_MAP["engineer"]
+        assert "跑测试" not in _roles._forbidden_list("engineer")
 
     def test_display_name_fallback(self):
         """P5c: 显示名缺失时回退到 key 本身（对已定义角色生效）"""
