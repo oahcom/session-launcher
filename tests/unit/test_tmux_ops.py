@@ -219,3 +219,34 @@ class TestTmuxSendBusyHandling:
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── 投递后确认（滞留自愈） ──
+
+class TestSubmittedProbe:
+    """_submitted 只看输入框边界内的文本，已提交的消息不得误判为滞留。"""
+
+    def _pane(self, composer_text):
+        rule = "─" * 40
+        return (f"❯ earlier message\n"
+                f"  thought abt it\n{rule}\n❯ {composer_text}\n{rule}\n"
+                f"  ⏵⏵ bypass permissions on\n")
+
+    def test_stranded_text_is_detected(self):
+        import tmux_ops
+        from unittest.mock import patch
+        with patch("tmux_ops._tmux_output", return_value=self._pane("hello world")):
+            assert tmux_ops._submitted("ccs-probe", "hello world") is False
+
+    def test_submitted_text_not_confused_with_history(self):
+        """已提交的消息滚到横线之上，同样带 ❯ 前缀——不得据此判滞留。"""
+        import tmux_ops
+        from unittest.mock import patch
+        with patch("tmux_ops._tmux_output", return_value=self._pane("")):
+            assert tmux_ops._submitted("ccs-probe", "earlier message") is True
+
+    def test_unreachable_pane_does_not_stall(self):
+        import tmux_ops
+        from unittest.mock import patch
+        with patch("tmux_ops._tmux_output", return_value="[错误] timeout"):
+            assert tmux_ops._submitted("ccs-probe", "hello") is True
