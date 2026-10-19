@@ -220,13 +220,56 @@ def _check_hardcoded_paths() -> CheckItem:
                      duration_ms=(time.time() - start) * 1000)
 
 
+def _pane_has_claude(tmux_name: str) -> bool | None:
+    """pane 的后代进程里是否存在 claude。三态：True/False/None（探测失败）。
+
+    WHY 必须看后代而非 pane_pid：wrapper (`while true; do claude ...; done`)
+    本身常驻，pane_pid 恒活——实测 closer 因 PATH 缺 .local/bin 而每 3s 报
+    `claude: command not found` 达 1.4h，所有判活环节均未察觉（R41, 2026-10-19）。
+    """
+    try:
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+        if not out:
+            return None
+        kids = subprocess.run(["pgrep", "-P", out], capture_output=True, text=True,
+                              timeout=3).stdout.split()
+        for k in kids:
+            try:
+                if "claude" in Path(f"/proc/{k}/cmdline").read_bytes().decode(
+                        "utf8", "replace"):
+                    return True
+            except OSError:
+                continue
+        return False
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
 def _check_sentinels() -> CheckItem:
-    """检查 CCS 会话（tmux 实时派生）。"""
+    """检查 CCS 会话（tmux 实时派生）。
+
+    旧实现 passed=True 是字面量，故无论系统实际状态如何恒为绿——僵尸角色
+    （pane 活、claude 未启动）被完全掩盖（R41, 2026-10-19）。现改为真判活：
+    任一 pane 后代无 claude 即 fail，并点名到具体 session。
+    探测失败(None)不计失败——避免瞬时 tmux 不可达造成假告警。
+    """
     from ops.sentinel import list_sentinels
     start = time.time()
-    sentinels = list_sentinels()
-    return CheckItem(name="sentinels:active", passed=True,
-                     detail=f"{len(sentinels)} 活跃会话",
+    try:
+        sentinels = list_sentinels()
+    except Exception as _e:  # noqa: BLE001 - 健康检查自身不得抛出
+        return CheckItem(name="sentinels:active", passed=False,
+                         detail=f"list_sentinels 失败: {_e}",
+                         duration_ms=(time.time() - start) * 1000)
+    zombies = [s.tmux_session for s in sentinels if _pane_has_claude(s.tmux_session) is False]
+    ok = not zombies
+    return CheckItem(name="sentinels:active", passed=ok,
+                     detail=(f"{len(sentinels)} 活跃会话" if ok else
+                             f"{len(zombies)}/{len(sentinels)} 僵尸(pane活但无claude): "
+                             + ", ".join(zombies[:5])),
                      duration_ms=(time.time() - start) * 1000)
 
 
@@ -235,7 +278,8 @@ def _check_workspaces() -> CheckItem:
     start = time.time()
     ws_dir = HOME / "ccs-workspaces"
     count = len([d for d in ws_dir.iterdir() if d.is_dir()]) if ws_dir.is_dir() else 0
-    return CheckItem(name="workspaces:count", passed=True,
+    # 目录不存在才是真异常；旧实现 passed=True 是字面量（R41）
+    return CheckItem(name="workspaces:count", passed=ws_dir.is_dir(),
                      detail=f"{count} 工作空间",
                      duration_ms=(time.time() - start) * 1000)
 

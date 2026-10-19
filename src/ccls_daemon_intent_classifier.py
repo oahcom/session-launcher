@@ -86,22 +86,23 @@ def _inject_text(session: str, text: str) -> bool | None:
     return _tmux_send(session, text)
 
 
-def _tmux_sessions() -> list[str]:
-    """枚举 ccs-* tmux sessions。失败返回空表，但必须留日志。
+def _tmux_sessions() -> list[str] | None:
+    """枚举 ccs-* tmux sessions。成功返回表（可为空），失败返回 None。
 
-    WHY 不静默：空表被调用方当作"会话消失"（走 _EMPTY_POLL_THRESHOLD 分支）。
-    实测 7/63 轮（11%）返回空而 tmux 中始终有 8 个会话 —— 真正原因（`tmux ls`
-    3s 超时 / socket 抖动）被 except 吞掉后，与"所有会话真退出"无法区分
-    （2026-10-16 排查耗时：需手工模拟 systemd 环境才能排除 PATH/socket 假说）。
+    None 与 [] 必须区分：[] 是"tmux 成功但无 ccs- 会话"（真·全退出），
+    None 是"tmux 探测失败"（超时/socket 抖动）。旧实现两者都返回 []，
+    使 _empty_polls 在负载抖动时累计到阈值 → 清空 _states → 同一用户请求
+    重领满额预算（实测每 ~3 分钟复现一次"预算耗尽(3次)"）。
+    2026-10-19 实测：tmux ls 3s 超时在高负载下 11% 概率触发，而 tmux 实际存在。
     """
     try:
         out = subprocess.check_output(["tmux", "ls", "-F", "#{session_name}"],
                                       text=True, timeout=3)
         return [s for s in out.splitlines() if s.startswith("ccs-")]
     except Exception as e:
-        print(f"[ccls_daemon] tmux ls 失败 → 空枚举: {e!r}",
+        print(f"[ccls_daemon] tmux ls 失败 → 无法判定（不累计 _empty_polls）: {e!r}",
               file=sys.stderr, flush=True)
-        return []
+        return None
 
 @dataclass
 class _SessionState:
@@ -392,7 +393,14 @@ class IntentReminderDaemon:
     def _tick(self) -> int:
         """One poll cycle. Returns # reminders pushed."""
         pushed = 0
-        live = set(_tmux_sessions())
+        _sessions = _tmux_sessions()
+        # _sessions=None 表示 tmux 探测失败（超时/ socket 抖动），**不**计入
+        # _empty_polls、不回收 _states：否则一次抖动就清空预算，同一条用户请求
+        # 立刻重领满额（实测每 ~3 分钟复现）。None 与 [] 语义分离，见函数 docstring。
+        if _sessions is None:
+            self._empty_polls = 0
+            return pushed
+        live = set(_sessions)
         # 空枚举几乎总是 tmux 抖动（`tmux ls` 3s timeout / socket 重建），不是
         # "所有 session 都消失了"。若照常回收 _states，下一轮 setdefault 会把
         # remind_count 归零 → 同一用户请求再拿满额预算（实测单次抖动使注入翻倍 3→6）。

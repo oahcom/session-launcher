@@ -470,6 +470,47 @@ class WorkflowClient:
 
     # ── 委派方法 ──
 
+    def confirm(self, wf_id: str, step_id: str, token: str = "",
+                approved: bool = True, reason: str = "") -> dict:
+        """审批步骤（wf confirm CLI 入口）。委托 pipeline 版实现。
+
+        WHY 子进程而非 in-process import：两个项目都有 `workflow` 包，先加载
+        本 launcher 版后，pipeline 的 `workflow.client` 会被已加载模块遮蔽
+        （与 create_task_v2 同一坑，见 _delegate_create_task_v2 docstring）。
+
+        WHY 不在此处实现：审批涉及 token 校验 / consumed-once / only-assigner
+        三重语义，全部在 pipeline 的 lifecycle.manager 里；在此复刻一份必然
+        随对方演进而漂移（R94 #629e5df 正是只在 wf.py 加了子命令、未同步本
+        类，导致 `wf confirm` 100% AttributeError —— 实测 49 次调用 55 处报错）。
+        """
+        import subprocess
+        from paths import SESSION_PIPELINE_SRC as _psrc
+        _code = (
+            "import sys, json\n"
+            f"sys.path.insert(0, {str(_psrc)!r})\n"
+            "from workflow.client import WorkflowClient\n"
+            f"wc = WorkflowClient({self.role!r}, db_path={self.db_path!r})\n"
+            "try:\n"
+            f"    r = wc.confirm({wf_id!r}, {step_id!r}, token={token!r}, "
+            f"approved={approved!r}, reason={reason!r})\n"
+            "    print(json.dumps({'ok': True, 'result': r}, default=str))\n"
+            "except Exception as e:\n"
+            "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
+            "finally:\n"
+            "    wc.close()\n"
+        )
+        _r = subprocess.run([sys.executable, "-c", _code],
+                            capture_output=True, text=True, timeout=60)
+        _out = (_r.stdout or "").strip().splitlines()
+        _last = _out[-1] if _out else ""
+        if not _last.startswith("{"):
+            raise ValueError(
+                f"委托 pipeline 审批失败: {(_r.stderr or _r.stdout or 'no output')[-400:]}")
+        _res = json.loads(_last)
+        if not _res.get("ok"):
+            raise ValueError(_res.get("error", "unknown"))
+        return _res.get("result") or {}
+
     def confirm_delivery(self, task_id: str, target_role: str, timeout: int = 300) -> dict:
         from routing.partner import PartnerClient
         return PartnerClient(self.role).confirm_delivery(task_id, target_role, timeout)

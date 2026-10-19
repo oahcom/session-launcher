@@ -1,9 +1,6 @@
 """ops/runner.py — 运行循环 + 健康仪表板（从 core.py 提取）"""
 
-import logging
 import time
-
-log = logging.getLogger(__name__)
 
 from ops.sentinel import list_sentinels
 from tmux_ops import _is_alive
@@ -47,74 +44,3 @@ def dashboard() -> str:
 
     return "\n".join(lines)
 
-
-def _start_feed_listener(role: str, feed_cat: str) -> None:
-    """启动 feed listener 线程，监听指定 bus 分类的新消息。
-
-    线程句柄挂在函数属性 _threads 上（测试断言与停止回收共用）。
-    """
-    import socket as _socket
-    import json as _json
-    import threading
-
-    if not hasattr(_start_feed_listener, "_threads"):
-        _start_feed_listener._threads = []
-
-    s = None
-
-    def _connect():
-        nonlocal s
-        try:
-            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-            s.settimeout(30)
-            s.connect("/tmp/sister_bus_feed.sock")
-            s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
-            return True
-        except Exception:
-            if s:
-                try:
-                    s.close()
-                except Exception:
-                    log.debug("feed socket close failed", exc_info=True)
-                s = None
-            return False
-
-    def _run():
-        nonlocal s
-        while True:
-            if not _connect():
-                time.sleep(5)
-                continue
-            buf = b""
-            while True:
-                try:
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line_bytes, buf = buf.split(b"\n", 1)
-                        if not line_bytes:
-                            continue
-                        try:
-                            data = _json.loads(line_bytes.decode())
-                        except _json.JSONDecodeError:
-                            continue
-                        if data.get("cmd") == "MESSAGE":
-                            cat = data.get("cat", "")
-                            if cat == feed_cat:
-                                from tmux_ops import _tmux_send
-                                _tmux_send(f"ccs-{role}", _json.dumps(data, ensure_ascii=False))
-                except Exception:
-                    break
-            if s:
-                try:
-                    s.close()
-                except Exception:
-                    log.debug("feed socket close failed", exc_info=True)
-                s = None
-            time.sleep(5)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    _start_feed_listener._threads.append(t)

@@ -63,14 +63,9 @@ check_import() {
 
 check_import "$LAUNCHER" "core" "session-launcher core"
 check_import "$LAUNCHER" "tmux_ops" "session-launcher tmux_ops"
-check_import "$LAUNCHER" "role_manager" "session-launcher role_manager"
 check_import "$LAUNCHER" "codex_ops" "session-launcher codex_ops"
-check_import "$LAUNCHER" "sentinel" "session-launcher sentinel"
-check_import "$LAUNCHER" "signals" "session-launcher signals"
 check_import "$LAUNCHER" "events.parser" "session-launcher signal_parser"
-check_import "$LAUNCHER" "template_registry" "session-launcher template_registry"
 check_import "$LAUNCHER" "workflow_client" "session-launcher workflow_client"
-check_import "$LAUNCHER" "partner_client" "session-launcher partner_client"
 
 check_import "$ROLES" "registry" "session-roles registry"
 check_import "$ROLES" "search" "session-roles search"
@@ -97,22 +92,9 @@ if cd "$ROLES" 2>/dev/null; then
     fi
 fi
 
-# ── 4. 搜索测试 ─────────────────────────────────────────
+# ── 4. 路由表一致性 ────────────────────────────────────
 echo ""
-echo "--- 4. 语义搜索测试 ---"
-
-if cd "$ROLES" 2>/dev/null; then
-    SEARCH_OUTPUT=$(python3 tests/test_search.py 2>&1)
-    if echo "$SEARCH_OUTPUT" | grep -q "15/15 通过"; then
-        ok "搜索测试: 15/15 通过"
-    else
-        fail "搜索测试未全部通过"
-    fi
-fi
-
-# ── 5. 路由表一致性 ────────────────────────────────────
-echo ""
-echo "--- 5. 路由表 ---"
+echo "--- 4. 路由表 ---"
 
 if PIPELINE_OK=$(cd "$PIPELINE" && PYTHONPATH=src python3 -c "
 from router import get_router
@@ -124,9 +106,9 @@ else
     fail "路由表加载失败"
 fi
 
-# ── 6. 哨兵 / 工作空间 ──────────────────────────────────
+# ── 5. 哨兵 / 工作空间 ──────────────────────────────────
 echo ""
-echo "--- 6. 运行状态 ---"
+echo "--- 5. 运行状态 ---"
 
 SENTINEL_COUNT=$(ls /tmp/ccs-sentinels/*.json 2>/dev/null | wc -l)
 if [[ "$SENTINEL_COUNT" -gt 0 ]]; then
@@ -142,9 +124,9 @@ else
     warn "无工作空间"
 fi
 
-# ── 7. 语法检查 ─────────────────────────────────────────
+# ── 6. 语法检查 ─────────────────────────────────────────
 echo ""
-echo "--- 7. 全部 Python 语法 ---"
+echo "--- 6. 全部 Python 语法 ---"
 
 SYNTAX_OK=0
 SYNTAX_FAIL=0

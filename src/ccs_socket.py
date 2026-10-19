@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import subprocess
-import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -186,28 +185,3 @@ class CCSStreamer:
         self._running = False
 
 
-# ── CLI 工具 ──
-
-async def send_direct(from_role: str, to_role: str, text: str):
-    cli = CCSClient(from_role)
-    if await cli.connect():
-        await cli.send_to(to_role, text)
-        print(f"{from_role} → {to_role}: {text[:80]}")
-        await cli.close()
-    else:
-        print(f"❌ 无法连接 sister_bus_ccs.sock ({SISTER_BUS_SOCK})")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser(description="CCS Socket 工具")
-    sub = p.add_subparsers(dest="cmd")
-    s = sub.add_parser("send")
-    s.add_argument("from_role")
-    s.add_argument("to_role")
-    s.add_argument("message")
-
-    args = p.parse_args()
-    if args.cmd == "send":
-        asyncio.run(send_direct(args.from_role, args.to_role, args.message))

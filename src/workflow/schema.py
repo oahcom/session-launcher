@@ -3,10 +3,8 @@
 所有 workflow 相关模块从此文件导入 schema，避免定义漂移。
 
 用法:
-    from workflow.schema import init_db, SCHEMA_SQL
+    from workflow.schema import SCHEMA_SQL
 """
-import sqlite3
-
 SCHEMA_SQL = """
     CREATE TABLE IF NOT EXISTS workflow_templates (
         template_id TEXT PRIMARY KEY,
@@ -72,5 +70,3 @@ SCHEMA_SQL = """
     );
 """
 
-def init_db(conn: sqlite3.Connection):
-    conn.executescript(SCHEMA_SQL)

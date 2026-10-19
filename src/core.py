@@ -144,10 +144,12 @@ import json
 import logging
 import os
 import re
+import shlex
 import tempfile
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -298,6 +300,15 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
     role_perms = (role_def or {}).get("permissions", {})
     if role_perms:
         cfg["permissions"] = role_perms
+        # persona 的 allowlist 只约束「自动放行什么」，不约束「默认模式」。
+        # 缺 defaultMode 时 Claude 落回 manual mode → 白名单未覆盖的命令
+        # （如 maintainer 调 wf/ccs，其 17 条白名单里都没有）会弹交互确认框，
+        # 而 pane 无人点击 → 角色进程活着、pane 内容冻结、零推进。实测
+        # 2026-10-19 ccs-maintainer 卡 20 分钟（persona 唯一声明 permissions 的角色，
+        # 其余 30 个走下面的缺省分支，均 Bash(*)+bypass 不受影响）。
+        # 提示词与本处不在一处维护，无法保证同步 —— 只能保证不再无声卡死。
+        if not cfg["permissions"].get("defaultMode"):
+            cfg["permissions"]["defaultMode"] = "bypassPermissions"
     else:
         # 继承全局权限模板（Bash + bypassPermissions），而非空 allow:[]。
         # ponytail: 空 allow:[] 会让 Write 被禁用 → 角色只能用 shell echo 伪产出、不 commit，
@@ -559,6 +570,34 @@ _ROUTER_ENV_FILE = Path.home() / ".claude" / "9router-env.sh"
 _ROUTER_ENV_RE = re.compile(r'^export\s+(ANTHROPIC_(?:BASE_URL|API_KEY))=("?)(.*?)\2\s*$')
 
 
+# 9Router 实际监听端口：20127 为当前主实例（优先），20128 为托盘/旧实例（兜底）。
+_ROUTER_PORTS = ("20127", "20128")
+
+
+def _router_alive(base_url: str) -> bool:
+    """探测 9Router Base URL 是否可达。"""
+    try:
+        urllib.request.urlopen(f"{base_url}/models", timeout=1).close()
+        return True
+    except Exception:
+        return False
+
+
+def _live_router_base_url() -> str:
+    """按 20127 → 20128 优先级探测存活的 9Router 并返回其 Base URL。
+
+    两个端口可能同时在跑（托盘实例 + 主实例），也可能只剩一个。
+    必须避免把角色指向已死端口 —— 那会让 claude 静默卡在 /login。
+    全部不可达时回落首选端口，让 claude 用明确报错暴露问题。
+    """
+    for port in _ROUTER_PORTS:
+        url = f"http://localhost:{port}/v1"
+        if _router_alive(url):
+            return url
+        _log.debug("9Router %s 不可达，尝试下一优先级", url)
+    return f"http://localhost:{_ROUTER_PORTS[0]}/v1"
+
+
 def _router_env() -> dict[str, str]:
     """从 _ROUTER_ENV_FILE 单一事实源读取 9Router 路由 env。
 
@@ -583,20 +622,35 @@ def _router_env() -> dict[str, str]:
     # 空/纯空白值视为缺失（文件被截断或损坏）→ 回落默认值，
     # 否则 claude 会带空 key 启动、静默卡 /login（原 bug 回归）。
     env = {k: v for k, v in env.items() if v and v.strip()}
-    env.setdefault("ANTHROPIC_BASE_URL", "http://localhost:20128/v1")
+    # BASE_URL 由实时探测决定 —— 不采信 env 文件里的值。
+    # 文件可能残留已死端口，指向它会让角色启动后静默卡 /login。
+    env["ANTHROPIC_BASE_URL"] = _live_router_base_url()
     env.setdefault("ANTHROPIC_API_KEY", "9router-local")
     return env
-
 
 def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
     # 权限由 workspace settings.json permissions.allow 控制
     _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
-    # ponytail: wrapper 让 claude 完成任务后不退出 session，而是循环等待下一个任务。
-    # 这解决了"任务完成即退出 session"导致角色无法持续存活 24h 的根因。
+    # --append-system-prompt-file 注入 workspace CLAUDE.md：--bare 跳过
+    # CLAUDE.md auto-discovery，不注入则角色职责/红线/Sister Bus 用法（实测
+    # 每角色 ~40KB）完全到不了模型，只靠 init prompt 的百来字符知道名字。
+    # 严格探针（--tools "" 禁工具，排除模型自读文件）实测 R42：
+    #   --append-system-prompt-file → 能答出文件内暗号；纯 --bare → 答不出；
+    #   --add-dir 同探针下也答不出（--bare 下不预载 CLAUDE.md，与 help 描述不符）。
+    # 保留 --bare 是有意的：它还跳过 hooks/plugin-sync/auto-memory，
+    # 去掉会让 stop-check 回合门控与 guard-fs-scan 拦搜生效。
+    # 文件不存在时必须省略该参数：claude 对缺失的 --append-system-prompt-file
+    # 直接 exit 1，配上外层 while 循环即成"每 3s 报错一次"的僵尸
+    # （与 R41 的 closer/writer 同一形态）。workspace 无 CLAUDE.md 是可能的：
+    # 注入失败、新建实例、手工清理都会留下这种状态。
+    _role_md = ws_path / "CLAUDE.md"
+    _md_arg = (f" --append-system-prompt-file {shlex.quote(str(_role_md))}"
+               if _role_md.is_file() else "")
     cmd = (
         "while true; do "
         "claude --bare --model 9router_hermes"
+        f"{_md_arg}"
         f" {_PERM_FLAGS}"
         # --effort high 而非 max：9router 回退链含 oc/big-pickle 节点，该节点
         # 只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
@@ -611,11 +665,27 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 确保 PATH 包含 claude 的安装路径 (/home/administrator/.local/bin)：
     # launcher 若从精简 PATH 环境启动（systemd Environment=PATH= / cron），
     # 原样透传会让 pane 内找不到 claude，角色起不来。
+    #
+    # 实测（R41，2026-10-19）：`tmux new-session -e PATH=` 对 pane 进程**无效**，
+    # pane 环境继承自 tmux **client 进程**。workflow-engine.service 无
+    # Environment=PATH，经它拉起的 closer/writer 因此每 3s 报
+    # `claude: command not found` 却因 pane_pid（wrapper）存活而被判活。
+    # 故必须把修好的 PATH 传给 client 自身，而非只传给 -e。
+    # 两处都必须补：
+    #   1. ~/.local/bin — claude 可执行文件所在（R41）。
+    #   2. 解释器自身目录 — hermes_bus 靠 miniforge3 的 `__editable__.hermes_core.pth`
+    #      才能 import；pane 的 PATH 落到 /usr/bin/python3(3.12) 时该 .pth 不存在，
+    #      `wf confirm` 委托 pipeline 审批会在 `from hermes_bus.config import ...`
+    #      处 ModuleNotFoundError（实测 security_auditor #414311：单元含审批 token
+    #      却提交不回去，步骤卡在 step_done_ready 靠 TTL 兜底自动放行）。
     _claude_dir = str(Path.home() / ".local" / "bin")
+    _py_dir = str(Path(sys.executable).resolve().parent)
     _parts = os.environ.get("PATH", "").split(os.pathsep)
-    if _claude_dir not in _parts:
-        _parts.append(_claude_dir)
+    for _d in (_py_dir, _claude_dir):
+        if _d not in _parts:
+            _parts.insert(0, _d)
     _claude_path = os.pathsep.join(_parts)
+    _env = {**os.environ, "PATH": _claude_path}
     try:
         r = subprocess.run([
             "tmux", "new-session", "-d", "-s", tmux_name,
@@ -630,7 +700,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
             "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
             "-e", f"PATH={_claude_path}",
             "bash", "-c", cmd
-        ], capture_output=True, text=True, timeout=10)
+        ], capture_output=True, text=True, timeout=10, env=_env)
     except FileNotFoundError:
         return "tmux 未安装或不在 PATH 中"
     except subprocess.TimeoutExpired:
@@ -888,7 +958,13 @@ def send(role: str, message: str, source: str = "",
             if not cmd_ok:
                 _write_bus_notice(role, message, source, f"敏感操作门禁拒绝: {reason}")
                 return {"success": False, "error": f"敏感操作门禁拒绝: {reason}"}
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except Exception as e:  # noqa: BLE001
+            # 门禁自身故障绝不可杀掉整个 ccs send：曾经只捕获
+            # (subprocess.TimeoutExpired, OSError)，而 gatekeeper 写库遇锁抛的是
+            # sqlite3.OperationalError（DatabaseError → Error，**不是** OSError 子类）
+            # → 异常穿透 main() → ccs.py 以 rc=1 崩溃 → 调用方（工作流引擎）只看到
+            # 截断的 traceback，真正的 "database is locked" 被埋掉。
+            # 降级语义与原先一致：写 bus 通知 + 继续投递。
             _write_bus_notice(role, message, source, f"门禁降级: {e}")
 
     tmux_name = make_tmux_name(role, instance_id)

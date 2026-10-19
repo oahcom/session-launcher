@@ -130,16 +130,6 @@ def check_eval_passrate(threshold: float = 0.9, window: int = 10):
         pass
 
 
-def check_gateway() -> dict:
-    """Gateway health check - handled by gateway_guard.py (redline 1).
-    The actual gateway validation is performed by gateway_guard.py in core.send() and launcher.py.
-    """
-    # Gateway validation is now handled by gateway_guard.py in core.send() and launcher.py
-    # This check is kept for compatibility but always returns ok since 
-    # the actual validation happens at send-time via gateway_guard.py
-    return {"gate": "ok", "note": "validated by gateway_guard.py at send-time"}
-
-
 def main():
     quiet = "--quiet" in sys.argv
     if not quiet:

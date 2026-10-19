@@ -59,13 +59,6 @@ def _tmux_ok():
     return mock_mod
 
 
-def _tmux_fail():
-    """让 _run 中的 tmux has-session 返回失败（returncode=1）。"""
-    mock_mod = MagicMock()
-    mock_mod.make_tmux_name.return_value = "ccs-partner-0"
-    return mock_mod
-
-
 # ── P1-P3: _bus_read_latest ──
 
 class TestBusReadLatest:

@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+import core
+from core import _router_env, _router_alive, _live_router_base_url, _launch_tmux
 """护栏测试：确保 CCS 角色 claude 启动时必须带 9Router 路由 env。
 
 根因回归防护：e5d5ccf 曾把 env 注入逻辑当"死代码"删除，
@@ -27,40 +28,68 @@ class TestRouterEnvSource:
 
     def test_keys_present_in_known_router(self):
         env = _router_env()
-        assert "localhost:20128" in env["ANTHROPIC_BASE_URL"]
+        assert "localhost:20127" in env["ANTHROPIC_BASE_URL"]
         assert env["ANTHROPIC_API_KEY"] == "9router-local"
 
     def test_fallback_when_source_missing(self, monkeypatch, tmp_path):
-        # 指向不存在的 source 文件，验证兜底为已知默认值而非崩溃
+        # 指向不存在的 source 文件 → 不崩溃，回落探测结果
         missing = tmp_path / "no_such_env.sh"
-        monkeypatch.setattr("core._ROUTER_ENV_FILE", missing)
+        monkeypatch.setattr(core, "_ROUTER_ENV_FILE", missing)
+        monkeypatch.setattr(core, "_live_router_base_url", lambda: "http://localhost:20127/v1")
         env = _router_env()
-        assert env["ANTHROPIC_BASE_URL"] == "http://localhost:20128/v1"
+        assert env["ANTHROPIC_BASE_URL"] == "http://localhost:20127/v1"
         assert env["ANTHROPIC_API_KEY"] == "9router-local"
 
-    def test_reads_values_from_source(self, monkeypatch, tmp_path):
-        # source 文件里有真实值 → 优先于兜底
+    def test_base_url_comes_from_probe_not_source(self, monkeypatch, tmp_path):
+        # source 文件值不再决定 BASE_URL —— 文件可能残留已死端口，
+        # 指向它会让角色启动后静默卡 /login。改为实时探测。
         src = tmp_path / "9router-env.sh"
         src.write_text(
             'export ANTHROPIC_BASE_URL="http://example:9999/v1"\n'
             'export ANTHROPIC_API_KEY="secret-key"\n'
         )
-        monkeypatch.setattr("core._ROUTER_ENV_FILE", src)
+        monkeypatch.setattr(core, "_ROUTER_ENV_FILE", src)
+        monkeypatch.setattr(core, "_live_router_base_url", lambda: "http://localhost:20127/v1")
         env = _router_env()
-        assert env["ANTHROPIC_BASE_URL"] == "http://example:9999/v1"
-        assert env["ANTHROPIC_API_KEY"] == "secret-key"
+        assert env["ANTHROPIC_BASE_URL"] == "http://localhost:20127/v1"
 
     def test_empty_value_falls_back(self, monkeypatch, tmp_path):
         # source 文件内 ANTHROPIC_API_KEY= 为空（截断/损坏）→ 回落默认值，
         # 否则 claude 带空 key 静默卡 /login（原 bug 回归）。
         src = tmp_path / "9router-env.sh"
         src.write_text(
-            'export ANTHROPIC_BASE_URL="http://localhost:20128/v1"\n'
+            'export ANTHROPIC_BASE_URL="http://localhost:20127/v1"\n'
             'export ANTHROPIC_API_KEY=\n'
         )
-        monkeypatch.setattr("core._ROUTER_ENV_FILE", src)
+        monkeypatch.setattr(core, "_ROUTER_ENV_FILE", src)
         env = _router_env()
         assert env["ANTHROPIC_API_KEY"] == "9router-local"
+
+
+class TestLiveRouterBaseUrl:
+    """BASE_URL 的端口优先级：20127 优先，不可达才回落 20128。"""
+
+    @patch("core._router_alive")
+    def test_prefers_primary_port(self, mock_alive):
+        mock_alive.side_effect = lambda url: url == "http://localhost:20127/v1"
+        assert _live_router_base_url() == "http://localhost:20127/v1"
+        assert mock_alive.call_count == 1
+
+    @patch("core._router_alive")
+    def test_falls_back_to_secondary(self, mock_alive):
+        mock_alive.side_effect = lambda url: url == "http://localhost:20128/v1"
+        assert _live_router_base_url() == "http://localhost:20128/v1"
+
+    @patch("core._router_alive")
+    def test_all_down_returns_primary(self, mock_alive):
+        mock_alive.return_value = False
+        assert _live_router_base_url() == "http://localhost:20127/v1"
+
+    @patch("core.urllib.request.urlopen")
+    def test_probe_failure_counts_as_down(self, mock_open):
+        mock_open.side_effect = OSError("conn refused")
+        assert _router_alive("http://localhost:20127/v1") is False
+        mock_open.assert_called_once()
 
 
 class TestLaunchTmuxInjectsEnv:
@@ -74,7 +103,7 @@ class TestLaunchTmuxInjectsEnv:
         self, mock_sleep, mock_find_pid, mock_run, mock_router_env
     ):
         mock_router_env.return_value = {
-            "ANTHROPIC_BASE_URL": "http://localhost:20128/v1",
+            "ANTHROPIC_BASE_URL": "http://localhost:20127/v1",
             "ANTHROPIC_API_KEY": "9router-local",
         }
         mock_find_pid.return_value = 12345
@@ -97,7 +126,7 @@ class TestLaunchTmuxInjectsEnv:
         # 断言两项变量经 -e 注入（顺序无关）
         assert "-e" in args
         joined = " ".join(args)
-        assert "ANTHROPIC_BASE_URL=http://localhost:20128/v1" in joined
+        assert "ANTHROPIC_BASE_URL=http://localhost:20127/v1" in joined
         assert "ANTHROPIC_API_KEY=9router-local" in joined
 
 

@@ -1,7 +1,6 @@
 __all__ = [
     '_check_memory_before_launch',
     '_find_claude_pid',
-    '_find_claude_session_id',
     '_is_alive',
     '_tmux_send',
     '_tmux_output',
@@ -36,6 +35,28 @@ import time
 from pathlib import Path
 from typing import Optional
 
+
+
+def _send_timeout() -> float:
+    """tmux 写入超时，按系统负载自适应。
+
+    固定 3s 在高负载下被打穿：实测 load 15~17 时
+    `tmux send-keys -l -t ccs-reviewer:0.0` 单次 2.3~5.0s，3 次重试全败 →
+    工作流投递彻底失败（父链重投 → 排队 → auto-cancel 循环）。
+    tmux 服务端在 role pane 忙着跑长工具调用时尤其慢，与消息大小无关。
+
+    ponytail: 只读 loadavg 一阶自适应；若将来需要更精确，改用
+    /proc/pressure/io 或直接测历史 P99 延迟。返回 5/10/20s。
+    """
+    try:
+        load = float(Path("/proc/loadavg").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 5.0
+    if load >= 12:
+        return 20.0
+    if load >= 6:
+        return 10.0
+    return 5.0
 TMUX_PREFIX = "ccs-"
 
 CODEX_TMUX_PREFIX = "cdx-"
@@ -171,33 +192,6 @@ def _find_claude_pid(tmux_name: str, process_name: str = "claude") -> Optional[i
     return None
 
 
-def _find_claude_session_id(role: str = "") -> Optional[str]:
-    """从 CCS 独立工作目录中查找最新的 claude session ID。"""
-    try:
-        if role:
-            from paths import CCS_SESSIONS_DIR
-            base = CCS_SESSIONS_DIR / role / ".claude" / "projects"
-        else:
-            base = Path.home() / ".claude" / "projects"
-        if not base.exists():
-            return None
-        latest_file = None
-        latest_time = 0
-        for proj_dir in base.iterdir():
-            if not proj_dir.is_dir():
-                continue
-            for f in proj_dir.glob("*.jsonl"):
-                mtime = f.stat().st_mtime
-                if mtime > latest_time:
-                    latest_time = mtime
-                    latest_file = f
-        if not latest_file:
-            return None
-        return latest_file.stem
-    except Exception:
-        return None
-
-
 def _is_alive(tmux_name: str) -> bool:
     """单检：仅验证 tmux session 存在。供 core/runner/codex_ops 等快速路径使用。"""
     # 空串必须短路为 False：`tmux has-session -t ""` 在 server 存活时 rc=0，
@@ -214,10 +208,13 @@ def _is_alive(tmux_name: str) -> bool:
         return False
 
 
-# 只信状态栏的 "esc to interrupt"：它仅生成中显示，空闲时消失（7 角色实测）。
-# 不用 spinner 文案（✻ Sautéed/Churned/Pontificating…）——动词随机、词表追不完，
-# 且空闲 pane 会残留已完成的 "✻ X for 3m 2s" 导致误判为忙。
+# 生成中的判据：状态栏的 "esc to interrupt"。它仅生成中显示，空闲时整段消失。
+# 实测 2026-10-17：scout 生成中状态栏为 `... · esc to interrupt · ← 11 agents`，
+# 同一时刻 6 个空闲会话该文案 0 匹配——该判据有效，不是恒定失效。
+# 不用 spinner 行（✻ Shimmying… (40s · ↓ 1.4k tokens) / ✻ Churned for 2m）：
+# 至少两种格式（"for X" 与 "(Xs · ↓ tokens)"）、持续变化，且空闲 pane 会残留。
 _BUSY_SCAN_TAIL = 8  # 状态栏在最底部
+
 
 def _role_is_busy(tmux_name: str) -> bool:
     """检测 pane 是否处于生成中（Claude CLI 状态栏 esc-to-interrupt 提示）。
@@ -227,6 +224,7 @@ def _role_is_busy(tmux_name: str) -> bool:
     升级路径：claude CLI 若暴露状态接口则改用协议查询。
     """
     return "esc to interrupt" in _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
+
 
 def _tmux_send(tmux_name: str, message: str, retries: int = 3,
                retry_delay: float = 1.0, wait_idle: int = 0):
@@ -258,23 +256,27 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
                 # 退 pager 不是投递的职责——角色自身卡在 pager 归 watchdog 管。
                 subprocess.run(
                     ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
-                    capture_output=True, timeout=3,
+                    capture_output=True, timeout=_send_timeout(),
                 )
             time.sleep(0.05)
             for i in range(0, len(message), 500):
                 chunk = message[i:i + 500]
                 # -l: literal mode，防止 prompt 中出现 q/C-c/Space 等 tmux 特殊键名时
                 # 被解释为按键指令而非文本输入（bus #141691, D3 P0 审查检出）
+                # `--` 必须加：chunk 以 `-` 开头时（分块恰好落在 "- P0: ..."
+                # 列表行前）tmux 把它当 flag → rc=1 "invalid flag -" →
+                # 整个分块消息投递失败。实测 reviewer 模板行首全是 `- P0/P1`，
+                # 每轮 3 连败，wf_22b96 的 reviewer 子链 5 个连续 failed。
                 r = subprocess.run(
-                    ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", chunk],
-                    capture_output=True, timeout=3,
+                    ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", "--", chunk],
+                    capture_output=True, timeout=_send_timeout(),
                 )
                 if r.returncode != 0:
                     raise RuntimeError(f"tmux send-keys failed (rc={r.returncode})")
                 time.sleep(0.05)
             r = subprocess.run(
                 ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
-                capture_output=True, timeout=3,
+                capture_output=True, timeout=_send_timeout(),
             )
             if r.returncode == 0:
                 return True

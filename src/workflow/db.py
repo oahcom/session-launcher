@@ -4,7 +4,7 @@ Schema 定义从 workflow.schema 导入（单一来源）。
 
 用法:
     from workflow.db import create_connection
-    from workflow.schema import SCHEMA_SQL, init_db
+    from workflow.schema import SCHEMA_SQL
 """
 import sqlite3
 from pathlib import Path
