@@ -231,9 +231,8 @@ def _submitted(tmux_name: str, message: str) -> bool:
 
     Claude CLI 启动阶段会吞掉紧随文本之后的 Enter：实测新建 session 后 2s
     发送，文本停在输入框永不提交，角色零响应，而 send-keys 返回码为 0
-    （假成功）。判据取消息首行前 24 字符在最后一个 `❯` 行上做子串匹配；
-    判据取输入框边界（最后两条横线之间）而非最后一条 `❯` 行：已提交的消息
-    同样带回 `❯` 前缀滚到上方，只看最后一行会把滞留误判为已提交。
+    （假成功）。判据取输入框边界（最后两条横线之间）而非最后一条 `❯` 行：
+    已提交的消息同样带回 `❯` 前缀滚到上方，只看最后一行会把滞留误判为已提交。
     """
     raw = _tmux_output(tmux_name, tail=60)
     if raw.startswith("[错误]") or not raw.strip():
@@ -250,6 +249,26 @@ def _submitted(tmux_name: str, message: str) -> bool:
         return False  # TUI 尚未绘制出输入框边界 → 按未提交处理，继续补 Enter
     composer = "\n".join(lines[rules[-2] + 1:rules[-1]])
     return probe not in composer
+
+
+def _ensure_submitted(tmux_name: str, message: str,
+                      attempts: int = 12, delay: float = 0.6) -> bool:
+    """补 Enter 直到输入框清空。Enter 无损，滞留才是丢消息。
+
+    窗口需覆盖 CLI 启动（实测 TUI 就绪约 2s，早于此的 Enter 会被丢弃）。
+    始终返回 True：此处已发出文本，返回 False 会让调用方重发、把同一内容
+    再叠一遍；滞留只报错留痕。
+    """
+    for _ in range(attempts):
+        if _submitted(tmux_name, message):
+            return True
+        time.sleep(delay)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
+            capture_output=True, timeout=_send_timeout(),
+        )
+    logging.getLogger("tmux_ops").error("tmux 消息停留在输入框未提交: %s", tmux_name)
+    return True
 
 
 def _tmux_send(tmux_name: str, message: str, retries: int = 3,
@@ -305,20 +324,7 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
                 capture_output=True, timeout=_send_timeout(),
             )
             if r.returncode == 0:
-                # 补 Enter 直到输入框清空：Enter 是无损的（空输入框上是 no-op，
-                # 生成中也不中断推理），而滞留 = 消息静默丢失。窗口需覆盖 CLI
-                # 启动（实测 TUI 就绪约 2s，早于此的 Enter 会被丢弃）。
-                for _ in range(12):
-                    if _submitted(tmux_name, message):
-                        return True
-                    time.sleep(0.6)
-                    subprocess.run(
-                        ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
-                        capture_output=True, timeout=_send_timeout(),
-                    )
-                logging.getLogger("tmux_ops").error(
-                    "tmux 消息停留在输入框未提交: %s", tmux_name)
-                return True  # 不返回 False：重发会把同一文本再叠一遍
+                return _ensure_submitted(tmux_name, message)
         except Exception as e:
             logging.getLogger("tmux_ops").warning(
                 "tmux send 失败 (attempt %d/%d) %s: %s", attempt + 1, retries, tmux_name, e)
