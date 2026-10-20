@@ -75,6 +75,9 @@ class TestMakeTmuxName:
 
 # ── _tmux_send 不得中断生成 ──
 
+_IDLE_PANE = "history\n" + "─"*40 + "\n❯ \n" + "─"*40 + "\n  ⏵⏵ bypass permissions on\n"
+
+
 class TestTmuxSendDoesNotInterrupt:
     """投递消息不得中断角色正在跑的推理。
 
@@ -86,7 +89,8 @@ class TestTmuxSendDoesNotInterrupt:
     def test_never_sends_ctrl_c(self):
         import tmux_ops
         from unittest.mock import patch
-        with patch("tmux_ops.subprocess.run") as m:
+        with patch("tmux_ops.subprocess.run") as m, \
+             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE):
             m.return_value.returncode = 0
             tmux_ops._tmux_send("ccs-probe", "hello")
         sent = [c.args[0] for c in m.call_args_list]
@@ -96,7 +100,8 @@ class TestTmuxSendDoesNotInterrupt:
     def test_clears_input_line_with_ctrl_u(self):
         import tmux_ops
         from unittest.mock import patch
-        with patch("tmux_ops.subprocess.run") as m:
+        with patch("tmux_ops.subprocess.run") as m, \
+             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE):
             m.return_value.returncode = 0
             tmux_ops._tmux_send("ccs-probe", "hello")
         sent = [c.args[0] for c in m.call_args_list]
@@ -107,7 +112,8 @@ class TestTmuxSendDoesNotInterrupt:
         """-l 必须存在，否则 payload 内的按键名会被 tmux 解释执行。"""
         import tmux_ops
         from unittest.mock import patch
-        with patch("tmux_ops.subprocess.run") as m:
+        with patch("tmux_ops.subprocess.run") as m, \
+             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE):
             m.return_value.returncode = 0
             tmux_ops._tmux_send("ccs-probe", "q/goal C-c")
         literal = [c.args[0] for c in m.call_args_list if "-l" in c.args[0]]
@@ -162,6 +168,7 @@ class TestTmuxSendBusyHandling:
         import tmux_ops
         from unittest.mock import patch
         with patch("tmux_ops._role_is_busy", return_value=True), \
+             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE), \
              patch("tmux_ops.subprocess.run") as m:
             m.return_value.returncode = 0
             tmux_ops._tmux_send("ccs-probe", "hello")
@@ -175,6 +182,7 @@ class TestTmuxSendBusyHandling:
         import tmux_ops
         from unittest.mock import patch
         with patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE), \
              patch("tmux_ops.subprocess.run") as m:
             m.return_value.returncode = 0
             tmux_ops._tmux_send("ccs-probe", "hello")
@@ -230,6 +238,7 @@ class TestComposerBoundary:
         assert "draft" in tmux_ops._composer_text(pane)
         assert "hello" not in tmux_ops._composer_text(pane)
 
-    def test_no_boundary_yields_empty(self):
+    def test_no_boundary_yields_none(self):
+        """None = TUI 未画出输入框（须继续补 Enter），与"输入框为空"的空串不同。"""
         import tmux_ops
-        assert tmux_ops._composer_text("no rules here") == ""
+        assert tmux_ops._composer_text("no rules here") is None

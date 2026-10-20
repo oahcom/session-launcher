@@ -122,9 +122,8 @@ _launch_lock = threading.Lock()
 _last_ccs_launch_ts: float = 0.0
 
 
-def _check_memory_before_launch(role: str) -> str | None:
-    """检查是否有足够内存启动新 CCS。内存不足返回错误描述，否则返回 None。"""
-    global _last_ccs_launch_ts
+def _memory_shortage(role: str) -> str | None:
+    """内存/swap 不足时返回拒启原因，否则 None。"""
     try:
         # /proc/meminfo 里 MemAvailable 排在 SwapTotal/SwapFree 之前，逐个
         # startswith 判并 break 会让 swap 读不到 → 先整体解析，再判断。
@@ -150,6 +149,15 @@ def _check_memory_before_launch(role: str) -> str | None:
                     f"跳过 {role} 启动")
     except Exception:
         logging.getLogger("tmux_ops").warning("内存检查失败，跳过可用内存校验")
+    return None
+
+
+def _check_memory_before_launch(role: str) -> str | None:
+    """检查是否有足够内存启动新 CCS。内存不足返回错误描述，否则返回 None。"""
+    global _last_ccs_launch_ts
+    err = _memory_shortage(role)
+    if err:
+        return err
 
     # 连续启动间隔
     now = time.time()
@@ -173,24 +181,23 @@ def _find_claude_pid(tmux_name: str, process_name: str = "claude") -> Optional[i
         tmux_name: tmux session name
         process_name: 要查找的进程名（默认 'claude'，codex 场景传 'codex'）
     """
+    found = _pane_children(tmux_name, process_name)
+    if found:
+        return int(found[0])
+    return _pane_pid(tmux_name)
+
+
+def _pane_pid(tmux_name: str) -> Optional[int]:
+    """tmux pane 的 shell PID（无子进程时的兜底）。探测失败返回 None。"""
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
             capture_output=True, text=True, timeout=5
         )
-        pane_pid = r.stdout.strip()
-        if pane_pid.isdigit():
-            # 精確匹配指定进程名 (P1 fix: 移除 -f 模糊匹配回退)
-            r2 = subprocess.run(
-                ["pgrep", "-P", pane_pid, "-x", process_name],
-                capture_output=True, text=True, timeout=3
-            )
-            if r2.stdout.strip():
-                return int(r2.stdout.strip().split("\n")[0])
-            return int(pane_pid)
-    except Exception:
-        pass
-    return None
+        pid = r.stdout.strip()
+        return int(pid) if pid.isdigit() else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
 
 
 def _is_alive(tmux_name: str) -> bool:
@@ -232,13 +239,13 @@ def _composer_text(pane: str) -> str:
 
     已提交的消息会滚到横线之上、同样带 `❯` 前缀，只看最后一条 `❯` 行
     会把滞留误判为已提交——横线边界是唯一可靠的判据。看不到边界时返回
-    空串，调用方据此按"未提交"继续补 Enter。
+    None（与"输入框为空"的空串区分：前者是 TUI 未就绪，须继续补 Enter）。
     """
     lines = pane.splitlines()
     rules = [i for i, ln in enumerate(lines)
              if ln.startswith("─") and len(ln) > 20]
     if len(rules) < 2:
-        return ""
+        return None
     return "\n".join(lines[rules[-2] + 1:rules[-1]])
 
 
@@ -250,10 +257,15 @@ def _submitted(tmux_name: str, message: str) -> bool:
     （假成功）。
     """
     raw = _tmux_output(tmux_name, tail=60)
-    if raw.startswith("[错误]"):
+    if raw.startswith("[错误]") or not raw.strip():
         return True  # 采集失败（含 session 不存在）：无从判断，按已提交处理，不空等
     probe = message.splitlines()[0][:24] if message.splitlines() else ""
-    return not probe or probe not in _composer_text(raw)
+    if not probe:
+        return True
+    composer = _composer_text(raw)
+    if composer is None:
+        return False  # TUI 尚未画出输入框 → 按未提交处理，继续补 Enter
+    return probe not in composer
 
 
 def _ensure_submitted(tmux_name: str, message: str, window: int = 12) -> bool:
@@ -264,7 +276,16 @@ def _ensure_submitted(tmux_name: str, message: str, window: int = 12) -> bool:
     再叠一遍；滞留只报错留痕。
     """
     for _ in range(window):
-        if _submitted(tmux_name, message):
+        # 先要求 TUI 已画出输入框边界：启动 1s 时 pane 还是空白，此时"没看到
+        # 文本"等同于"没看到任何东西"，据此放行正是滞留漏判的那条路径。
+        # 采集不到 pane（mock/无 session）不在此列——`_submitted` 已按已提交
+        # 处理，不能让它白等满窗口。
+        pane = _tmux_output(tmux_name, tail=60)
+        # 空 pane **不能**当作已提交：启动 1s 时 pane 就是全空的，正是滞留
+        # 发生的那种状态。只有采集本身失败（session 已不存在）才不必空等。
+        if pane.startswith("[错误]"):
+            return True
+        if _composer_text(pane) is not None and _submitted(tmux_name, message):
             return True
         time.sleep(0.6)
         subprocess.run(
@@ -311,21 +332,7 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3):
     """
     for attempt in range(retries):
         try:  # noqa: PERF203 — 逐次重试，异常即下次尝试
-            if not _role_is_busy(tmux_name):
-                # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
-                # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
-                # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
-                subprocess.run(
-                    ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
-                    capture_output=True, timeout=_send_timeout(),
-                )
-            time.sleep(0.05)
-            _paste(tmux_name, message)
-            r = subprocess.run(
-                ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
-                capture_output=True, timeout=_send_timeout(),
-            )
-            if r.returncode == 0:
+            if _deliver_once(tmux_name, message):
                 return _ensure_submitted(tmux_name, message)
         except Exception as e:
             logging.getLogger("tmux_ops").warning(
@@ -334,6 +341,25 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3):
                 time.sleep(1.0)
     logging.getLogger("tmux_ops").error("tmux send 重试耗尽，消息未投递: %s", tmux_name)
     return False
+
+
+def _deliver_once(tmux_name: str, message: str) -> bool:
+    """单次投递：清行（仅空闲时）→ 逐块写入 → Enter。返回是否已提交。"""
+    if not _role_is_busy(tmux_name):
+        # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
+        # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
+        # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
+            capture_output=True, timeout=_send_timeout(),
+        )
+    time.sleep(0.05)
+    _paste(tmux_name, message)
+    r = subprocess.run(
+        ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
+        capture_output=True, timeout=_send_timeout(),
+    )
+    return r.returncode == 0
 
 
 def _tmux_output(tmux_name: str, tail: int = 20) -> str:
@@ -356,28 +382,22 @@ def _tmux_kill(tmux_name: str):
 
 def _pane_children(tmux_name: str, process_name: str) -> list[str]:
     """pane PID 下精确匹配子进程（pgrep -x）。探测失败返回空表。"""
-    try:
-        r = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
-            capture_output=True, text=True, timeout=5
-        )
-        pane_pid = r.stdout.strip()
-        if not pane_pid.isdigit():
-            return []
-        r2 = subprocess.run(
-            ["pgrep", "-P", pane_pid, "-x", process_name],
-            capture_output=True, text=True, timeout=3
-        )
-        if not r2.stdout.strip():
-            # codex 是 node 脚本，进程名不是 'codex' —— -x 永远匹配不到，
-            # 必须回退 -f（实测 2026-10-20：node .../bin/codex exec）。
-            r2 = subprocess.run(
-                ["pgrep", "-P", pane_pid, "-f", process_name],
+    pane_pid = _pane_pid(tmux_name)
+    if pane_pid is None:
+        return []
+    for flag in ("-x", "-f"):
+        # -x 先精确匹配；codex 是 node 脚本（进程名不是 'codex'），-x 永不命中，
+        # 必须回退 -f（实测 2026-10-20：node .../bin/codex exec）。
+        try:
+            r = subprocess.run(
+                ["pgrep", "-P", str(pane_pid), flag, process_name],
                 capture_output=True, text=True, timeout=3
             )
-        return r2.stdout.strip().split("\n") if r2.stdout.strip() else []
-    except Exception:
-        return []
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if r.stdout.strip():
+            return r.stdout.strip().split("\n")
+    return []
 
 
 def _find_codex_pid(tmux_name: str) -> Optional[int]:
