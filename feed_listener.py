@@ -23,6 +23,8 @@ from typing import Optional
 
 
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from tmux_ops import _role_is_busy  # noqa: E402  复用同一忙判据，避免两处口径漂移
 _HOME = Path.home()
 FEED_SOCKET = _HOME / ".hermes" / "run" / "sister_bus_feed.sock" if (_HOME / ".hermes" / "run" / "sister_bus_feed.sock").exists() else "/tmp/sister_bus_feed.sock"
 _BUS_CLIENT = _HOME / ".hermes" / "scripts" / "bus_client.py"
@@ -89,6 +91,13 @@ def _inject_to_tmux(tmux_target: str, event: dict):
     snippet = (body or title)[:200]
     # 单行拼接：换行符随 payload 一起发送时提交语义不确定，用分隔符消除歧义
     payload = f"[feed:{cat}] {title} | {snippet}" if snippet else f"[feed:{cat}] {title}"
+    # 忙时跳过：本条只是「有新消息」的提示，事实本身在 bus 里，路由不丢。
+    # 不跳则直接 send-keys 绕过 ccs send 的忙门控，成漏网的第二条注入通道。
+    try:
+        if _role_is_busy(tmux_target) is True:
+            return
+    except Exception as e:  # 探测失败放行：宁可提示，不因探测失灵静默
+        print(f"  → 忙检测失败，按空闲处理: {e}", file=sys.stderr)
     try:
         # -l 关闭键名解析，故 "Enter" 必须单独发一次：混在同一次调用里会被当字面文本输入，
         # 消息永不提交（tmux 3.4 man: "The -l flag disables key name lookup and processes

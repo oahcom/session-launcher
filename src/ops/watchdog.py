@@ -207,7 +207,11 @@ def check_auto_continue(role: str, instance_id: int = 0) -> bool:
         return False
 
     try:
-        _tmux_send(tmux_name, "/continue")
+        # 只认真送达：_tmux_send 忙时拒投返回 "busy"（不碰 pane），失败返回 False。
+        # 两种都未发出，不能写节流戳与"已发送 /continue"审计——假审计会让
+        # 运维以为唤醒已发生，实际角色从未收到。
+        if _tmux_send(tmux_name, "/continue") is not True:
+            return False
         _AUTO_CONTINUE_SENT[key] = now
         _audit_monitor("auto-continue",
             f"{role}[{instance_id}] 无响应超过 {AUTO_CONTINUE_THRESHOLD}s，已发送 /continue",

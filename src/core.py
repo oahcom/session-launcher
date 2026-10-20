@@ -1048,6 +1048,12 @@ def send(role: str, message: str, source: str = "",
     delivered = _tmux_send(tmux_name, send_message)
     # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
     _trigger_hooks("after_send", role=role, message=send_message, source=source)
+    if delivered == "busy":
+        # 忙 ≠ 故障：角色正在推理，消息未发送也未丢弃。不累计连败、不写
+        # fallback 通知（那是真丢消息的信号），只告诉调用方稍后重试。
+        # bus 侧本就未标记消费，路由/引擎下轮自然重推同一 id，不会重复投递。
+        return {"success": False, "reason": "busy",
+                "error": f"CCS {role}[{instance_id}] 思考中，未投递"}
     if not delivered:
         # 投递失败不得报 success：否则调用方（引擎/partner）以为送达，
         # 3 连败 fallback 永不触发，消息静默丢弃（实测 2026-10-16）。

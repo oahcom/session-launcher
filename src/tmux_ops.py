@@ -331,12 +331,19 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3):
     3 连败 fallback 永不触发（实测 2026-10-16，send-keys 恒 rc=1 时仍
     返回 {'success': True, 'sent_chars': 11}）。
 
-    忙时不发 C-u（C-c 会中断推理，实测 lr 6 分钟被打断 7 次），消息进 CLI
-    输入队列等当前回合结束再读；闲时清输入行防止上一条残留粘在前面。
+    忙时**直接拒投**：生成中的角色收到新消息会把它当成当前回合的输入，
+    前面的推理上下文被下一任务覆盖（实测 2026-10-20 closer：9m58s 推理中途
+    收到 skill_audit，立即转去执行，原审计结论丢失）。旧实现忙时只跳过 C-u
+    继续 paste+Enter，误以为「消息进从队列等回合结束再读」，实际 Claude CLI
+    下一轮就取走执行。拒投后由调用方把消息留在 bus，下一轮重推。
     """
     for attempt in range(retries):
         try:  # noqa: PERF203 — 逐次重试，异常即下次尝试
-            if _deliver_once(tmux_name, message):
+            outcome = _deliver_once(tmux_name, message)
+            if outcome == "busy":
+                # 忙不作故障：不重试（1s 内不会变闲）、不上报，由调用方下轮重推
+                return "busy"
+            if outcome:
                 return _ensure_submitted(tmux_name, message)
         except Exception as e:
             logging.getLogger("tmux_ops").warning(
@@ -347,17 +354,30 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3):
     return False
 
 
-def _deliver_once(tmux_name: str, message: str) -> bool:
-    """单次投递：清行（仅空闲时）→ 逐块写入 → Enter。返回是否已提交。"""
-    if not _role_is_busy(tmux_name):
-        # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
-        # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
-        # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
-        subprocess.run(
-            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
-            capture_output=True, timeout=_send_timeout(),
-        )
-    time.sleep(0.05)
+def _deliver_once(tmux_name: str, message: str):
+    """单次投递：闲时清行 → 逐块写入 → Enter。
+
+    返回 True=已提交 / False=写入失败 / "busy"=角色思考中、未碰 pane。
+
+    忙时**不碰 pane**：生成中的角色会把新消息当成当前回合的输入，前面的
+    推理被下一任务覆盖（实测 2026-10-20 closer：9m58s 推理中途收到
+    skill_audit，立即转去执行，原审计结论丢失）。旧实现忙时只跳过 C-u 继续
+    paste+Enter，误以为「消息进从队列等回合结束再读」，实际下一轮就取走。
+
+    探测失败（None）视为空闲：宁可发出去，也不因探测失灵把所有消息饿死
+    （参见 2026-10-17 假忙导致的全链停摆）。
+    """
+    if _role_is_busy(tmux_name) is True:
+        logging.getLogger("tmux_ops").info(
+            "tmux send 跳过（角色思考中）: %s", tmux_name)
+        return "busy"
+    # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
+    # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
+    # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
+    subprocess.run(
+        ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
+        capture_output=True, timeout=_send_timeout(),
+    )
     _paste(tmux_name, message)
     r = subprocess.run(
         ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],

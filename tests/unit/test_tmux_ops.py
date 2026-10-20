@@ -161,22 +161,23 @@ class TestRoleIsBusy:
 # ── 忙时投递策略 ──
 
 class TestTmuxSendBusyHandling:
-    """机制1（默认）：忙时跳过清行直投；机制2：忙时等待。"""
+    """忙时拒投（不碰 pane），由调用方留 bus 下轮重推。"""
 
-    def test_busy_role_skips_ctrl_u_and_still_delivers(self):
-        """忙时不发 C-u（避免触碰输入框/队列），但消息必须照发。"""
+    def test_busy_role_is_not_injected_at_all(self):
+        """忙时不发 C-u、不发正文、不发 Enter——一次 tmux 按键都不该发生。
+
+        旧策略「忙时跳过 C-u 但照发」基于「消息进队列等回合结束再读」的
+        假设。实测 2026-10-20 closer 在 9m58s 推理中途收到注入后立即转去
+        执行，原审计结论丢失。忙时必须完全不碰 pane。
+        """
         import tmux_ops
         from unittest.mock import patch
         with patch("tmux_ops._role_is_busy", return_value=True), \
-             patch("tmux_ops._tmux_output", return_value=_IDLE_PANE), \
              patch("tmux_ops.subprocess.run") as m:
             m.return_value.returncode = 0
-            tmux_ops._tmux_send("ccs-probe", "hello")
-        sent = [c.args[0] for c in m.call_args_list]
-        assert not any("C-u" in argv for argv in sent), \
-            f"角色忙时仍发了 C-u: {sent}"
-        assert any("hello" in argv for argv in sent), \
-            f"忙时消息未投递（会丢任务）: {sent}"
+            assert tmux_ops._tmux_send("ccs-probe", "hello") == "busy"
+        assert m.call_args_list == [], \
+            f"忙时不得有任何 tmux 按键: {[c.args[0] for c in m.call_args_list]}"
 
     def test_idle_role_clears_input_line(self):
         import tmux_ops
