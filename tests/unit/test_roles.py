@@ -12,7 +12,7 @@
   P8   _contract_block                全字段/最小
   P9   _role_assembler_output         成功/失败回退/无assembler
   P10  _build_role_prompt             feed/loop/ondemand/未知驱动
-  P11  _resolve_ws_paths              双路径存在/都不存在
+  P11  _resolve_ws_paths              双路径存在/都不存在/别名属他人/合法别名
   P12  inject_role_knowledge_into_workspace  无workspace/替换/插入
   P13  _validate_role_name            合法/非法/空字符串
   P17  validate_ccs_execution         空参数/任务操作/有效角色
@@ -603,6 +603,35 @@ class TestResolveWsPaths:
         with patch.dict(os.environ, {"HOME": str(tmp_path)}):
             result = _roles._resolve_ws_paths("engineer")
         assert len(result) == 1
+
+    def test_alias_owned_by_another_role_is_skipped(self, tmp_path):
+        """P11d: ccs-<name> 目录的身份行写着另一个角色 → 不注入。
+
+        实测 ccs-coordinator/CLAUDE.md 的 KNOWLEDGE 块曾被写成 coordinator 的 33KB
+        契约，头行却写"你是 ccs-coordinator"。判据用文件自己的身份行。
+        """
+        import routing.roles as _roles
+        ws = tmp_path / "ccs-workspaces"
+        (ws / "coordinator").mkdir(parents=True)
+        (ws / "coordinator" / "CLAUDE.md").write_text("你是 coordinator")
+        (ws / "ccs-coordinator").mkdir(parents=True)
+        (ws / "ccs-coordinator" / "CLAUDE.md").write_text(
+            "<identity>\n你是 ccs-coordinator，CCS 角色。\n</identity>")
+        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = _roles._resolve_ws_paths("coordinator")
+        assert [p.parent.name for p in result] == ["coordinator"]
+
+    def test_legit_alias_still_injected(self, tmp_path):
+        """P11e: 别名目录的身份行写的是本角色 → 照旧注入，不误伤。"""
+        import routing.roles as _roles
+        ws = tmp_path / "ccs-workspaces"
+        (ws / "engineer").mkdir(parents=True)
+        (ws / "engineer" / "CLAUDE.md").write_text("你是 engineer")
+        (ws / "ccs-engineer").mkdir(parents=True)
+        (ws / "ccs-engineer" / "CLAUDE.md").write_text("你是 engineer（旧别名）")
+        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = _roles._resolve_ws_paths("engineer")
+        assert [p.parent.name for p in result] == ["engineer", "ccs-engineer"]
 
 
 # ===================================================================
