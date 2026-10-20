@@ -275,8 +275,28 @@ def _ensure_submitted(tmux_name: str, message: str, window: int = 12) -> bool:
     return True
 
 
-def _tmux_send(tmux_name: str, message: str, retries: int = 3,
-               retry_delay: float = 1.0, wait_idle: int = 0):
+def _paste(tmux_name: str, message: str) -> None:
+    """把整条消息作为字面文本写入输入框（每 500 字符一块）。
+
+    -l: literal mode，防止 prompt 中出现 q/C-c/Space 等 tmux 特殊键名时
+    被解释为按键指令（bus #141691, D3 P0 审查检出）。
+    `--` 必须加：chunk 以 `-` 开头时（分块恰好落在 "- P0: ..." 列表行前）
+    tmux 把它当 flag → rc=1 "invalid flag -" → 整个分块投递失败。
+    实测 reviewer 模板行首全是 `- P0/P1`，每轮 3 连败。
+    返回码非 0 抛异常，由 `_tmux_send` 的重试循环接住。
+    """
+    for i in range(0, len(message), 500):
+        r = subprocess.run(
+            ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0",
+             "--", message[i:i + 500]],
+            capture_output=True, timeout=_send_timeout(),
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"tmux send-keys failed (rc={r.returncode})")
+        time.sleep(0.05)
+
+
+def _tmux_send(tmux_name: str, message: str, retries: int = 3):
     """Send message to tmux session with retry on failure.
 
     ponytail: 重试3次、间隔1s，覆盖 tmux session 暂时不可用的场景。
@@ -286,43 +306,21 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
     3 连败 fallback 永不触发（实测 2026-10-16，send-keys 恒 rc=1 时仍
     返回 {'success': True, 'sent_chars': 11}）。
 
-    wait_idle>0: 机制2（可选）——角色忙时最多等 wait_idle 秒，仍未闲则降级直投。
-    默认 wait_idle=0: 机制1——忙时跳过 C-u 直接投递（消息进 CLI 输入队列，
-    等当前回合结束被读取，不打断生成）；闲时才发 C-u 清输入行。
+    忙时不发 C-u（C-c 会中断推理，实测 lr 6 分钟被打断 7 次），消息进 CLI
+    输入队列等当前回合结束再读；闲时清输入行防止上一条残留粘在前面。
     """
-    deadline = time.time() + max(wait_idle, 0)
-    # 机制2：等到闲再投。放在 retry 循环外，避免等待消耗重试次数。
-    while wait_idle and _role_is_busy(tmux_name) and time.time() < deadline:
-        time.sleep(2)
     for attempt in range(retries):
-        try:
-            # 忙检测：角色在生成中。C-c 会中断推理（Claude Code 键位：
-            # Ctrl+C=Interrupt, Ctrl+U=Delete to line start，官方 interactive-mode 文档）。
+        try:  # noqa: PERF203 — 逐次重试，异常即下次尝试
             if not _role_is_busy(tmux_name):
                 # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
-                # 「中断当前推理」（实测 lr 6 分钟内被打断 7 次，transcript 留下 7 条
-                # [Request interrupted by user]，且正在跑的 Bash 调用被拒）。
-                # 退 pager 不是投递的职责——角色自身卡在 pager 归 watchdog 管。
+                # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
+                # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
                 subprocess.run(
                     ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
                     capture_output=True, timeout=_send_timeout(),
                 )
             time.sleep(0.05)
-            for i in range(0, len(message), 500):
-                chunk = message[i:i + 500]
-                # -l: literal mode，防止 prompt 中出现 q/C-c/Space 等 tmux 特殊键名时
-                # 被解释为按键指令而非文本输入（bus #141691, D3 P0 审查检出）
-                # `--` 必须加：chunk 以 `-` 开头时（分块恰好落在 "- P0: ..."
-                # 列表行前）tmux 把它当 flag → rc=1 "invalid flag -" →
-                # 整个分块消息投递失败。实测 reviewer 模板行首全是 `- P0/P1`，
-                # 每轮 3 连败，wf_22b96 的 reviewer 子链 5 个连续 failed。
-                r = subprocess.run(
-                    ["tmux", "send-keys", "-l", "-t", f"{tmux_name}:0.0", "--", chunk],
-                    capture_output=True, timeout=_send_timeout(),
-                )
-                if r.returncode != 0:
-                    raise RuntimeError(f"tmux send-keys failed (rc={r.returncode})")
-                time.sleep(0.05)
+            _paste(tmux_name, message)
             r = subprocess.run(
                 ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
                 capture_output=True, timeout=_send_timeout(),
@@ -333,7 +331,7 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3,
             logging.getLogger("tmux_ops").warning(
                 "tmux send 失败 (attempt %d/%d) %s: %s", attempt + 1, retries, tmux_name, e)
             if attempt < retries - 1:
-                time.sleep(retry_delay)
+                time.sleep(1.0)
     logging.getLogger("tmux_ops").error("tmux send 重试耗尽，消息未投递: %s", tmux_name)
     return False
 
@@ -356,29 +354,40 @@ def _tmux_kill(tmux_name: str):
         capture_output=True, timeout=5
     )
 
-def _find_codex_pid(tmux_name: str) -> Optional[int]:
-    """查找 Codex 子进程 PID（仅精确匹配 codex，不 fallback 到 pane PID）。
-
-    与 _find_claude_pid 不同：不返回 tmux pane PID 作为兜底，
-    确保 _wait_codex_ready 不会误判未就绪的 session 为就绪。
-    """
+def _pane_children(tmux_name: str, process_name: str) -> list[str]:
+    """pane PID 下精确匹配子进程（pgrep -x）。探测失败返回空表。"""
     try:
         r = subprocess.run(
             ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
             capture_output=True, text=True, timeout=5
         )
         pane_pid = r.stdout.strip()
-        if pane_pid.isdigit():
-            for flag in ("-x", "-f"):
-                r2 = subprocess.run(
-                    ["pgrep", "-P", pane_pid, flag, "codex"],
-                    capture_output=True, text=True, timeout=3
-                )
-                if r2.stdout.strip():
-                    return int(r2.stdout.strip().split("\n")[0])
-    except Exception as e:
-        logging.getLogger("tmux_ops").warning("_find_codex_pid(%s): %s", tmux_name, e)
-    return None
+        if not pane_pid.isdigit():
+            return []
+        r2 = subprocess.run(
+            ["pgrep", "-P", pane_pid, "-x", process_name],
+            capture_output=True, text=True, timeout=3
+        )
+        if not r2.stdout.strip():
+            # codex 是 node 脚本，进程名不是 'codex' —— -x 永远匹配不到，
+            # 必须回退 -f（实测 2026-10-20：node .../bin/codex exec）。
+            r2 = subprocess.run(
+                ["pgrep", "-P", pane_pid, "-f", process_name],
+                capture_output=True, text=True, timeout=3
+            )
+        return r2.stdout.strip().split("\n") if r2.stdout.strip() else []
+    except Exception:
+        return []
+
+
+def _find_codex_pid(tmux_name: str) -> Optional[int]:
+    """查找 Codex 子进程 PID（不 fallback 到 pane PID）。
+
+    不返回 pane PID 作兜底：否则 _wait_codex_ready 会把未就绪的 session
+    误判为就绪。
+    """
+    found = _pane_children(tmux_name, "codex")
+    return int(found[0]) if found else None
 
 
 def _active_codex_session_count() -> int:

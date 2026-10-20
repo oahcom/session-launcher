@@ -182,38 +182,6 @@ class TestTmuxSendBusyHandling:
         assert any("C-u" in argv for argv in sent), \
             f"空闲时未清输入行，残留会粘在新消息前: {sent}"
 
-    def test_wait_idle_zero_does_not_poll(self):
-        """机制1 是默认：wait_idle=0 时不得进入等待循环（否则每次投递都阻塞）。"""
-        import tmux_ops
-        from unittest.mock import patch
-        calls = []
-        with patch("tmux_ops._role_is_busy",
-                   side_effect=lambda n: calls.append(n) or True), \
-             patch("tmux_ops.subprocess.run") as m:
-            m.return_value.returncode = 0
-            tmux_ops._tmux_send("ccs-probe", "hello")
-        # 只允许 retry 循环内的忙检测，不允许等待循环反复探测
-        assert len(calls) < 4, f"wait_idle=0 却轮询了 {len(calls)} 次"
-
-    def test_wait_idle_waits_until_idle_then_sends(self):
-        """机制2：忙 → 轮询；转闲后清行并投递。"""
-        import tmux_ops
-        from unittest.mock import patch
-        seen = []
-
-        def busy_twice_then_idle(_name):
-            seen.append(1)
-            return len(seen) <= 2  # 前两次忙，之后闲
-
-        with patch("tmux_ops._role_is_busy", side_effect=busy_twice_then_idle), \
-             patch("tmux_ops.time.sleep"), \
-             patch("tmux_ops.subprocess.run") as m:
-            m.return_value.returncode = 0
-            tmux_ops._tmux_send("ccs-probe", "hello", wait_idle=30)
-        sent = [c.args[0] for c in m.call_args_list]
-        assert any("C-u" in argv for argv in sent), \
-            "等闲后应清行"
-        assert any("hello" in argv for argv in sent), "转闲后未投递"
 
 
 if __name__ == "__main__":
