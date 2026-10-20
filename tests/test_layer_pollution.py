@@ -183,11 +183,16 @@ class TestLayerPollution:
         assert not errors, "\n".join(errors)
 
     def test_basemd_has_role_contract_core(self):
-        """base.md 是角色知识注入的核心来源，必须包含角色职责红线与自审查指令"""
+        """base.md 是角色知识注入的核心来源：通用红线 + 自审查门 + 禁止项。
+
+        断言的是**契约要素**而不是小标题原文：2026-10-21 角色卡改版把 base.md 里的
+        『允许做的事』并入红线（角色卡自带专业判断），标题随之变化；只要红线、自审查、
+        禁止三类要素仍在，注入契约就没有退化。
+        """
         path = Path.home() / "hermes-session-roles" / "prompts" / "base.md"
         assert path.exists(), "base.md 不存在"
         content = path.read_text(encoding="utf-8")
-        for kw in ["角色职责红线", "自审查指令", "绝对禁止", "允许做的事"]:
+        for kw in ["角色职责红线", "自审查", "禁止"]:
             assert kw in content, f"base.md 应包含 '{kw}'"
 
     def test_all_projects_have_claudemd(self):
