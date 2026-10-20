@@ -12,6 +12,10 @@ from workflow.db import create_connection
 
 CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 
+# 终态：任何写入型操作（complete/fail/cancel）都不应改写这些状态。
+# 与 pipeline 侧 lifecycle.manager 的状态机对齐，避免两套语义分裂。
+_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
+
 
 class WorkflowClient:
     """CCS 角色使用的工作流客户端。"""
@@ -27,6 +31,22 @@ class WorkflowClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
+
+    def _guard_mutable(self, wf_id: str):
+        """校验实例存在且非终态。不存在→KeyError，终态→None，否则→row。
+
+        complete/fail/cancel 三个写入路径共用。原实现只有 complete 挡了
+        completed，fail/cancel 可把已 completed 的链改成 failed/cancelled，
+        而 complete 对不存在的 id 静默打印成功（UPDATE 0 行也返回）。
+        """
+        cur = self._conn.execute(
+            "SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)
+        ).fetchone()
+        if cur is None:
+            raise KeyError(f"工作流不存在: {wf_id}")
+        if cur["status"] in _TERMINAL_STATUSES:
+            return None
+        return cur
 
     def _log(self, wf_id: str = None, task_id: str = None,
              action: str = "", detail: str = ""):
@@ -320,12 +340,11 @@ class WorkflowClient:
         self._log(wf_id=wf_id, action="started", detail=f"step={step_id}")
 
     def complete(self, wf_id: str, summary: str, files: list = None):
-        # 防重闭合守卫：已 completed 的工作流不允许被 wf complete 打回 step_done_ready
-        cur = self._conn.execute(
-            "SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)
-        ).fetchone()
-        if cur and cur["status"] == "completed":
-            return None  # 已完成，不覆写
+        # 终止态守卫：completed / cancelled / failed 都是终态，不允许被 wf complete
+        # 改写。原实现只挡 completed，实测把 cancelled 的实例复活成 step_done_ready
+        # 并生成新 approval_token（角色用旧 wf_id 重复提交即可让已取消的链重新待审）。
+        if self._guard_mutable(wf_id) is None:
+            return None  # 终态，不覆写
         import uuid
         files_str = ", ".join(files) if files else ""
         approval_token = uuid.uuid4().hex[:16]

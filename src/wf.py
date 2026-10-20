@@ -91,6 +91,13 @@ def main():
     p_confirm.add_argument("--reject", action="store_true", help="驳回而非通过")
     p_confirm.add_argument("--reason", "-r", default="")
 
+    # 拉取审批密钥：推送路径（ccs send）失败时的唯一可用入口。降级 bus 事实里
+    # 只写「请用 wf approval 取回」，不写明文 token（共享 bus 不得承载凭证）。
+    p_appr = sub.add_parser("approval", help="拉取自己是审批人的步骤密钥")
+    p_appr.add_argument("wf_id")
+    p_appr.add_argument("step_id")
+    p_appr.add_argument("--json", action="store_true")
+
     # 模板匹配是词法匹配，而角色拿到的是自然语言需求（"做一个高质量网页"）
     # vs 内部行话（"产品经理需求拆解"）—— 2-gram 无交集就会推荐为空。
     # 与其堆同义词表，不如把选择权交给角色的知识（prompt 就是这么设计的）。
@@ -139,6 +146,7 @@ def main():
             wf.fail(args.wf_id, args.reason)
             print(f"失败标记: {args.wf_id}")
 
+
     elif args.cmd == "notify":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
@@ -170,6 +178,19 @@ def main():
             wf.confirm(args.wf_id, args.step_id, token=args.token,
                        approved=not args.reject, reason=args.reason)
             print(f"{'已驳回' if args.reject else '已通过'}: {args.wf_id}/{args.step_id}")
+
+    elif args.cmd == "approval":
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
+        with WorkflowClient(r) as wf:
+            res = wf.pull_approval(args.wf_id, args.step_id)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, default=str))
+            sys.exit(0 if res.get("ok") else 1)
+        if not res.get("ok"):
+            print(f"无法拉取: {res.get('error')}", file=sys.stderr)
+            sys.exit(1)
+        print(res["token"])
+        print(f"剩余有效期: {int(res.get('ttl_remaining', 0) // 60)} 分钟", file=sys.stderr)
 
     elif args.cmd == "templates":
         import sys as _sys
@@ -252,4 +273,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyError as e:
+        # 角色拿 `wf complete` 当"写个完成信号"，拼错/过期的 wf_id 此前会被
+        # 打印成「完成: <id>」并 rc=0 —— 角色的完成判据因此永远为真。
+        print(f"错误: {e.args[0] if e.args else e}", file=sys.stderr)
+        sys.exit(2)

@@ -31,7 +31,10 @@ def _make_sys_block(name: str) -> str:
         "> 非必要请不要修改目录结构。\n"
         "\n"
         "## 工作流提示\n"
-        "- 每个任务完成后更新 CLAUDE.md\n"
+        # 原文「每个任务完成后更新 CLAUDE.md」被角色当成追加日志的许可：
+        # optimizer 在此文件末尾攒了 33.9KB/306 行巡检表，每轮对话都要读，qa 9.5KB、archivist 10.3KB。
+        # 身份文件不该承载运行日志。
+        "- 本文件是身份定义，禁止追加运行日志/巡检记录；产出写 bus 或 PERF_AUDIT 等独立文件\n"
         "- 使用 bus 跨角色通信（cat=task / cat=code_fix …）\n"
         "- 用 `ccs send <角色> 消息` 调用其他角色\n"
         f"{_WS_MARKER_END}\n"
