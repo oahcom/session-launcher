@@ -195,20 +195,24 @@ class WorkflowClient:
         now = time.time()
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if template_id and "template_id" in cols:
-            self._conn.execute("""
+            cur = self._conn.execute("""
                 INSERT OR IGNORE INTO tasks (task_id, title, description, assigner, assignee,
                                    priority, status, created_at, updated_at, template_id)
                 VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?, ?)
             """, (task_id, title, description, self.role, assignee,
                   priority, now, now, template_id))
         else:
-            self._conn.execute("""
+            cur = self._conn.execute("""
                 INSERT OR IGNORE INTO tasks (task_id, title, description, assigner, assignee,
                                    priority, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'created', ?, ?)
             """, (task_id, title, description, self.role, assignee,
                   priority, now, now))
         self._conn.commit()
+        # OR IGNORE 会把约束冲突吞成 0 行；不校验就 notify 会向总线广播一个
+        # 查不到的 task_id，调用方按成功继续建链，需求就此静默丢失。
+        if not cur.rowcount:
+            raise RuntimeError(f"任务未写入（task_id={task_id} 已存在或约束冲突）")
         self._log(task_id=task_id, action="created", detail=f"title={title}, template_id={template_id}")
         # 测试模式检测: 使用临时 DB 时跳过 ccs send 和 bus notify
         _prod_db = str(Path.home() / ".hermes" / "state" / "workflows.db")
