@@ -369,7 +369,19 @@ def _resolve_ws_paths(name: str) -> list[Path]:
     if p1.exists() and (p1 / "CLAUDE.md").exists():
         paths.append(p1 / "CLAUDE.md")
     if p2.exists() and (p2 / "CLAUDE.md").exists() and p2 / "CLAUDE.md" not in paths:
-        paths.append(p2 / "CLAUDE.md")
+        # ccs-<name> 可能是**另一个角色**的 workspace（persona `ccs-coordinator` 与
+        # `coordinator` 并存）。实测该别名目录的 KNOWLEDGE 块被写成 coordinator 的
+        # 33KB 契约，两个角色抢一份身份。
+        # 判据用文件自己的身份行（ops/workspace.py 写入的「你是 <role>」）而不是角色表：
+        # 角色表加载失败时该判据仍成立，本模块也不会在运行时依赖另一个仓库。
+        # 读不到身份行时按旧行为注入（fail-open）：少注入一个目录是静默退化，
+        # 抛异常会让 ccs start 直接失败。
+        try:
+            _identity = (p2 / "CLAUDE.md").read_text(encoding="utf-8", errors="ignore")[:400]
+        except OSError:
+            _identity = ""
+        if f"你是 {p2.name}" not in _identity:
+            paths.append(p2 / "CLAUDE.md")
     return paths
 
 def inject_role_knowledge_into_workspace(role: dict) -> str:
@@ -505,13 +517,10 @@ def _fallback_base_content() -> str:
         "- ✅ 每次变更后必须 `git add → git commit → git push`，不 push = 变更丢失\n"
         "- ✅ commit message 格式: `feat/fix/refactor: 中文描述`\n"
     )
-    review = (
-        "\n### 提交前自审查\n"
-        "- ✅ 执行 `cd /home/administrator/session-launcher && codex review --uncommitted -c model=\"9router_hermes\"`\n"
-        "- ✅ 逐问题修复 → 重新运行 → 连续两轮零问题才可提交\n"
-        "- ✅ 审查结论以 `# Review: <结论>` 写入 commit message\n"
-    )
-    return sec + git + review
+    # 审查块已删：曾硬编码 `cd /home/administrator/session-launcher`，正是 base.md 明令
+    # 禁止的「在 A 仓库改代码却审 B 仓库」（实测致 reviewer 整轮空转）。回退路径只留
+    # 与仓库无关的安全线；审查流程由 base.md 给，此处不再复制一份会漂移的副本。
+    return sec + git
 
 
 def _validate_role_name(name: str) -> bool:
