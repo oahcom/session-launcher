@@ -1066,18 +1066,36 @@ def send(role: str, message: str, source: str = "",
     _reset_send_fail_streak(tmux_name)  # 成功送达清零连败计数
     return {"success": True, "sent_chars": len(send_message)}
 
+
+_APPROVAL_TOKEN_RE = re.compile(r"(?<=密钥: )\S+|(?<=密钥：)\S+|(?<=\btoken=)[\w-]{20,}")
+
+
+def _redact_secrets(message: str) -> str:
+    """抹掉消息体里的审批凭证（bus #427435/R03）。
+
+    approval_token = secrets.token_urlsafe(32)，43 字符 [A-Za-z0-9_-]。
+    这里只抹「密钥: xxx」与 `token=xxx` 两种已知拼接形式，不按长度盲抹 ——
+    盲抹会把 wf_id、路径、sha 一起干掉，排障记录就废了。
+    """
+    return _APPROVAL_TOKEN_RE.sub("***", message or "")
+
+
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
     """降级时写一条 [ccs_send_fallback] 通知到 bus。
 
     使用 notice 分类而非 architecture，防止级联风暴：
     architecture 被 10 个角色 consume → 反复触发路由 + 创建 workflow → blocker 洪水。
     notice 仅 maintainer/writer/public 3 角色消费，不会放大级联。
+
+    消息体必须脱敏：本通知是「投递失败」的排障记录，不是凭证通道。实测
+    #427364/#427316 把审批 token 明文写进了共享 bus（bus #427435/R03），
+    任何一个角色都能拿它伪造 confirm。故与 token 同形的串一律抹掉。
     """
     try:
         subprocess.run(
             [str(BUS_CLIENT), "write", "notice",
              f"[ccs_send_fallback] {source}→{role} 失败: {reason}",
-             "--evidence", f"message='{message[:_BUS_MSG_TRUNCATE]}' reason={reason}",
+             "--evidence", f"message='{_redact_secrets(message)[:_BUS_MSG_TRUNCATE]}' reason={reason}",
              "--src", "core.send"],
             capture_output=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
@@ -1251,7 +1269,8 @@ def _write_instance_claude_md(ws_path: Path, role: str, instance_id: int = 0) ->
         "> 实例级工作空间，与主实例隔离。\n"
         "\n"
         f"## 工作流提示\n"
-        "- 每个任务完成后更新 CLAUDE.md\n"
+        # 同 ops/workspace.py：身份文件不是日志容器。
+        "- 本文件是身份定义，禁止追加运行日志/巡检记录\n"
         "- 使用 bus 跨角色通信\n"
         f"- 实例 ID: {instance_id}\n"
         f"{_WS_MARKER_END}\n"
