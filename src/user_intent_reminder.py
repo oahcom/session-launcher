@@ -83,7 +83,13 @@ def classify_intent(message: str) -> Intent:
     text = (message or "").strip()
     if not text:
         return Intent.OTHER
-    if text[-1] in _QUESTION_TAIL or any(w in text for w in _QUESTION_WORDS):
+    # 词级判据只对短消息生效：长任务正文里出现"吗/如何"（常见于被回填的自检问句
+    # 「…完成任务吗？」）会把整条任务判成疑问，提醒措辞跟着翻转成"先回答问题"
+    # （实测 maintainer bus #374459：/goal 修 hook 被判成 question）。
+    # 句末问号仍对任意长度生效——那是用户真的在问。
+    if text[-1] in _QUESTION_TAIL or (
+        len(text) <= 40 and any(w in text for w in _QUESTION_WORDS)
+    ):
         return Intent.QUESTION
     # slash command 带实质参数才是任务（`/goal 修复X` → TASK）；
     # 裸命令（`/goal`、`/compact`）无参数 → OTHER，不注入提醒。

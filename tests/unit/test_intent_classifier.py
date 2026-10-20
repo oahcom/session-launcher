@@ -65,6 +65,18 @@ class TestClassifyIntent(unittest.TestCase):
         long = "我们先讨论一下方案，然后生成测试报告"
         self.assertIn(classify_intent(long), (Intent.TASK, Intent.QUESTION))
 
+    def test_长任务正文含吗仍判任务(self):
+        # 实测误判：maintainer 收到 /goal 修 hook，正文被回填了自检问句「完成任务吗？」，
+        # 整条被判成 question，提醒措辞随之翻转成"先回答用户的问题"。
+        text = ("（网络求证）先别看结论 /goal [任务] [更正 #374459] hook 修复已被外部回退，"
+                "请把修复重新合入并验证审计链路是否连通。你确定按用户提示完成了吗（简答）")
+        self.assertEqual(classify_intent(text), Intent.TASK)
+
+    def test_短疑问仍判疑问(self):
+        # 长度护栏不能吃掉真疑问
+        self.assertEqual(classify_intent("为什么 gateway 会断"), Intent.QUESTION)
+        self.assertEqual(classify_intent("这个能跑吗"), Intent.QUESTION)
+
     def test_空输入判其他(self):
         self.assertEqual(classify_intent(""), Intent.OTHER)
         self.assertEqual(classify_intent("   "), Intent.OTHER)
