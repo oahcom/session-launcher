@@ -250,3 +250,18 @@ class TestSubmittedProbe:
         from unittest.mock import patch
         with patch("tmux_ops._tmux_output", return_value="[错误] timeout"):
             assert tmux_ops._submitted("ccs-probe", "hello") is True
+
+
+class TestComposerBoundary:
+    """_composer_text 只取横线之间的输入框区域。"""
+
+    def test_takes_text_between_last_two_rules(self):
+        import tmux_ops
+        rule = "─" * 40
+        pane = f"history line\n{rule}\n❯ hello\n{rule}\nfooter\n{rule}\n❯ draft\n{rule}"
+        assert "draft" in tmux_ops._composer_text(pane)
+        assert "hello" not in tmux_ops._composer_text(pane)
+
+    def test_no_boundary_yields_empty(self):
+        import tmux_ops
+        assert tmux_ops._composer_text("no rules here") == ""

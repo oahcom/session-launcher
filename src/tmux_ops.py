@@ -72,8 +72,8 @@ def make_tmux_name(role: str, instance_id: int = 0) -> str:
     >0 时扩展为 ccs-{role}-{id} 实现角色多 session。
     """
     if instance_id:
-        return f"ccs-{role}-{instance_id}"
-    return f"ccs-{role}"
+        return f"{TMUX_PREFIX}{role}-{instance_id}"
+    return f"{TMUX_PREFIX}{role}"
 
 
 def parse_tmux_name(tmux_name: str) -> tuple[str, int]:
@@ -85,11 +85,12 @@ def parse_tmux_name(tmux_name: str) -> tuple[str, int]:
               cdx-{role}-{id} → (role, id)
     非 ccs-/cdx- 前缀返回 ("", 0)。
     """
-    if tmux_name.startswith("ccs-"):
-        rest = tmux_name[4:]
-    elif tmux_name.startswith("cdx-"):
-        rest = tmux_name[4:]
-    else:
+    rest = ""
+    for prefix in (TMUX_PREFIX, CODEX_TMUX_PREFIX):
+        if tmux_name.startswith(prefix):
+            rest = tmux_name[len(prefix):]
+            break
+    if not rest:
         return ("", 0)
     m = re.search(r'^(.+)-(\d+)$', rest)
     if m:
@@ -226,43 +227,46 @@ def _role_is_busy(tmux_name: str) -> bool:
     return "esc to interrupt" in _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
 
 
+def _composer_text(pane: str) -> str:
+    """取 Claude CLI 输入框内的文本（最后两条横线之间）。
+
+    已提交的消息会滚到横线之上、同样带 `❯` 前缀，只看最后一条 `❯` 行
+    会把滞留误判为已提交——横线边界是唯一可靠的判据。看不到边界时返回
+    空串，调用方据此按"未提交"继续补 Enter。
+    """
+    lines = pane.splitlines()
+    rules = [i for i, ln in enumerate(lines)
+             if ln.startswith("─") and len(ln) > 20]
+    if len(rules) < 2:
+        return ""
+    return "\n".join(lines[rules[-2] + 1:rules[-1]])
+
+
 def _submitted(tmux_name: str, message: str) -> bool:
     """输入框里是否仍显示本条消息（True=已提交，False=滞留或输入框未就绪）。
 
     Claude CLI 启动阶段会吞掉紧随文本之后的 Enter：实测新建 session 后 2s
     发送，文本停在输入框永不提交，角色零响应，而 send-keys 返回码为 0
-    （假成功）。判据取输入框边界（最后两条横线之间）而非最后一条 `❯` 行：
-    已提交的消息同样带回 `❯` 前缀滚到上方，只看最后一行会把滞留误判为已提交。
+    （假成功）。
     """
     raw = _tmux_output(tmux_name, tail=60)
-    if raw.startswith("[错误]") or not raw.strip():
+    if raw.startswith("[错误]"):
         return True  # 采集失败（含 session 不存在）：无从判断，按已提交处理，不空等
-    lines = raw.splitlines()
     probe = message.splitlines()[0][:24] if message.splitlines() else ""
-    if not probe:
-        return True
-    # Claude CLI 的输入框在最后两条横线之间：已提交的消息会滚到横线之上，
-    # 且同样带 `❯` 前缀，所以不能只看"最后一个 ❯ 行是否含本文"。
-    rules = [i for i, ln in enumerate(lines)
-             if ln.startswith("─") and len(ln) > 20]
-    if len(rules) < 2:
-        return False  # TUI 尚未绘制出输入框边界 → 按未提交处理，继续补 Enter
-    composer = "\n".join(lines[rules[-2] + 1:rules[-1]])
-    return probe not in composer
+    return not probe or probe not in _composer_text(raw)
 
 
-def _ensure_submitted(tmux_name: str, message: str,
-                      attempts: int = 12, delay: float = 0.6) -> bool:
+def _ensure_submitted(tmux_name: str, message: str, window: int = 12) -> bool:
     """补 Enter 直到输入框清空。Enter 无损，滞留才是丢消息。
 
-    窗口需覆盖 CLI 启动（实测 TUI 就绪约 2s，早于此的 Enter 会被丢弃）。
+    窗口 12×0.6s 覆盖 CLI 启动（实测 TUI 就绪约 2s，早于此的 Enter 会被丢弃）。
     始终返回 True：此处已发出文本，返回 False 会让调用方重发、把同一内容
     再叠一遍；滞留只报错留痕。
     """
-    for _ in range(attempts):
+    for _ in range(window):
         if _submitted(tmux_name, message):
             return True
-        time.sleep(delay)
+        time.sleep(0.6)
         subprocess.run(
             ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],
             capture_output=True, timeout=_send_timeout(),
