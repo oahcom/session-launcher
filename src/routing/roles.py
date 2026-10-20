@@ -369,18 +369,20 @@ def _resolve_ws_paths(name: str) -> list[Path]:
     if p1.exists() and (p1 / "CLAUDE.md").exists():
         paths.append(p1 / "CLAUDE.md")
     if p2.exists() and (p2 / "CLAUDE.md").exists() and p2 / "CLAUDE.md" not in paths:
-        # ccs-<name> 可能是**另一个角色**的 workspace（persona `ccs-coordinator` 与
-        # `coordinator` 并存）。实测该别名目录的 KNOWLEDGE 块被写成 coordinator 的
-        # 33KB 契约，两个角色抢一份身份。
-        # 判据用文件自己的身份行（ops/workspace.py 写入的「你是 <role>」）而不是角色表：
-        # 角色表加载失败时该判据仍成立，本模块也不会在运行时依赖另一个仓库。
-        # 读不到身份行时按旧行为注入（fail-open）：少注入一个目录是静默退化，
+        # ccs-<name> 可能是**另一个角色/工作区自己的** workspace（persona `ccs-coordinator`、
+        # 目录 `ccs-product_architect` 与 `coordinator`/`product_architect` 并存）。实测
+        # ccs-coordinator 的 KNOWLEDGE 块曾被写成 coordinator 的 33KB 契约，两个角色抢一份身份。
+        # 判据读文件自己声明的归属，两种写法都要认（都出现在文件头部）：
+        #   <identity>你是 <name>，CCS 角色…      —— 角色身份块
+        #   本 workspace 属于 <name>，由 CCS Launcher 自动管理 —— WORKSPACE_SYS 块
+        # 不依赖角色表：角色表加载失败时该判据仍成立，本模块也不在运行时依赖另一个仓库。
+        # 读不到这两行时按旧行为注入（fail-open）：少注入一个目录是静默退化，
         # 抛异常会让 ccs start 直接失败。
         try:
-            _identity = (p2 / "CLAUDE.md").read_text(encoding="utf-8", errors="ignore")[:400]
+            _head = (p2 / "CLAUDE.md").read_text(encoding="utf-8", errors="ignore")[:600]
         except OSError:
-            _identity = ""
-        if f"你是 {p2.name}" not in _identity:
+            _head = ""
+        if not (f"你是 {p2.name}" in _head or f"属于 {p2.name}，" in _head):
             paths.append(p2 / "CLAUDE.md")
     return paths
 

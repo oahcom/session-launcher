@@ -12,7 +12,7 @@
   P8   _contract_block                全字段/最小
   P9   _role_assembler_output         成功/失败回退/无assembler
   P10  _build_role_prompt             feed/loop/ondemand/未知驱动
-  P11  _resolve_ws_paths              双路径存在/都不存在/别名属他人/合法别名
+  P11  _resolve_ws_paths              双路径/都不存在/别名属他人/合法别名/WORKSPACE_SYS 归属
   P12  inject_role_knowledge_into_workspace  无workspace/替换/插入
   P13  _validate_role_name            合法/非法/空字符串
   P17  validate_ccs_execution         空参数/任务操作/有效角色
@@ -632,6 +632,24 @@ class TestResolveWsPaths:
         with patch.dict(os.environ, {"HOME": str(tmp_path)}):
             result = _roles._resolve_ws_paths("engineer")
         assert [p.parent.name for p in result] == ["engineer", "ccs-engineer"]
+
+    def test_workspace_sys_owner_marker_is_respected(self, tmp_path):
+        """P11f: WORKSPACE_SYS 块声明「本 workspace 属于 ccs-X」→ 也跳过。
+
+        实测 ccs-product_architect 用这种写法（没有 <identity> 块），上一版只认
+        「你是 X」会漏判，把 product_architect 的 27KB 契约写进别人的工作区。
+        """
+        import routing.roles as _roles
+        ws = tmp_path / "ccs-workspaces"
+        (ws / "product_architect").mkdir(parents=True)
+        (ws / "product_architect" / "CLAUDE.md").write_text("## 驱动方式")
+        (ws / "ccs-product_architect").mkdir(parents=True)
+        (ws / "ccs-product_architect" / "CLAUDE.md").write_text(
+            "<!-- WORKSPACE_SYS:START -->\n> 本 workspace 属于 ccs-product_architect，"
+            "由 CCS Launcher 自动管理。\n<!-- WORKSPACE_SYS:END -->\n")
+        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = _roles._resolve_ws_paths("product_architect")
+        assert [p.parent.name for p in result] == ["product_architect"]
 
 
 # ===================================================================
