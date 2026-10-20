@@ -12,6 +12,7 @@ cross_role_router.py — 跨角色路由层（三源验证）
 
 import json
 import logging
+import re
 import sqlite3
 import subprocess
 import time
@@ -20,6 +21,21 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS
+
+# 落库前必须跑一遍：workflow_logs 不是凭证存储。实测 107 行 detail 里是明文审批
+# 密钥（curator #429005），任何能读 workflows.db 的角色都能在 TTL 内拿它 wf confirm。
+# 正则放在本模块而非从 core 导入：core.py:949 才延迟 import gatekeeper，
+# 反向依赖会成环。core 侧只用于 bus 降级通知，落库通道以本函数为准。
+# 不盲抹「不跟标签的 40+ 长串」：message_preview 里还有 wf_id/路径/sha，
+# 抹了排障记录就废了（#427435 已有一批不可读的抹除行）。
+_TOKEN_LABEL_RE = re.compile(
+    r"((?:审批密钥|approval_token|token|密钥)\s*[:：=]\s*)([A-Za-z0-9_-]{20,})",
+    re.IGNORECASE)
+
+
+def _redact_secrets(text: str) -> str:
+    """抹掉消息体里的凭证，保留标签与上下文（bus #429005）。"""
+    return _TOKEN_LABEL_RE.sub(lambda m: m.group(1) + "***", text or "")
 
 # ── 敏感操作分类 ─────────────────────────────────
 # 按影响范围分级：info / operation / admin
@@ -407,7 +423,7 @@ class CrossRoleRouter:
                 (None, None, "cross_role_send", source,
                  json.dumps({
                      "source": source, "target": target,
-                     "message_preview": message[:200],
+                     "message_preview": _redact_secrets(message)[:200],
                      "sensitivity": sensitivity,
                  }, ensure_ascii=False),
                  time.time())
@@ -427,8 +443,8 @@ class CrossRoleRouter:
                 (None, None, "source_verification_denied", source,
                  json.dumps({
                      "source": source, "target": target,
-                     "message_preview": message[:200],
-                     "detail": detail,
+                     "message_preview": _redact_secrets(message)[:200],
+                     "detail": _redact_secrets(detail),
                      "violation": True,
                  }, ensure_ascii=False),
                  time.time())
