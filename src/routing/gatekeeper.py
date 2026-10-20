@@ -18,9 +18,10 @@ import subprocess
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from paths import (WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS,
+                   HERMES_WORKFLOWS)
 
-from paths import WORKFLOWS_DB as DB_PATH, BUS_CLIENT, SESSION_ROLES_PERSONAS
+logger = logging.getLogger(__name__)
 
 # 落库前必须跑一遍：workflow_logs 不是凭证存储。实测 107 行 detail 里是明文审批
 # 密钥（curator #429005），任何能读 workflows.db 的角色都能在 TTL 内拿它 wf confirm。
@@ -146,6 +147,31 @@ def _load_workgroup_from_personas() -> dict[str, set[str]] | None:
     return matrix if loaded_any else None
 
 
+def _load_template_edges() -> dict[str, set[str]]:
+    """从模板声明的步骤衔接读取协作边（发送方 → 下一步 target_role）。
+
+    WHY 必须并入：persona 的 workgroup 是角色**自述**的协作面，模板边是系统
+    实际执行面。主链 21 条边里有 8 条（engineer->qa、pm->engineer、
+    product_architect->engineer 等）不在发送方自述里，门禁于是拦住引擎自己
+    派发的步骤交接 —— 24h 内 30 条拒绝全部来自这一层。
+
+    只读文件模板：它们由引擎加载执行，角色无法编辑；DB 模板同理由引擎写入。
+    读失败即跳过，不影响其余边。
+    """
+    edges: dict[str, set[str]] = {}
+    for f in HERMES_WORKFLOWS.glob("*.json"):
+        try:
+            steps = (json.loads(Path(f).read_text()) or {}).get("steps") or []
+        except (OSError, ValueError) as e:
+            logger.warning("_load_template_edges: %s: %s", f, e)
+            continue
+        for a, b in zip(steps, steps[1:]):
+            src, dst = a.get("target_role"), b.get("target_role")
+            if src and dst and src != dst:
+                edges.setdefault(src, set()).add(dst)
+    return edges
+
+
 # 兼容旧代码: 如果动态加载结果为空，使用硬编码矩阵
 _workgroup_dynamic = _load_workgroup_from_personas()
 # 动态矩阵中不存在的角色（如无 persona JSON 的系统角色）补充权限
@@ -155,6 +181,9 @@ _SUPPLEMENT_MATRIX: dict[str, set[str]] = {
 }
 if _workgroup_dynamic:
     _workgroup_dynamic.update(_SUPPLEMENT_MATRIX)
+    # 模板边是执行面，与自述取并集：任一来源允许即放行。
+    for _src, _dsts in _load_template_edges().items():
+        _workgroup_dynamic.setdefault(_src, set()).update(_dsts)
 # 自动化来源：受信系统组件（非人类、非角色）。这些来源的消息由其自身触发逻辑
 # 决定去向，不走三源验证的 workgroup 检查——否则 daemon 发的消息会被静默丢弃。
 # routing_daemon 曾缺失此项：cron_schedule 与 ccs_send_fallback 全部被拒
@@ -282,8 +311,8 @@ class CrossRoleRouter:
         total = 0
         details = []
 
-        # 源1: bus --src 查询。只有 "matched" 才算一源——"partial"（搜到结果但
-        # 不含 claimed_source）若也计分，任何 bus 命中 + 同名会话即凑满 2 源，
+        # 源1: bus --src 查询。只有 "matched" 才算一源——搜到结果但不含
+        # claimed_source 若也计分，任何 bus 命中 + 同名会话即凑满 2 源，
         # 三源验证形同虚设（实测 2026-10-16）。
         total += 1
         bus_src = self._check_bus_source(claimed_source, message)
@@ -296,7 +325,7 @@ class CrossRoleRouter:
         # 源2: DB assigner 查询
         total += 1
         db_assigner = self._check_db_assigner(claimed_source)
-        if db_assigner:
+        if db_assigner == "matched":
             matches += 1
             details.append(f"db_assigner={db_assigner}")
         else:
@@ -320,55 +349,57 @@ class CrossRoleRouter:
         }
 
     def _check_bus_source(self, claimed_source: str, message: str) -> str:
-        """源1: 从 message 提取关键词搜索 bus，检查 --src 是否匹配 claimed_source。"""
-        # 提取消息中的任务关键词（取前20个非空格字符）
-        keywords = message.strip().split()[:3]
-        if not keywords:
-            return ""
-        query = " ".join(keywords)
+        """源1: 在 bus 中检索同一消息，看是否有 src==claimed_source 的事实。
 
+        三层旧错误叠加，使本源统计上恒为空（R110 需求文档）：
+        1. 消息以 `[workflow]` 开头，方括号不在 blackboard 的清洗表里 → FTS5 语法错。
+        2. 旧实现解析 `--src`/`src=` 文本，而 search 输出是 `[id] (cat) title`。
+        3. blackboard.search 把多词查询用 `_` 拼成**单个 token**，多词必 0 命中
+           （实测：4 词组合 0 条，`wf_sub_xxx` 单 token 20 条）。
+        故只认 wf_/task_ 这类高熵 ID。普通词兜底会假阳性：`hello there` 里的
+        "there" 在 bus 里必然命中大量无关事实，凑成「有源」——本源自查不得为
+        通过而通过，认不出就返回空，交给其余两源定夺。
+        """
+        token = next((t for t in re.split(r"[^\w一-鿿]+", message or "")
+                      if t.startswith(("wf_", "task_")) and len(t) >= 6), "")
+        if not token:
+            return ""
         try:
             r = subprocess.run(
-                ["python3", str(BUS_CLIENT), "search", query],
+                ["python3", str(BUS_CLIENT), "search", token,
+                 "--limit", "50", "--json"],
                 capture_output=True, text=True, timeout=15,
             )
             if r.returncode != 0:
                 return ""
-            # 搜索结果格式: [id] (cat) text
-            for line in r.stdout.split("\n"):
-                if "--src" in line or "src=" in line:
-                    found_src = line.strip()
-                    if claimed_source in found_src:
-                        return "matched"
-            # 如果搜索到任何结果，返回 "found" 但不一定匹配
-            if r.stdout.strip() and not r.stdout.strip().startswith("No results"):
-                return "partial"
-            return ""
+            facts = (json.loads(r.stdout or "{}") or {}).get("facts") or []
+            return ("matched" if any(f.get("src") == claimed_source for f in facts)
+                    else "")
         except Exception as e:
+            # timeout / JSONDecodeError / OSError 一律 fail-closed
             logger.warning("_check_bus_source: %s", e)
             return ""
 
     def _check_db_assigner(self, claimed_source: str) -> str:
-        """源2: 查询 workflows.db 最近 10 条任务，找 assigner 匹配。"""
+        """源2: 该角色是否持有未终结的工作流实例。
+
+        旧实现取 `ORDER BY created_at DESC LIMIT 10` 的 assigner 集合，与系统规模
+        脱钩：实测 24h 内 9 个角色当过 assigner，10 行窗口只覆盖 4 个，ccs-monitor
+        等角色即使有活跃工作流也永远匹配不上（假阴性 → 真正当班的消息被拒）。
+        改为定向查询，窗口大小不再参与判定。
+
+        未终结 = running | delivery_blocked（后者只是投递达上限暂停，实例仍活）。
+        枚举值以生产库实测为准（无 pending/step_done_ready）。
+        """
         try:
             conn = self._get_conn()
             try:
-                # 检查表是否存在
-                tbl = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_instances'"
+                row = conn.execute(
+                    "SELECT 1 FROM workflow_instances WHERE assigner=? "
+                    "AND status IN ('running','delivery_blocked') LIMIT 1",
+                    (claimed_source,),
                 ).fetchone()
-                if not tbl:
-                    return ""
-                rows = conn.execute(
-                    """SELECT wi.assigner FROM workflow_instances wi
-                       ORDER BY wi.created_at DESC LIMIT 10"""
-                ).fetchall()
-                for r in rows:
-                    if r["assigner"] == claimed_source:
-                        return "matched"
-                if rows:
-                    return ""  # 有记录但无匹配 → 不计数
-                return ""
+                return "matched" if row else ""
             finally:
                 conn.close()
         except Exception as e:
