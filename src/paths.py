@@ -34,7 +34,8 @@ LIFECYCLE_SENTINEL_DIR = Path(_HOME / ".hermes" / "run" / "ccs-sentinels")
 
 # ── 数据目录 ──
 HERMES_STATE = _HOME / ".hermes" / "state"
-WORKFLOWS_DB = HERMES_STATE / "workflows.db"
+# 环境变量口子：测试/演练必须能把工作流库重定向到临时路径，否则一跑就是生产。
+WORKFLOWS_DB = Path(os.environ.get("HERMES_WORKFLOWS_DB") or HERMES_STATE / "workflows.db")
 CURSOR_DB = HERMES_STATE / "pipeline_cursor.db"
 ROUTING_DB = HERMES_STATE / "routing.db"
 ACK_TRACKER_DB = HERMES_STATE / "ack_tracker.db"

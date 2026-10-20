@@ -135,16 +135,24 @@ def main():
             print(f"task={tid}  wf={wid}")
 
     elif args.cmd == "complete":
+        # 返回 None = 实例已是终态，本次什么都没写。角色把「打印了完成」当完成判据，
+        # 昔日的无条件 print 让空操作也 rc=0 —— 完成信号因此永远为真。
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
-            wf.complete(args.wf_id, args.summary)
-            print(f"完成: {args.wf_id}")
+            _terminated = wf.complete(args.wf_id, args.summary) is None
+        if _terminated:
+            print(f"未写入: {args.wf_id} 已是终态，complete 为空操作", file=sys.stderr)
+            sys.exit(1)
+        print(f"完成: {args.wf_id}")
 
     elif args.cmd == "fail":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
-            wf.fail(args.wf_id, args.reason)
-            print(f"失败标记: {args.wf_id}")
+            _terminated = wf.fail(args.wf_id, args.reason) is None
+        if _terminated:
+            print(f"未写入: {args.wf_id} 已是终态，fail 为空操作", file=sys.stderr)
+            sys.exit(1)
+        print(f"失败标记: {args.wf_id}")
 
 
     elif args.cmd == "notify":
@@ -169,8 +177,11 @@ def main():
     elif args.cmd == "cancel":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
-            wf.cancel(args.wf_id, args.reason)
-            print(f"已取消: {args.wf_id}")
+            _terminated = wf.cancel(args.wf_id, args.reason) is None
+        if _terminated:
+            print(f"未写入: {args.wf_id} 已是终态，cancel 为空操作", file=sys.stderr)
+            sys.exit(1)
+        print(f"已取消: {args.wf_id}")
 
     elif args.cmd == "confirm":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
@@ -256,11 +267,15 @@ def main():
                 print(f"  {z['instance_id']} | {z['template_id']} | {z['assignee']} | "
                       f"step={z['current_step_id']} | running={z['running_minutes']:.0f}min")
             if args.yes:
-                for z in zombies:
-                    wf.cancel(z["instance_id"], "zombie cleanup")
-                    print(f"  已取消: {z['instance_id']}")
-                wf.notify("architecture", f"wf cleanup 已取消 {len(zombies)} 个僵尸工作流",
-                          evidence="\n".join(z["instance_id"] for z in zombies))
+                cancelled = [z["instance_id"] for z in zombies
+                             if wf.cancel(z["instance_id"], "zombie cleanup")]
+                skipped = len(zombies) - len(cancelled)
+                for wf_id in cancelled:
+                    print(f"  已取消: {wf_id}")
+                if skipped:
+                    print(f"  {skipped} 个已是终态，未改动", file=sys.stderr)
+                wf.notify("architecture", f"wf cleanup 已取消 {len(cancelled)} 个僵尸工作流",
+                          evidence="\n".join(cancelled))
             else:
                 print(f"\n--dry-run: {len(zombies)} 个候选，加 --yes 执行取消")
 

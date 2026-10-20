@@ -35,33 +35,73 @@ def _make_conn(tmp_path):
     return conn, "wf_x"
 
 
-def test_complete_cancelled_is_noop(tmp_path):
-    from workflow import client as client_mod
-    conn, wf_id = _make_conn(tmp_path)
-    client_mod.create_connection = lambda *a, **k: conn
+def _client(conn, tmp_path):
     c = WorkflowClient("engineer", db_path=str(tmp_path / "wf.db"))
     c._conn = conn
-    conn.execute("UPDATE workflow_instances SET status='cancelled' WHERE instance_id=?", (wf_id,))
+    return c
+
+
+def _status(conn, wf_id):
+    return conn.execute(
+        "SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)
+    ).fetchone()["status"]
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "completed", "failed", "archived"])
+def test_complete_terminal_is_noop(tmp_path, terminal):
+    """已取消的链被复活成 step_done_ready 是实测事故；archived 同理。"""
+    conn, wf_id = _make_conn(tmp_path)
+    c = _client(conn, tmp_path)
+    conn.execute("UPDATE workflow_instances SET status=? WHERE instance_id=?", (terminal, wf_id))
     conn.commit()
     assert c.complete(wf_id, "stale") is None
-    st = conn.execute("SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)).fetchone()["status"]
-    assert st == "cancelled", f"已取消的链被复活成 {st}"
+    assert _status(conn, wf_id) == terminal
 
 
 def test_complete_missing_raises(tmp_path):
     conn, _ = _make_conn(tmp_path)
-    c = WorkflowClient("engineer", db_path=str(tmp_path / "wf.db"))
-    c._conn = conn
     with pytest.raises(KeyError):
-        c.complete("wf_does_not_exist", "x")
+        _client(conn, tmp_path).complete("wf_does_not_exist", "x")
+
+
+def test_fail_cannot_close_completed(tmp_path):
+    conn, wf_id = _make_conn(tmp_path)
+    c = _client(conn, tmp_path)
+    conn.execute("UPDATE workflow_instances SET status='completed' WHERE instance_id=?", (wf_id,))
+    conn.commit()
+    assert c.fail(wf_id, "late failure") is None
+    assert _status(conn, wf_id) == "completed", "已交付的链被改写成 failed"
 
 
 def test_cancel_cannot_reopen_completed(tmp_path):
     conn, wf_id = _make_conn(tmp_path)
-    c = WorkflowClient("engineer", db_path=str(tmp_path / "wf.db"))
-    c._conn = conn
+    c = _client(conn, tmp_path)
     conn.execute("UPDATE workflow_instances SET status='completed' WHERE instance_id=?", (wf_id,))
     conn.commit()
     assert c.cancel(wf_id, "late cleanup") is None
-    st = conn.execute("SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)).fetchone()["status"]
-    assert st == "completed", f"已交付的链被改写成 {st}"
+    assert _status(conn, wf_id) == "completed", "已交付的链被改写成 cancelled"
+
+
+def test_mutable_write_returns_true(tmp_path):
+    """正常路径必须报告写入成功，否则 CLI 无法区分空操作。"""
+    conn, wf_id = _make_conn(tmp_path)
+    c = _client(conn, tmp_path)
+    assert c.fail(wf_id, "boom") is True
+    assert _status(conn, wf_id) == "failed"
+
+
+def test_terminal_check_and_write_are_atomic(tmp_path):
+    """TOCTOU：另一连接在 SELECT 与 UPDATE 之间关闭实例，写入不得生效。
+
+    旧实现先 SELECT 判终态再 UPDATE，两条语句之间可被插入 cancel；
+    现实现把判定下推 WHERE，无窗口。
+    """
+    from workflow.db import create_connection
+    conn, wf_id = _make_conn(tmp_path)
+    c = _client(conn, tmp_path)
+    # 模拟并发写入者：状态在守卫语句执行前已被改为 cancelled。
+    other = create_connection(str(tmp_path / "wf.db"))
+    other.execute("UPDATE workflow_instances SET status='cancelled' WHERE instance_id=?", (wf_id,))
+    other.commit()
+    assert c.complete(wf_id, "raced") is None
+    assert _status(other, wf_id) == "cancelled"

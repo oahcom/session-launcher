@@ -14,7 +14,11 @@ CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 
 # 终态：任何写入型操作（complete/fail/cancel）都不应改写这些状态。
 # 与 pipeline 侧 lifecycle.manager 的状态机对齐，避免两套语义分裂。
-_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
+# archived 是 pipeline workflow/client.py:483 写的归档态；漏掉它会让归档实例被 wf complete 复活。
+# delivery_blocked **不是**终态：pipeflow/engine.py:_recover_delivery_blocked 会把它还原成
+# running 重试，纳入守卫会切断该恢复路径。
+_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed", "archived"})
+_TERMINAL_PLACEHOLDERS = ",".join("?" * len(_TERMINAL_STATUSES))
 
 
 class WorkflowClient:
@@ -32,21 +36,30 @@ class WorkflowClient:
         self.close()
         return False
 
-    def _guard_mutable(self, wf_id: str):
-        """校验实例存在且非终态。不存在→KeyError，终态→None，否则→row。
+    def _update_if_mutable(self, wf_id: str, set_sql: str, params: tuple) -> bool:
+        """原子地把实例改到新状态。终态→False（不覆写），不存在→KeyError。
 
-        complete/fail/cancel 三个写入路径共用。原实现只有 complete 挡了
-        completed，fail/cancel 可把已 completed 的链改成 failed/cancelled，
-        而 complete 对不存在的 id 静默打印成功（UPDATE 0 行也返回）。
+        WHY 条件 UPDATE 而非先 SELECT 再 UPDATE：两条语句之间另一写入者可关闭
+        实例，UPDATE 照样覆盖——实测可把已 cancelled 的链复活。把终态判定下推
+        到 WHERE，由 SQLite 写锁保证判定与写入原子；正常路径也因此少一次 SELECT。
+        complete/fail/cancel 三个写入路径共用，漏掉一个就少一条链的守卫。
         """
         cur = self._conn.execute(
-            "SELECT status FROM workflow_instances WHERE instance_id=?", (wf_id,)
+            f"UPDATE workflow_instances SET {set_sql} "
+            f"WHERE instance_id=? AND status NOT IN ({_TERMINAL_PLACEHOLDERS})",
+            (*params, wf_id, *_TERMINAL_STATUSES),
+        )
+        if cur.rowcount:
+            self._conn.commit()
+            return True
+        self._conn.rollback()
+        # 0 行有两种含义：终态（幂等空操作）还是 id 不存在（调用方拼错）。
+        row = self._conn.execute(
+            "SELECT 1 FROM workflow_instances WHERE instance_id=?", (wf_id,)
         ).fetchone()
-        if cur is None:
+        if row is None:
             raise KeyError(f"工作流不存在: {wf_id}")
-        if cur["status"] in _TERMINAL_STATUSES:
-            return None
-        return cur
+        return False
 
     def _log(self, wf_id: str = None, task_id: str = None,
              action: str = "", detail: str = ""):
@@ -327,24 +340,10 @@ class WorkflowClient:
         rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-    def start(self, wf_id: str, step_id: str):
-        self._conn.execute(
-            "UPDATE workflow_instances SET status='running', current_step_id=? WHERE instance_id=?",
-            (step_id, wf_id)
-        )
-        self._conn.commit()
-        wf = self.get(wf_id)
-        task_id = wf.get("task_id", "") if wf else ""
-        evidence = f"task={task_id}" if task_id else ""
-        self.notify("workflow", f"已接单 {wf_id}", evidence=evidence)
-        self._log(wf_id=wf_id, action="started", detail=f"step={step_id}")
-
     def complete(self, wf_id: str, summary: str, files: list = None):
-        # 终止态守卫：completed / cancelled / failed 都是终态，不允许被 wf complete
-        # 改写。原实现只挡 completed，实测把 cancelled 的实例复活成 step_done_ready
-        # 并生成新 approval_token（角色用旧 wf_id 重复提交即可让已取消的链重新待审）。
-        if self._guard_mutable(wf_id) is None:
-            return None  # 终态，不覆写
+        # 终态守卫见 _update_if_mutable。原实现只挡 completed，实测把 cancelled 的
+        # 实例复活成 step_done_ready 并生成新 approval_token（角色用旧 wf_id 重复
+        # 提交即可让已取消的链重新待审）。守卫放在 UPDATE 上，守卫与写入不可分离。
         import uuid
         files_str = ", ".join(files) if files else ""
         approval_token = uuid.uuid4().hex[:16]
@@ -364,12 +363,11 @@ class WorkflowClient:
             "approval_token_ttl": time.time() + 3600,
             "approval_consumed_at": None,
         })
-        self._conn.execute(
-            "UPDATE workflow_instances SET status='step_done_ready', completed_at=?, "
-            "step_results=? WHERE instance_id=?",
-            (time.time(), _json.dumps(_step_results, ensure_ascii=False), wf_id)
-        )
-        self._conn.commit()
+        if not self._update_if_mutable(
+                wf_id,
+                "status='step_done_ready', completed_at=?, step_results=?",
+                (time.time(), _json.dumps(_step_results, ensure_ascii=False))):
+            return None  # 终态：不写库，也不发审批通知
         wf = self.get(wf_id)
         # 通知审批者：把 token 发给下一步审批人
         if wf:
@@ -405,28 +403,28 @@ class WorkflowClient:
         self._conn.commit()
 
     def fail(self, wf_id: str, reason: str):
-        self._conn.execute(
-            "UPDATE workflow_instances SET status='failed', completed_at=?, "
-            "step_results=? WHERE instance_id=?",
-            (time.time(), json.dumps({"reason": reason}), wf_id)
-        )
-        self._conn.commit()
+        if not self._update_if_mutable(
+                wf_id,
+                "status='failed', completed_at=?, step_results=?",
+                (time.time(), json.dumps({"reason": reason}))):
+            return None  # 终态，不覆写
         wf = self.get(wf_id)
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
         self._log(wf_id=wf_id, action="failed", detail=f"reason={reason}")
+        return True
 
     def cancel(self, wf_id: str, reason: str = ""):
-        self._conn.execute(
-            "UPDATE workflow_instances SET status='cancelled', completed_at=?, "
-            "step_results=? WHERE instance_id=?",
-            (time.time(), json.dumps({"reason": reason}), wf_id)
-        )
-        self._conn.commit()
+        if not self._update_if_mutable(
+                wf_id,
+                "status='cancelled', completed_at=?, step_results=?",
+                (time.time(), json.dumps({"reason": reason}))):
+            return None  # 终态，不覆写（重复 cancel 幂等无动作）
         wf = self.get(wf_id)
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
         self._log(wf_id=wf_id, action="cancelled", detail=f"reason={reason}")
+        return True
 
     def delete(self, wf_id: str) -> bool:
         wf = self.get(wf_id)
