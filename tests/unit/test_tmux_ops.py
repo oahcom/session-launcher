@@ -227,6 +227,19 @@ class TestSubmittedProbe:
         with patch("tmux_ops._tmux_output", return_value="[错误] timeout"):
             assert tmux_ops._submitted("ccs-probe", "hello") is True
 
+    def test_multiline_probe_uses_tail_when_head_scrolled_out(self):
+        """输入框只显示多行消息的尾部：首行滚出视口时仍须判为滞留。
+
+        实测 ccs-archivist：启动消息首行不可见，仅探测首行 → 恒不命中 →
+        滞留被当成已提交，消息在输入框躺 25 分钟。
+        """
+        import tmux_ops
+        from unittest.mock import patch
+        message = "## 归档管理员 — 已就绪\n驱动模式: ondemand\n3. 执行第一条 eval_criteria"
+        pane = self._pane("  启动自检:\n  3. 执行第一条 eval_criteria")
+        with patch("tmux_ops._tmux_output", return_value=pane):
+            assert tmux_ops._submitted("ccs-probe", message) is False
+
 
 class TestComposerBoundary:
     """_composer_text 只取横线之间的输入框区域。"""

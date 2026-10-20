@@ -265,7 +265,11 @@ def _submitted(tmux_name: str, message: str) -> bool:
     composer = _composer_text(raw)
     if composer is None:
         return False  # TUI 尚未画出输入框 → 按未提交处理，继续补 Enter
-    return probe not in composer
+    # 多行消息在输入框里只显示**尾部**（实测 archivist 启动消息：首行已滚出
+    # 视口，首行探测恒不命中 → 滞留被当成已提交，消息躺 25 分钟未发）。
+    # 首行与末行各取一个探针，任一仍在输入框内即判滞留。
+    probe_tail = message.splitlines()[-1][:24]
+    return probe not in composer and (not probe_tail or probe_tail not in composer)
 
 
 def _ensure_submitted(tmux_name: str, message: str, window: int = 12) -> bool:

@@ -133,7 +133,21 @@ def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""
                 pass  # 旧进程已死，覆盖写
                 Path(pid_file).write_text(str(os.getpid()))
         import atexit
-        atexit.register(lambda: [os.unlink(pid_file) for _ in [1] if os.path.exists(pid_file)])
+
+        def _release_pidfile():
+            """只删属于自己的 pidfile。
+
+            回收方（core._kill_feed_listener_by_pidfile）发 SIGTERM 后立刻 unlink
+            并拉起新实例；旧进程的 atexit 稍后才跑，按路径无条件删除会删掉
+            **新实例**的锁 → 第三个实例也能通过 O_EXCL 检查，双实例复发。
+            """
+            try:
+                if int(Path(pid_file).read_text().strip()) == os.getpid():
+                    os.unlink(pid_file)
+            except (OSError, ValueError):
+                pass
+
+        atexit.register(_release_pidfile)
         _sig.signal(_sig.SIGTERM, lambda *_: (atexit._run_exitfuncs(), sys.exit(0)))
     print(f"正在连接 {FEED_SOCKET}...")
     s = None
