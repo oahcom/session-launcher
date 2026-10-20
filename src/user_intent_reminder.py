@@ -63,6 +63,11 @@ _TASK_CN = ("请", "帮我", "做", "写", "修", "修复", "生成", "实现",
 _TASK_EN = ("please", "fix", "write", "implement", "create", "add", "update",
             "deploy", "run", "generate", "build", "refactor", "analyze",
             "review", "test", "debug", "help me")
+# 延续指令：无动作词、无问号，但明确要求继续推进既有工作。
+# 实测本项目用户两次只回「继续」，被判 OTHER → core.send 不写意图痕迹 →
+# daemon 失去触发源 → 整个「你有真的解决用户问题吗」提醒链对该输入完全静默。
+# 这类输入恰恰最需要提醒：角色容易把「继续」理解成「随便再做点事」。
+_CONTINUATION = ("继续", "接着", "往下", "go on", "continue", "carry on")
 
 
 def classify_intent(message: str) -> Intent:
@@ -88,6 +93,13 @@ def classify_intent(message: str) -> Intent:
         if len(_parts) > 1 and len(_parts[1].strip()) >= 4:
             return Intent.TASK
     if any(v in text for v in _TASK_CN) or text.lower().startswith(_TASK_EN):
+        return Intent.TASK
+    # 短延续指令：整条消息就是「继续」/「接着来」，不含其他内容才算。
+    # 用 equal/startswith 而非 in ——「继续分析一下架构」的目标是分析，
+    # 措辞应走 TASK；「不要继续」更不该被当成延续。
+    _low = text.lower()
+    if len(text) <= 12 and (_low in _CONTINUATION
+                            or any(_low.startswith(c) for c in _CONTINUATION)):
         return Intent.TASK
     return Intent.OTHER
 

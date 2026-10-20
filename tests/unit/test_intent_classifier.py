@@ -72,6 +72,19 @@ class TestClassifyIntent(unittest.TestCase):
     def test_闲聊判其他(self):
         self.assertEqual(classify_intent("你好"), Intent.OTHER)
 
+    def test_延续指令判任务(self):
+        # 实测：用户两次只回「继续」，判 OTHER → 不写意图痕迹 → daemon 无触发源
+        # → 整条提醒链对该输入静默。
+        for text in ("继续", "继续。", "接着来", "continue", "carry on"):
+            with self.subTest(text=text):
+                self.assertEqual(classify_intent(text), Intent.TASK)
+
+    def test_否定或长句中的继续不误判(self):
+        # 「不要继续」语义相反；「继续分析」的目标是分析，走 TASK 动词即可。
+        self.assertEqual(classify_intent("不要继续"), Intent.OTHER)
+        self.assertEqual(classify_intent("继续分析这个模块的架构并给出结论"),
+                         Intent.TASK)
+
 
 class TestRequestDrivenTrigger(_HermeticStateFile):
     """驗證觸發源為「該角色存在未對齊用戶請求」，而非 pane 無新產出。
@@ -312,6 +325,26 @@ class TestRequestLookup(unittest.TestCase):
             stdout=json.dumps(self._facts([("engineer", 111.0), ("qa", 222.0)])))
         self.assertEqual(IntentReminderDaemon._read_request_traces(),
                          {"engineer": (111.0, None), "qa": (222.0, None)})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_prefers_req_ts_from_evidence(self, mock_run):
+        """request 時刻取 evidence 的 req_ts，而非被 UPSERT 冻住的 facts.ts。
+
+        缺陷實證：痕跡標題按角色固定，bus 對同文本 UPSERT 保留首次 ts →
+        守護進程讀 timestamp 時 request_ts 永遠停在第一次注入，TTL 一過
+        該角色永久零提醒（6 個角色痕跡實測停在 22~100 小時前）。
+        """
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0,          # 首次写入时刻（被 UPSERT 冻住）
+                 "evidence": "source=user role=qa req_ts=999.0 intent=task"}]}
+            ))
+        self.assertEqual(
+            IntentReminderDaemon._read_request_traces(),
+            {"qa": (999.0, Intent.TASK)})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_keeps_latest_per_role(self, mock_run):
