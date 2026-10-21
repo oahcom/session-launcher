@@ -12,12 +12,21 @@ _ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-]+\Z')  # \Z 而非 $，防 role 名�
 # 从注册表加载合法角色名
 _SESSION_ROLES_ROOT = Path.home() / "hermes-session-roles" / "personas" / "session-roles"
 _KNOWN_ROLES: set[str] = set()
-if _SESSION_ROLES_ROOT.exists():
-    for _f in _SESSION_ROLES_ROOT.glob("persona_*.json"):
+
+
+def _load_known_roles() -> set[str]:
+    names: set[str] = set()
+    if not _SESSION_ROLES_ROOT.exists():
+        return names
+    for f in _SESSION_ROLES_ROOT.glob("persona_*.json"):
         try:
-            _KNOWN_ROLES.add(json.loads(_f.read_text())["name"])
+            names.add(json.loads(f.read_text())["name"])
         except Exception:
             pass
+    return names
+
+
+_KNOWN_ROLES = _load_known_roles()
 
 
 def validate_role(func):
@@ -42,6 +51,11 @@ def validate_role(func):
         role = str(role)
         if not _ROLE_NAME_RE.match(role):
             return {"success": False, "error": f"非法角色名: {role}"}
+        # 命中失败时重扫一次：常驻进程（ccs-monitor 等）在导入时快照角色名，
+        # persona 目录短暂缺文件（2026-10-21 18:13 有 12 个被误删）会让它此后
+        # 一直拒绝启动这些角色，只有重启进程才能自愈。
+        if _KNOWN_ROLES and role not in _KNOWN_ROLES:
+            _KNOWN_ROLES.update(_load_known_roles())
         if _KNOWN_ROLES and role not in _KNOWN_ROLES:
             return {"success": False, "error": f"角色 {role} 不在注册表中 (known: {sorted(_KNOWN_ROLES)})"}
         return func(*args, **kwargs)

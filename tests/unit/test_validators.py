@@ -33,6 +33,19 @@ class TestValidateRole:
         assert result["success"] is False
         assert "注册表" in result.get("error", "")
 
+    def test_known_roles_refresh_after_persona_appears(self):
+        """常驻进程导入时快照了角色名；persona 目录后来补上文件，应能自愈。
+
+        2026-10-21 18:13 有 12 个 persona 被误删，之后启动的 ccs-monitor 把
+        19 个名字写死，若不重扫，它会永远拒绝启动另外 12 个角色。
+        """
+        from unittest.mock import patch
+        import ops.validators as v
+        v._KNOWN_ROLES.discard("ghost_role")
+        with patch.object(v, "_load_known_roles", return_value={"ghost_role"}):
+            assert _dummy("ghost_role")["success"] is True
+        v._KNOWN_ROLES.discard("ghost_role")
+
     def test_empty_role_rejected(self):
         result = _dummy("")
         assert result["success"] is False
