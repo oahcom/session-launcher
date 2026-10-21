@@ -477,6 +477,10 @@ class IntentReminderDaemon:
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
                 # 前缀匹配足够：所有字段都取自 _body，sig 之后的字节不参与解析。
+                # **已接受的风险**：任何写入方在合法痕迹尾部追加 " sig=任意值" 都能
+                # 让验签失败 → 该角色本轮零提醒（实测 B1/C1，无需密钥）。这是 fail-
+                # closed：宁可不注入也不发未经验签的正文。想进一步收窄得在验签失败时
+                # 回退试第一个 " sig=" 边界，当前提醒价值不值那份复杂度。
                 # 改成 fullmatch 会让尾随换行（旧痕迹带夹注）把正文整条丢掉（实测回归）。
                 _sg = re.match(r"([0-9a-f]{32})", _tail)
                 _rq = re.search(r"\breq=(.*)$", _body)
@@ -495,6 +499,9 @@ class IntentReminderDaemon:
                 # 标题角色必须与**签名正文里的** role= 一致：否则任何 bus 写入方都能
                 # 把一条合法签名痕迹"改投"到另一个角色的 pane（审查 P2-1，实测可把
                 # qa 的请求重放到 ops/pm）。签名只绑内容，不绑投递目标，需在此校验。
+                # 代价（已接受）：source= 必须是首字段。实测 role 先于 source 的旧格式会被
+                # 整条丢弃（审查 G1）——唯一构造点 core._trace_evidence 恒以 source= 开头，
+                # 将来若在前面插字段，必须同步改这里，否则所有正文静默丢失。
                 # 必须是紧跟在 source= 之后的 role=：正文任意位置出现 " role=ops"
                 # 也会命中，实测可把 qa 的请求投进 ops pane。
                 if _req and re.match(r"source=[^ ]* role=" + re.escape(role) + r"(?: |$)", _body) is None:
@@ -502,7 +509,10 @@ class IntentReminderDaemon:
                 # 边界再洗一遍：签名证明"谁写的"，不证明"内容是单行" —— 同 uid 的
                 # 签名者能塞多行，把伪造的「第N次重复自检：…」写进 pane（审查 P2-4）。
                 _req = sanitize_request(_req) if _req else ""
-                _m = re.search(r"intent=(\w+)", _body)
+                # 只在 req= 之前的字段段里取意图：_body 含 req= 用户正文，
+                # 正文里贴一句 "看下 intent=other 这个字段" 就能翻掉意图
+                # （实测 A1：写入侧 intent 缺失时，该请求被判 ack 静默）。
+                _m = re.search(r"intent=(\w+)", _body.split(" req=", 1)[0])
                 try:
                     intent = Intent(_m.group(1)) if _m else None
                 except ValueError:
