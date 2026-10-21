@@ -11,9 +11,9 @@
 | `lifecycle.manager._issue_approval_token` | `step_results[step_id]` | 470 | 41 | 活的：41 次凭钥通过 |
 | `WorkflowClient.complete_step`（launcher） | `step_results` **顶层** | 117 | 0 | 死的：引擎只读 `[step_id]`，顶层键没人读 |
 
-`workflow_logs` 的 `step_confirmed` 67 条，最近 24h 19 条；角色发起 44 条
-（pm 10 / engineer 10 / closer 6 / reviewer 4 / maintainer 4 / security_auditor 2 / qa 2），
-`workflow_engine` 23 条。
+`workflow_logs` 的 `step_confirmed`（日志口径，含无钥的 assigner 校验确认）67 条，
+最近 24h 19 条；角色发起 44 条（pm 10 / engineer 10 / closer 6 / reviewer 4 / maintainer 4 /
+security_auditor 2 / qa 2），`workflow_engine` 23 条。下面的 actor 分布是**密钥消费口径**，两个数不同源。
 
 ## 口径陷阱（原文档和后续统计都栽在这里）
 
