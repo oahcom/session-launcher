@@ -13,9 +13,40 @@ daemon (ccls_daemon_intent_classifier.py) 仅导入复用，不再各自维护�
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import sys
 from enum import Enum
+
+# 本地签名密钥：痕迹会跨 bus 落到无认证的共享通道，而 daemon 把 req= 原样贴进
+# 角色 pane。0600 本地文件，只有本机 core.send 能造合法痕迹。
+_SIG_KEY = os.path.join(
+    os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+    "run", "reminder.sig.key")
+
+
+def sign_trace(payload: str) -> str:
+    """HMAC-SHA256(payload) 截 32 位十六进制。密钥缺失即生成（O_EXCL 防并发重写）。"""
+    try:
+        with open(_SIG_KEY, "rb") as fh:
+            key = fh.read()
+    except OSError:
+        key = __import__("secrets").token_bytes(32)
+        try:
+            os.makedirs(os.path.dirname(_SIG_KEY), exist_ok=True)
+            fd = os.open(_SIG_KEY, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(key)
+        except FileExistsError:
+            with open(_SIG_KEY, "rb") as fh:
+                key = fh.read()
+    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+
+
+def verify_trace(payload: str, sig: str) -> bool:
+    """痕迹签名是否有效。sig 缺失一律 False（伪造者不会顺手签名）。"""
+    return bool(sig) and hmac.compare_digest(sign_trace(payload), sig)
 
 # 复用 integrity.py 的标准提问主干，确保与 workflow /goal 步骤措辞一致。
 # 跨项目依赖不可靠时回退到同源硬编码文本（realpath 规范化防路径遍历）。

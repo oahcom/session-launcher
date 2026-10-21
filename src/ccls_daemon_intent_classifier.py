@@ -45,7 +45,7 @@ _MAX_REMINDERS_CAP = 3
 # repeat_reminder，不再各自维护副本（v3 收敛：消除重复定义与符号覆盖冲突）。
 try:
     from user_intent_reminder import (  # type: ignore
-        classify_intent, Intent, repeat_reminder)
+        classify_intent, Intent, repeat_reminder, verify_trace)
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -57,6 +57,7 @@ except Exception:  # pragma: no cover - 同目录兜底
     classify_intent = _mod.classify_intent
     Intent = _mod.Intent
     repeat_reminder = _mod.repeat_reminder
+    verify_trace = _mod.verify_trace
 
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
 try:
@@ -70,6 +71,9 @@ except Exception:  # pragma: no cover - 加载失败时降级为不可注入
 
     def _role_is_busy(tmux_name: str) -> bool:  # type: ignore
         return False  # 降级：判不出忙 → 照常投递（宁可投递也不静默停发）
+
+    def verify_trace(payload: str, sig: str) -> bool:  # type: ignore
+        return False  # 降级：签不了名就不认正文（挡伪造优先于发提醒）
 
 
 def _inject_text(session: str, text: str) -> bool | None:
@@ -117,6 +121,10 @@ class _SessionState:
     intent: "Intent | None" = None
     # 已就"角色生成中"打过一次日志（防每 tick 刷屏）。不持久化：重启后重报一次无妨。
     deferred_logged: bool = False
+    # 已就"痕迹无请求正文"打过一次日志。必须与 deferred_logged 分开：忙路径每转闲
+    # 都会把 deferred_logged 清回 False，共用会让这条"只报一次"的日志每 10s 刷一行
+    # （审查 P2#7 实测 5 tick → 5 行）。
+    no_digest_logged: bool = False
 
 
 def _load_states() -> dict[str, _SessionState]:
@@ -351,7 +359,7 @@ class IntentReminderDaemon:
             return session[len("ccs-"):] if session.startswith("ccs-") else session
 
     @staticmethod
-    def _read_request_traces() -> dict[str, tuple[float, "Intent | None"]]:
+    def _read_request_traces() -> dict[str, tuple[float, "Intent | None", str]]:
         """一次性读回全部用户请求痕迹：{角色名: (最近请求时刻, 意图, 请求正文)}。
 
         意图取自 core.send 写下的 evidence `intent=` 字段（classify_intent 的
@@ -403,8 +411,20 @@ class IntentReminderDaemon:
                         continue
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
-                _rq = re.search(r"req=(.*)", ev)
+                # req= 的边界是 sig=，不是行尾：sig 写在正文之后，贪婪吞进来会让
+                # 验签失败（payload 里多了 sig 本身），并把签名渲染进角色 pane。
+                _rq = re.search(r"req=(.*?)(?:\s+sig=[0-9a-f]{32}|$)", ev)
                 _req = (_rq.group(1).strip() if _rq else "")
+                # bus 无认证、写入方任意，而 req= 会被原样贴进角色 pane：只接受本机
+                # core.send 用本地密钥签过的痕迹。签名不符/缺失一律按"无正文"处理
+                # （不注入），既挡住伪造注入，也不误杀没有正文的旧痕迹。
+                if _req:
+                    _sg = re.search(r"sig=([0-9a-f]{32})", ev)
+                    # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行。
+                    # 丢弃后的"无正文"由 _push_reminder 每 session 只报一次。
+                    if not (_sg and verify_trace(f"{role}|{_rt.group(1) if _rt else ''}|{_req}",
+                                                 _sg.group(1))):
+                        _req = ""
                 _m = re.search(r"intent=(\w+)", ev)
                 try:
                     intent = Intent(_m.group(1)) if _m else None
@@ -462,6 +482,10 @@ class IntentReminderDaemon:
             if not trace:
                 continue
             req, req_intent, req_text = trace
+            if req_intent is Intent.OTHER:
+                # 人类只回了一句"好的/收到"（OTHER）：痕迹已刷新为最新输入，
+                # 但它不是待对齐的请求——继续提醒等于把上一条已完成的请求重新派活。
+                continue
             if time.time() - req > self._REQUEST_TTL:
                 continue  # 请求已过期，不再重复提醒
             if req != st.request_ts:
@@ -520,6 +544,7 @@ class IntentReminderDaemon:
         """
         src_mtime = os.path.getmtime(self._SRC_FILE)
         while not self._stop.is_set():
+            t0 = time.monotonic()
             self._tick()
             if self._supervised:
                 try:
@@ -535,7 +560,9 @@ class IntentReminderDaemon:
                         self._pending_mtime = 0.0
                 except OSError:
                     pass  # 源文件暂不可读（原子替换窗口）：下一轮再判
-            self._stop.wait(self._interval)
+            # 扣掉本轮耗时：否则一次慢 tick（tmux ls 吃满超时）会把周期整体拉长，
+            # 全角色提醒节奏减半（审查 P2#13）。
+            self._stop.wait(max(0.0, self._interval - (time.monotonic() - t0)))
 
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self.run, daemon=True, name="IntentReminderDaemon")

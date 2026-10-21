@@ -1008,25 +1008,16 @@ def send(role: str, message: str, source: str = "",
         except Exception as _e:  # noqa: BLE001 - 注入失败绝不可丢失用户原始消息
             send_message = message  # 降级：原样投递
             _log.warning("user_intent_reminder 注入失败，降级原样投递: %s", _e)
-        # 可观测痕迹：每次注入写一条 code_fix bus 证据（REQUIREMENT #6）。
+        # 可观测痕迹：**所有人类来源都写**，不再只在注入成功时写（审查 P1#5）。
+        # 只写注入过的 → "好的/收到" 这类 OTHER 输入不刷新痕迹，上一条已完成的请求
+        # 会在 TTL 内被反复贴回去，角色可能重做。
         # 独立 guard：bus I/O 故障不得影响消息投递或被注入失败混淆（resilience P1）
-        if injected:
+        if message:
             try:
                 subprocess.run(
                     [str(BUS_CLIENT), "write", "code_fix",
                      f"[user_intent_reminder] 已注入意图提醒 → {role}",
-                     "--evidence",
-                     # req_ts 必须落在 evidence 里：痕迹标题按角色固定，bus 对同文本
-                     # UPSERT **保留首次 ts**（防旧消息越过 created_after 屏障），于是
-                     # facts.ts 永远停在第一次注入的时刻。守护进程读 ts 判 TTL →
-                     # 首个请求 30 分钟后永久零提醒（实测 6 角色痕迹 ts 停在 22~100h）。
-                     # 也不能读 ut：search 每次命中都会把它刷成当前时刻。
-                     f"source={source} role={role} req_ts={time.time():.0f}"
-                     + (f" intent={_intent.value}" if _intent else "")
-                     # 请求正文（截断 140）供 daemon 的重复提醒携带：只有轮次号的
-                     # 提醒无法让丢失上下文的角色恢复"要对齐什么"，三次文本逐字
-                     # 相同（2026-10-21 审计 222 次注入）。
-                     + (f" req={_req_digest(message)}" if message else ""),
+                     "--evidence", _trace_evidence(source, role, _intent, message),
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
             except Exception as _be:  # noqa: BLE001
@@ -1074,6 +1065,34 @@ def _redact_secrets(message: str) -> str:
     return _APPROVAL_TOKEN_RE.sub(_redact_token, message or "")
 
 
+# 形状脱敏：_redact_secrets 只认"标签 + 20 位以上值"，漏掉裸 sk-/AKIA 与短口令
+# （审证实测 "export OPENAI_API_KEY=sk-proj-…" 原样进 bus、所有角色可读）。
+_SECRET_SHAPES = (
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "***"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
+    # 分隔符容忍冒号/等号/单空格：中文里 "密码 hunter2" 不带冒号也很常见。
+    (re.compile(r"(?i)(?:密码|口令|password|passwd|secret|api[_-]?key)(?:\s*[:=：]|\s)\s*\S+"),
+     "***"),
+)
+
+
+def _trace_evidence(source: str, role: str, intent, message: str) -> str:
+    """用户请求痕迹 evidence 的唯一构造点（产出侧曾零覆盖，审查 P1#6）。
+
+    req_ts 取毫秒：daemon 按 `req != st.request_ts` 判"新请求"，整秒精度会让同秒
+    第二条请求继承已耗尽的预算（审查 P2#11）。
+    sig 是 bus 通道的准入条件：bus 无认证、写入方任意，daemon 又把 req= 贴进角色
+    pane —— 不签名等于给所有写入方一条"向任意角色注入任意文本"的通道（P1#1）。
+    """
+    req_ts = f"{time.time():.3f}"
+    req = _req_digest(message)
+    body = (f"source={source} role={role} req_ts={req_ts}"
+            + (f" intent={intent.value}" if intent else "")
+            + (f" req={req}" if req else ""))
+    from user_intent_reminder import sign_trace
+    return f"{body} sig={sign_trace(f'{role}|{req_ts}|{req}')}"
+
+
 def _req_digest(message: str) -> str:
     """请求正文压成单行摘要（140 字符），供 daemon 重复提醒携带。
 
@@ -1084,8 +1103,12 @@ def _req_digest(message: str) -> str:
     中断），且同一条正文会被重复提醒重发至多 3 次。末尾空白先剥再截，否则
     140 字符截断可能停在空格上，下游 strip 后只剩 139（独立审查 D9）。
     """
-    text = re.sub(r"[\x00-\x1f\x7f]", " ", _redact_secrets(message or ""))
-    return " ".join(text.split())[:140].rstrip()
+    text = _redact_secrets(message or "")
+    for _pat, _rep in _SECRET_SHAPES:  # 未带标签的凭证形状也要抹（P1#2）
+        text = _pat.sub(_rep, text)
+    text = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text).split())
+    # 截断必须显形：尾部被切掉的请求不能假装是完整原始请求（P2#10）。
+    return text[:139].rstrip() + "…" if len(text) > 140 else text
 
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
