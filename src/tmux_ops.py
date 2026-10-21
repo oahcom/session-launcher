@@ -5,6 +5,7 @@ __all__ = [
     '_tmux_send',
     '_tmux_output',
     '_role_is_busy',
+    '_restart_if_stale',
     '_tmux_kill',
     '_find_codex_pid',
     '_active_codex_session_count',
@@ -28,6 +29,7 @@ __all__ = [
 """Auto-generated: tmux_ops.py — extracted from core.py"""
 
 import logging
+import os
 import threading
 import re
 import subprocess
@@ -221,6 +223,8 @@ def _is_alive(tmux_name: str) -> bool:
 # 同一时刻 6 个空闲会话该文案 0 匹配——该判据有效，不是恒定失效。
 # 不用 spinner 行（✻ Shimmying… (40s · ↓ 1.4k tokens) / ✻ Churned for 2m）：
 # 至少两种格式（"for X" 与 "(Xs · ↓ tokens)"）、持续变化，且空闲 pane 会残留。
+# 429 重试期同样吞按键，而状态栏此时只有 "Retrying attempt"（无 esc 提示），
+# 两个都要查，详见 README「提示词生效方式」。
 _BUSY_SCAN_TAIL = 8  # 状态栏在最底部
 
 
@@ -231,7 +235,35 @@ def _role_is_busy(tmux_name: str) -> bool:
     视为空闲 → 照发 C-u。C-u 不中断生成，故失配无害，仅是失去清行能力）。
     升级路径：claude CLI 若暴露状态接口则改用协议查询。
     """
-    return "esc to interrupt" in _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
+    pane = _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
+    return "esc to interrupt" in pane or "Retrying attempt" in pane
+
+
+def _proc_start_time(pid: int) -> float:
+    """进程启动时刻（epoch 秒）。/proc/<pid>/stat 第 22 字段是开机后的 tick 数。"""
+    ticks = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+    btime = next(int(l.split()[1]) for l in Path("/proc/stat").read_text().splitlines()
+                 if l.startswith("btime"))
+    return btime + ticks / (os.sysconf("SC_CLK_TCK") or 100)
+
+
+def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
+    """进程比 prompt 文件旧且角色空闲时重启它——claude 只在启动时读该文件，/clear 不重读。
+
+    只杀 claude 不碰 wrapper：杀 wrapper 会连 tmux session 一起没。
+    """
+    if not _is_alive(tmux_name) or _role_is_busy(tmux_name):
+        return False
+    pid = _find_claude_pid(tmux_name)
+    try:
+        ok = bool(pid) and Path(f"/proc/{pid}/comm").read_text().strip() == "claude"
+    except OSError:
+        ok = False
+    if not ok or _proc_start_time(pid) >= prompt_file.stat().st_mtime:
+        return False
+    os.kill(pid, 9)
+    print(f"    {tmux_name}: 已重启 pid={pid}（wrapper 3s 内重拉）")
+    return True
 
 
 def _composer_text(pane: str) -> str:

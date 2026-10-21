@@ -222,8 +222,8 @@ python3 src/ccs.py health
 
 ## 提示词生效方式
 
-`ccs reload-knowledge [role]`（以及 ccs-reload-knowledge.timer，每 10 分钟）只重写
-`ccs-workspaces/*/CLAUDE.md`；`core.py:_launch_tmux` 用 `--append-system-prompt-file` 在
+`ccs reload-knowledge [role] [--restart-idle]`（以及 ccs-reload-knowledge.timer，每 10 分钟）只重写
+`ccs-workspaces/*/CLAUDE.md`；`core.py:_launch_tmux` 用 `--append-system-prompt-file` 把该文件
 在 claude 进程启动时交给 claude。实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，
 重启进程后才答出新文案（n=1，未验证 claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。
 workspace 里没有 CLAUDE.md 时整段参数被省略（claude 对缺失文件直接 exit 1），
@@ -231,7 +231,9 @@ workspace 里没有 CLAUDE.md 时整段参数被省略（claude 对缺失文件�
 
 生效 = 让进程重新启动：外层 `while true … sleep 3` 会在 claude 退出后自动重拉，
 所以对空闲角色 `kill <claude pid>` 即可（或 `ccs stop` + `ccs start`）。
-判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
+`--restart-idle` 把这一步做成一条命令：进程启动早于 CLAUDE.md mtime（即 `injected (1 workspace(s))`
+那次写入）且 pane 空闲的角色直接重启，忙的跳过。**不要挂到 timer 上**：每个 prompt 改动都要重启一次
+空闲角色，做成 10 分钟定时 = 定期清掉所有空闲角色的上下文。判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
 
 ## 环境变量
 

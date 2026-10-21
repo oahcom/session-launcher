@@ -19,6 +19,7 @@ from core import (
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
     list_roles, get_config_value, StartOptions,
 )
+from tmux_ops import _restart_if_stale
 
 
 def main():
@@ -229,6 +230,7 @@ def main():
                                help="刷新角色 KNOWLEDGE 块（无需重启 CCS）")
     p_reload.add_argument("role", nargs="?", default="",
                           help="角色名（空=全部）")
+    p_reload.add_argument("--restart-idle", action="store_true", help="变了且空闲则重启 claude 进程")
 
     args = parser.parse_args()
 
@@ -462,6 +464,7 @@ def main():
                 sys.exit(1)
             result = inject_role_knowledge_into_workspace(role)
             print(f"  {args.role}: {result}")
+            if args.restart_idle: _restart_if_stale(f"ccs-{args.role}", _Path.home()/"ccs-workspaces"/args.role/"CLAUDE.md")
         else:
             # 全部角色
             ws_root = _Path.home() / "ccs-workspaces"
@@ -469,11 +472,12 @@ def main():
                 for d in sorted(ws_root.iterdir()):
                     if not (d / "CLAUDE.md").exists():
                         continue
-                    name = d.name.removeprefix("ccs-")
-                    role_def = get_role(name)
+                    # 目录名可能就是角色名（ccs-monitor），直接剥前缀会查不到。
+                    role_def = get_role(d.name) or get_role(d.name.removeprefix("ccs-"))
                     if role_def:
                         r = inject_role_knowledge_into_workspace(role_def)
                         print(f"  {d.name}: {r}")
+                        if args.restart_idle: _restart_if_stale(f"ccs-{d.name}", d / "CLAUDE.md")
                     else:
                         print(f"  {d.name}: 角色定义未找到，跳过")
             else:
