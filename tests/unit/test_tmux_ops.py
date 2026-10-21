@@ -268,6 +268,59 @@ class TestLooksStuck:
         assert self._run(["same", "same"], [100.0, 160.0], [0.0, 200.0]) == [False, False]
 
 
+# ── 启动间隔闸门 ──
+
+class TestLaunchInterval:
+    """连续启动 CCS 至少隔 _CCS_LAUNCH_INTERVAL 秒。
+
+    曾有同文件的 _launch_lock（threading.Lock）声称做线程安全，但全仓
+    0 个使用点（git log -S "with _launch_lock" 为空）—— 已删。留下的
+    间隔判断是唯一真护栏，钉住它，删除锁必须证明行为不变。
+    """
+
+    def _fake_time(self):
+        class FakeTime:
+            def __init__(self):
+                self.now = 1000.0
+                self.slept = []
+            def time(self):
+                return self.now
+            def sleep(self, s):
+                self.slept.append(s)
+                self.now += s
+        return FakeTime()
+
+    def test_waits_remaining_seconds(self, monkeypatch):
+        """4 秒前刚启动过 → 再等 4 秒（8-4），不是等满 8 秒。"""
+        import tmux_ops
+        fake = self._fake_time()
+        monkeypatch.setattr(tmux_ops, "time", fake)
+        monkeypatch.setattr(tmux_ops, "_memory_shortage", lambda role: None)
+        monkeypatch.setattr(tmux_ops, "_last_ccs_launch_ts", 996.0)
+        assert tmux_ops._check_memory_before_launch("probe") is None
+        assert fake.slept == [4.0], f"应只等 4.0s，实际 {fake.slept}"
+
+    def test_first_launch_never_waits(self, monkeypatch):
+        """_last_ccs_launch_ts==0（进程首次启动）不该 sleep。"""
+        import tmux_ops
+        fake = self._fake_time()
+        monkeypatch.setattr(tmux_ops, "time", fake)
+        monkeypatch.setattr(tmux_ops, "_memory_shortage", lambda role: None)
+        monkeypatch.setattr(tmux_ops, "_last_ccs_launch_ts", 0.0)
+        assert tmux_ops._check_memory_before_launch("probe") is None
+        assert fake.slept == []
+
+    def test_expired_interval_never_waits(self, monkeypatch):
+        """距上次启动已超 8 秒 → 不 sleep。"""
+        import tmux_ops
+        fake = self._fake_time()
+        monkeypatch.setattr(tmux_ops, "time", fake)
+        monkeypatch.setattr(tmux_ops, "_memory_shortage", lambda role: None)
+        monkeypatch.setattr(tmux_ops, "_last_ccs_launch_ts", 990.0)
+        assert tmux_ops._check_memory_before_launch("probe") is None
+        assert fake.slept == []
+
+
 class TestRestartIfStale:
     """只在「进程比 prompt 旧 + pane 空闲 + 确实是 claude」三条同时成立时才 kill。"""
 

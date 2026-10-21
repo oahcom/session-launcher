@@ -38,10 +38,6 @@ HERMES_STATE = _HOME / ".hermes" / "state"
 WORKFLOWS_DB = Path(os.environ.get("HERMES_WORKFLOWS_DB") or HERMES_STATE / "workflows.db")
 # 与 session-pipeline/src/paths.py 保持一致；daemon.py 从 paths 导入此常量
 STARVE_STATE = _HOME / ".hermes" / "run" / "wf_starve.json"
-# ── 模板与配置 ──
-HERMES_TEMPLATES = _HOME / ".hermes" / "templates"
-WORKFLOW_GUIDE = HERMES_TEMPLATES / "WORKFLOW_GUIDE.md"
-
 # ── 项目根目录 ──
 HERMES_SCRIPTS = Path(_HOME / ".hermes" / "scripts")
 SESSION_LAUNCHER_SRC = Path(__file__).resolve().parent
