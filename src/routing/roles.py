@@ -534,8 +534,12 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
             else:
                 new_content = content + knowledge_block
 
-        claude_md.write_text(new_content, encoding="utf-8")
-        injected += 1
+        # 只在内容真的变了才写：定时重注入（ccs-reload-knowledge.timer）每 10 分钟
+        # 跑一次，无条件 write_text 会把所有 workspace 的 mtime 刷成"刚刚"，
+        # 让 code-checksum-* 与新鲜度判据全部失去意义。
+        if new_content != content:
+            claude_md.write_text(new_content, encoding="utf-8")
+            injected += 1
 
     return f"injected ({injected} workspace(s))"
 
