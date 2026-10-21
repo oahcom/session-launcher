@@ -548,6 +548,29 @@ class WorkflowClient:
             stats[lane] = row["c"] if row else 0
         stats["total"] = sum(stats.values())
         stats["completion_rate"] = round(stats["completed"] / max(stats["total"], 1) * 100, 1)
+        # 取消归因：只报总数时 419 个取消看起来都一样，实际 62% 是 24h 僵尸回收、
+        # 3% 是饥饿、其余是角色/人工取消。归因取每个实例最后一条 workflow_log —— 
+        # context.reason 只在少数路径写，400/419 是空的（实测 2026-10-22）。
+        try:
+            rows = self._conn.execute(
+                "SELECT i.instance_id, (SELECT l.detail FROM workflow_logs l "
+                "  WHERE l.workflow_instance_id=i.instance_id ORDER BY l.id DESC LIMIT 1) d "
+                "FROM workflow_instances i WHERE i.status='cancelled'").fetchall()
+            causes: dict[str, int] = {}
+            for r in rows:
+                d = r["d"] or ""
+                if "僵尸回收" in d:
+                    key = "zombie_24h"
+                elif "无活跃工作流" in d:
+                    key = "starvation"
+                elif not d:
+                    key = "no_log"
+                else:
+                    key = "other"
+                causes[key] = causes.get(key, 0) + 1
+            stats["cancelled_by_cause"] = dict(sorted(causes.items(), key=lambda kv: -kv[1]))
+        except Exception:
+            stats["cancelled_by_cause"] = {}
         return stats
 
     def close(self):
