@@ -17,6 +17,7 @@
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # sys.executable 在本机 python3 包装下可能为空串 → subprocess 抛 PermissionError: ''。
@@ -85,13 +86,16 @@ def test_default_path_creates_workflow_and_cleans_up():
     import sqlite3
 
     db = _real_db()
+    # 标题带时间戳：create_task_v2 有 5 分钟同名去重，固定标题会让第二次连跑必然失败
+    # （实测 2026-10-21：同一文件连跑两次，第二次数 1 failed）。
+    _probe_title = f"做一个高质量网页探针{int(time.time())}"
     code = (
         f"import sys, json; sys.path.insert(0, {str(SRC)!r}); "
         f"sys.path.insert(0, {str(SRC / 'workflow')!r})\n"
         "from workflow.client import WorkflowClient\n"
         "wc = WorkflowClient('pm')\n"
         "try:\n"
-        "    tid, wid = wc.create_task_v2('做一个高质量网页', 'pm', '', 'pm',\n"
+        f"    tid, wid = wc.create_task_v2({_probe_title!r}, 'pm', '', 'pm',\n"
         "                                 description='unittest probe')\n"
         "    print(json.dumps({'ok': True, 'tid': tid, 'wid': wid}))\n"
         "except Exception as e:\n"
