@@ -57,6 +57,10 @@ def main():
     p_task = sub.add_parser("task", help="查看任务详情")
     p_task.add_argument("task_id")
 
+    p_state = sub.add_parser("state", help="查看一条链的状态（每步状态/排队/完成者）")
+    p_state.add_argument("wf_id")
+    p_state.add_argument("--json", action="store_true")
+
     p_logs = sub.add_parser("logs", help="查看日志")
     p_logs.add_argument("--wf", default="")
     p_logs.add_argument("--task", default="")
@@ -173,6 +177,25 @@ def main():
                 print(f"未找到: {args.task_id}（task_id 或 wf_id）", file=sys.stderr)
                 sys.exit(1)
             print(json.dumps(t, indent=2, ensure_ascii=False))
+
+    elif args.cmd == "state":
+        r = role or os.getenv("CCS_ROLE", "") or _require_role()
+        with WorkflowClient(r) as wf:
+            st = wf.state(args.wf_id)
+            if not st:
+                # stdout + rc=0 会被读成"这条链没有状态"：查不到就是查不到。
+                print(f"未找到: {args.wf_id}（wf_id）", file=sys.stderr)
+                sys.exit(1)
+            if args.json:
+                print(json.dumps(st, indent=2, ensure_ascii=False))
+            else:
+                print(f"{st['instance_id']}  tpl={st.get('template_id') or ''}  "
+                      f"status={st.get('status')}  step={st.get('current_step_id') or '-'}  "
+                      f"age={st.get('age_h')}h  task={st.get('task_id') or '-'}")
+                for s in st["steps"]:
+                    extra = f"  queued={s['queued']} ({s['queued_h']}h)" if s["queued"] else ""
+                    who = f"  by={s['completed_by']}" if s["completed_by"] else ""
+                    print(f"  {s['step']:<8} {s['status'] or '-':<18}{who}{extra}")
 
     elif args.cmd == "logs":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
