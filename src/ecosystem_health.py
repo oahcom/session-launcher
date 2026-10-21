@@ -279,8 +279,12 @@ def _check_workflow_engine() -> CheckItem:
     16 个实例停在 running 无人推进。判据分三层，任一不成立即 fail：
 
     1. systemd 单元 active
-    2. 锁归属（~/.hermes/run/workflow-daemon.lock）== 单元 MainPID
+    2. 单元 MainPID 真的持有 ~/.hermes/run/workflow-daemon.lock
     3. 有活跃实例时，最近 30 分钟必须有 workflow_logs 落库（步骤真的在动）
+
+    锁只读探（/proc/<pid>/fd），不抢锁：daemon 取锁是 open("w") 截断 + flock 两步，
+    健康检查若在中间抢到锁，daemon 的 LOCK_NB 会失败并 exit(1)（codex 审查 P3）。
+    锁文件内容只作诊断，不参与判定——它是上次成功的写入，进程死后不清。
     """
     start = time.time()
     def _fail(why: str) -> CheckItem:
@@ -297,26 +301,21 @@ def _check_workflow_engine() -> CheckItem:
             capture_output=True, text=True, timeout=5).stdout.strip()
         lock = HOME / ".hermes" / "run" / "workflow-daemon.lock"
         lock_pid = lock.read_text().strip() if lock.exists() else ""
-        # 锁文件内容是上次成功的写入，进程死后不清 → 必须真探一次 flock。
-        # 实测 03:1x：文件里留着已 kill 的 1160496，单元 MainPID 却在重启循环里
-        # 从未进过主循环；只比内容会把"没人持锁"误判成"被旧进程占着"。
-        import fcntl
-        _held = False
+        # 只读探：MainPID 的 fd 表里有没有这个锁文件。不 flock（见 docstring）。
+        held = False
         try:
-            with lock.open("a+") as _fh:
+            for fd in os.listdir(f"/proc/{main_pid}/fd"):
                 try:
-                    fcntl.flock(_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(_fh, fcntl.LOCK_UN)
+                    if os.readlink(f"/proc/{main_pid}/fd/{fd}").endswith("workflow-daemon.lock"):
+                        held = True
+                        break
                 except OSError:
-                    _held = True
+                    continue
         except OSError:
             pass
-        if not _held:
-            return _fail(f"单元 active(MainPID={main_pid}) 但锁未被持有——"
-                         "进程没进主循环或在静默重启，链无人推进")
-        if lock_pid and main_pid and lock_pid != main_pid:
-            return _fail(f"锁被 pid={lock_pid} 持有，单元 MainPID={main_pid}"
-                         "（手工 daemon 占锁，系统单元在空转等锁）")
+        if not held:
+            return _fail(f"单元 MainPID={main_pid} 未持有锁（锁文件里是 pid={lock_pid or '空'}）"
+                         "——手工 daemon 占着锁，或进程没进主循环；链无人推进")
         import sqlite3
         db = HOME / ".hermes" / "state" / "workflows.db"
         if not db.exists():
@@ -325,7 +324,11 @@ def _check_workflow_engine() -> CheckItem:
         try:
             active = conn.execute(
                 "SELECT COUNT(*) FROM workflow_instances "
-                "WHERE status IN ('pending','running','step_done_ready')").fetchone()[0]
+                # delivery_blocked 不是终态（client.py:17 / gatekeeper.py:401：
+                # 投递达上限暂停，实例仍活）——漏掉它，全部实例卡在该状态时
+                # active=0 → 新鲜度判据被跳过 → 报绿（codex 审查 P2）。
+                "WHERE status IN ('pending','running','step_done_ready','delivery_blocked')"
+            ).fetchone()[0]
             last = conn.execute("SELECT MAX(ts) FROM workflow_logs").fetchone()[0] or 0
         finally:
             conn.close()
