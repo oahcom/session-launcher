@@ -167,6 +167,41 @@ class TestRoleIsBusy:
             assert tmux_ops._role_is_busy("ccs-probe") is False
 
 
+# ── 启动前的内存闸门 ──
+
+class TestMemoryShortage:
+    """swap 见底只在内存也紧时才拦：8G swap 占满但 avail 还有 2G 时照常启动。
+
+    2026-10-21 现场：swap_free=0/avail=2291MB 时 archivist 被拦下、角色停摆，
+    而同样条件下新 claude 正常起来。
+    """
+
+    def _meminfo(self, avail_mb, swap_total_mb, swap_free_mb):
+        return (f"MemAvailable: {avail_mb*1024} kB\n"
+                f"SwapTotal: {swap_total_mb*1024} kB\n"
+                f"SwapFree: {swap_free_mb*1024} kB\n")
+
+    def _check(self, avail_mb, swap_total_mb, swap_free_mb):
+        import tmux_ops
+        from unittest.mock import patch
+        with patch("pathlib.Path.read_text",
+                   return_value=self._meminfo(avail_mb, swap_total_mb, swap_free_mb)):
+            return tmux_ops._memory_shortage("probe")
+
+    def test_full_swap_with_ram_free_is_allowed(self):
+        assert self._check(avail_mb=2291, swap_total_mb=8191, swap_free_mb=0) is None
+
+    def test_full_swap_and_low_ram_is_blocked(self):
+        err = self._check(avail_mb=300, swap_total_mb=8191, swap_free_mb=0)
+        assert err and "swap" in err
+
+    def test_low_ram_alone_is_blocked(self):
+        assert self._check(avail_mb=300, swap_total_mb=0, swap_free_mb=0) is not None
+
+    def test_healthy_is_allowed(self):
+        assert self._check(avail_mb=4000, swap_total_mb=8191, swap_free_mb=4000) is None
+
+
 # ── --restart-idle 重启判据 ──
 
 class TestRestartIfStale:

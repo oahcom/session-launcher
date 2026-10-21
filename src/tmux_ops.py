@@ -22,6 +22,7 @@ __all__ = [
     'CODEX_READY_RETRIES',
     'CODEX_READY_INTERVAL',
     '_MEM_FREE_MIN_MB',
+    '_SWAP_LOW_AVAIL_MB',
     '_CCS_LAUNCH_INTERVAL',
 ]
 
@@ -117,6 +118,7 @@ _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
 # 停在 Dl+ 不可中断睡眠，pane 空白、界面不出现）。只看 MemAvailable 的
 # 原判据对此完全无感——available 显示 6.1GB 却起不来角色。
 _SWAP_FREE_MIN_MB = 128
+_SWAP_LOW_AVAIL_MB = 1024  # swap 见底但可用内存仍有这个数就不拦（见 _memory_shortage）
 
 _CCS_LAUNCH_INTERVAL = 8  # 连续启动 CCS 之间至少等待秒数
 
@@ -143,9 +145,14 @@ def _memory_shortage(role: str) -> str | None:
         # swap 见底：新进程会卡在内核 __mem_cgroup_handle_over_high（不可中断
         # 睡眠）——pane 空白、Claude 界面不出现。MemAvailable 对此无感，必须
         # 独立判。swap_total=0 表示未启用 swap，不构成拦阻理由。
-        if swap_total_mb > 0 and swap_free_mb < _SWAP_FREE_MIN_MB:
-            return (f"swap 仅剩 {swap_free_mb}MB（< {_SWAP_FREE_MIN_MB}MB），"
-                    f"跳过 {role} 启动：新进程会卡在内核内存回收")
+        # swap 见底只在内存也紧时才是风险：8G swap 被占满但 MemAvailable 还有 2G
+        # 时，新 claude 正常起来（实测 2026-10-21：swap_free=0/avail=2291MB 启动成功）。
+        # 只看 swap 会导致「swap 一旦占满就再也起不来任何角色」——2026-10-21 就这样
+        # 把 archivist 挡在门外、进程停摆。真正的判据是两者同时紧。
+        if swap_total_mb > 0 and swap_free_mb < _SWAP_FREE_MIN_MB \
+                and avail_mb < _SWAP_LOW_AVAIL_MB:
+            return (f"swap 仅剩 {swap_free_mb}MB 且可用内存仅 {avail_mb}MB"
+                    f"（< {_SWAP_LOW_AVAIL_MB}MB），跳过 {role} 启动：新进程会卡在内核内存回收")
         if avail_mb < _MEM_FREE_MIN_MB:
             return (f"可用内存仅 {avail_mb}MB（< {_MEM_FREE_MIN_MB}MB），"
                     f"跳过 {role} 启动")
