@@ -222,6 +222,12 @@ def _is_alive(tmux_name: str) -> bool:
             capture_output=True, timeout=5
         )
         return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        # 超时 ≠ 死：探测失败时判死的代价是"重复拉起 + 在飞任务丢"，判活的代价只是
+        # 本轮不动作。内存压力下 tmux server 常进 D 状态，5s 探测必然超时——实测
+        # ccs status 报 pm ✅ 运行中，ccs health 却报 alive:false，引擎据此反复拉起
+        # 并拦下投递（2026-10-22）。与 pipeflow/liveness.py「探测失败按不可用不判死」同口径。
+        return True
     except Exception:
         return False
 

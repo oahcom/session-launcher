@@ -23,10 +23,11 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 **铁律：修改本项目时必须同时考虑上下游影响。**
 
 ## Git 工作流
-1. 禁止切换分支，始终在 main 分支工作
-2. 小步提交，每完成一个逻辑单元立即 commit
-3. 出错用新提交修复，不要 revert
-4. 本地即生产环境
+1. `main` 是基线分支；本仓没有 `quality-gate` 分支（`git branch -a` 实测只有 `main` + 若干 feature 分支）
+2. 编辑在 worktree 的 feature 分支上做：`git worktree list` 实测 `/home/administrator/wt-launcher [main]`、`/tmp/r2-lau [r2-launcher-docs]`；当前 checkout 在 `r77-routing-daemon-whitelist`
+3. 小步提交，每完成一个逻辑单元立即 commit
+4. 出错用新提交修复，不要 revert
+5. 本地即生产环境
 
 ## 协作红线
 1. 协作逻辑在代码层，不在 prompt 文本中
@@ -40,7 +41,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 
 ## 测试
 ```bash
-python3 -m pytest tests/ -q   # 上述三个文件已不存在：顶层 6 个 + unit/
+python3 -m pytest tests/ -q   # 实测 460 passed (2026-10-22)
 PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops; print('OK')"
 ```
 
@@ -71,11 +72,11 @@ P5: 可测试性（可 mock/幂等）？         → 函数是否接受 db_path 
 
 ```bash
 # 改角色定义 → 检查路由表同步
-cd /home/administrator/session-pipeline && PYTHONPATH=src python3 -c \
+cd ~/session-pipeline && PYTHONPATH=src python3 -c \
   "from routing.router import get_router; r = get_router(); print(len(r._routing))"
 
 # 改路由逻辑 → 检查 CCS 启动正常
-cd /home/administrator/session-launcher && python3 src/ccs.py health
+cd ~/session-launcher && python3 src/ccs.py health
 ```
 
 ### 4. 每周自进化
@@ -96,8 +97,8 @@ cd /home/administrator/session-launcher && python3 src/ccs.py health
 ---
 
 ## Browser Harness 关联
-Browser Harness（53 人格）注册在 hermes-session-roles/personas/browser-harness/，
-通过 `_bh_to_sr_map.json` 映射到 session 角色。
+Browser Harness 注册在 `hermes-session-roles/personas/browser-harness/`，
+通过 `_bh_to_sr_map.json` 映射到 session 角色（该文件 meta 实测 `bh_total: 50`、`mapping: 68` 条）。
 
 ## 环境变量
 | 变量 | 默认值 | 说明 |

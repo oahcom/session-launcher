@@ -1,6 +1,6 @@
 # Hermes Session 协作架构设计 V2
 
-> 版本: 2.0 | 日期: 2026-07-07 | 状态: 实施中
+> 版本: 2.0 | 日期: 2026-07-07 | 状态: 已实施（2026-10-22 按代码复核：Phase 2-4 已落地；数字类指标为当时实测，不可复验）
 
 ---
 
@@ -28,8 +28,8 @@
 │  │ hermes-session-    │    │ session-launcher     │   │ session-     │  │
 │  │ roles (定义层)     │    │ (执行层)              │   │ pipeline     │  │
 │  │                    │    │                       │   │ (路由层)     │  │
-│  │ persona_*.json     │───→│ ccs.py               │   │ router.py    │  │
-│  │ → name/title       │    │ → start/stop/status  │───│ auto_route.py│  │
+│  │ persona_*.json     │───→│ ccs.py               │   │ routing/     │  │
+│  │ → name/title       │    │ → start/stop/status  │───│  router.py   │  │
 │  │ → system_prompt    │    │ → watchdog (守护)    │   │ reliability  │  │
 │  │ → input_signals    │    │ → tracker (轮次)     │   └──────────────┘  │
 │  │ → output_targets   │    │ → sentinel (状态)    │                     │
@@ -59,7 +59,7 @@
 │  身份 + 专业领域 + 输入/输出定义                              │
 │  存储：persona_*.json → CLAUDE.md                            │
 ├──────────────────────────────────────────────────────────────┤
-│  第二层：工作空间（session-launcher/ccs_workspaces/）         │
+│  第二层：工作空间（~/ccs-workspaces/<role>/）                 │
 │  禁令 + 权限 + 工作方式 + 上下文                              │
 │  系统级 CCS：独立 CLAUDE.md                                   │
 │  普通级 CCS：全局 ~/.claude/CLAUDE.md                        │
@@ -75,7 +75,7 @@
 | 层次 | 负责 | 改动频率 | 存储位置 |
 |------|------|---------|---------|
 | 角色定义 | "我是谁" | 角色增删 | `hermes-session-roles/persona_*.json` |
-| 工作空间 | "我能做什么、禁止做什么" | 架构变更 | `ccs_workspaces/<role>/CLAUDE.md` |
+| 工作空间 | "我能做什么、禁止做什么" | 架构变更 | `~/ccs-workspaces/<role>/CLAUDE.md` |
 | 驱动机制 | "怎么执行、何时触发" | 系统优化 | session-launcher + session-pipeline |
 
 ### CLAUDE.md 内容对比
@@ -100,7 +100,7 @@ CLAUDE.md 指令 → claude /loop → 每 30s 自动执行 → 写审计
 
 | 层次 | 实现 |
 |------|------|
-| 角色定义 | `persona_*.json: drive: "loop"` |
+| 角色定义 | `persona_*.json: drive`（实测取值 `infinite`/`ondemand`，无 `loop`） |
 | 启动注入 | `session-launcher/src/ccs.py start` 时发送 `/loop` 到 tmux |
 | 执行 | claude 内部 `/loop` 循环 |
 
@@ -113,8 +113,8 @@ CLAUDE.md 指令 → claude /loop → 每 30s 自动执行 → 写审计
 | 层次 | 实现 |
 |------|------|
 | 角色定义 | `persona_*.json: input_signals: ["bus cat=task @ccs-role"]` |
-| 消息路由 | `session-pipeline/src/router.py get_consumers()` → 决定谁该收 |
-| 消息推送 | `session-launcher/ccs_send <role> "消息"` → tmux send-keys |
+| 消息路由 | `session-pipeline/src/routing/router.py:165 get_consumers()` → 决定谁该收 |
+| 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（无 `ccs_send` 脚本） |
 | 执行 | claude 收到消息 → 处理 → 回复 |
 
 ### 4.3 feed push 实时
@@ -127,9 +127,9 @@ bus_client.py write → bus_protocol.py Blackboard.write()
 
 | 层次 | 实现 |
 |------|------|
-| 角色定义 | `persona_*.json: watch_cats: ["debate", "code_fix"]` |
-| 推送源 | `session-pipeline/bus_protocol.py write()` → `_notify_feed()` |
-| 广播 | `hermes_core/sister_bus/socket_server.py` → feed agent → broadcast |
+| 角色定义 | persona **无** `watch_cats` 字段（全库 grep 0 命中）；分类来自启动参数 `--feed-cat` |
+| 推送源 | **不存在**：`grep -rn _notify_feed ~/.hermes/scripts` 无命中，写入只落 SQLite |
+| 广播 | `hermes_bus/socket_server.py:44` 有 `feed` agent，但只在显式 `PUBLISH` 时 `_push_to`（:144-152） |
 | 接收 | `session-launcher/feed_listener.py` → 检测关键词 → 写 notice |
 
 ### 三驱动统一流程
@@ -194,24 +194,10 @@ CCS 启动（session-launcher）
 
 ## 六、实时推送架构（feed push）
 
-```
-bus_client.py write debate "消息"
-  └─ Blackboard.write()
-       ├─ ① INSERT INTO facts (SQLite)  ← 持久化
-       └─ ② _notify_feed() → /tmp/sister_bus_feed.sock
-            └─ ③ socket_server.py → broadcast
-                 ├─ ccs-verifier → 实时收到
-                 ├─ ccs-monitor  → 实时检测
-                 └─ feed_listener.py → 检测终局 → write notice
-```
+细节与实测见 `BUS_PUSH_ARCH.md`（唯一出处，本节不重复）。
 
-| 测试指标 | 结果 |
-|---------|------|
-| 推送成功率 | 100% (20/20) |
-| 端到端延迟 | 43-51ms |
-| 终局检测 | ✅ |
-| SQLite 持久化 | ✅ 100% |
-| feed 降级 | 静默，不丢数据 |
+**现行事实**：写入路径不含推送调用，`feed_listener` 只在显式 `PUBLISH` 时收到消息（见 §四 4.3 证据行）。
+本文件早先记录的 20/20 推送成功率、43-51ms 延迟是 2026-07-07 的观测，当前代码下**无法复验**。
 
 ---
 
@@ -285,19 +271,18 @@ persona_*.json  → 专业领域 + prompt
 - [x] sentinel 健康字段
 - [x] 三方三轮审查
 
-### Phase 2：CLAUDE.md 独立化
-- [ ] 创建 ccs_workspaces 目录结构
-- [ ] 编写 ccs-monitor CLAUDE.md
-- [ ] ccs_start.py 支持 `--workspace` 参数
-- [ ] 启动时注入独立 CLAUDE.md（系统级）
+### Phase 2：CLAUDE.md 独立化（完成）
+- [x] 工作空间目录 `~/ccs-workspaces/`（`ccs workspace create/list`）
+- [x] ccs-monitor CLAUDE.md 存在：`~/ccs-workspaces/ccs-monitor/CLAUDE.md`
+- [x] `--workspace` 参数（`src/ccs.py:70`）；`ccs_start.py` 已删（`2e2af8b`），入口是 `ccs.py`
+- [x] 启动时注入角色知识块（`routing/roles.py`）
 
-### Phase 3：三驱动统一封装
-- [ ] session-launcher 提供统一 API：
-      `ccs.py start --drive loop --feed-cat debate --partner rebutter`
-- [ ] session-pipeline 自动路由 ccs-send
-- [ ] feed push 自动启动对应 listener
+### Phase 3：三驱动统一封装（完成）
+- [x] 统一 API：`ccs.py start --drive … --feed-cat … --partner …`
+- [x] pipeline 侧 `routing/router.py get_consumers()` 自动路由
+- [x] feed listener 随 `start` 自动拉起（`core.py:818-823`）
 
-### Phase 4：LLM 驾驭工程
-- [ ] ccs-monitor CLAUDE.md 加决策树
-- [ ] 审计 bus cat=monitor_audit
-- [ ] 降级策略实现
+### Phase 4：LLM 驾驭工程（部分）
+- [x] ccs-monitor CLAUDE.md 决策树
+- [ ] 审计 bus cat=monitor_audit（未验证：无独立消费者）
+- [x] 降级策略：watchdog/tracker 不依赖 LLM

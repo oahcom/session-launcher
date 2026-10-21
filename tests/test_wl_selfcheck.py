@@ -20,11 +20,13 @@ for p in PIPELINE_SRC.rglob("*.py"):
 errors = []
 
 # P1-02: create_task 强制关联 template_id
-cl = files.get("pipeline_workflow/client.py", "")
-if "if template_id is None:" not in cl:
+# WorkflowClient 已迁回本仓 src/workflow/client.py（pipeline_workflow/client.py 已不存在，
+# 旧路径让 4 条断言全部假失败，见 bus #437645 一类的"断言落点漂移"）
+cl = files.get("workflow/client.py", "")
+if "if not template_id:" not in cl:
     errors.append("WL-P1-02: create_task missing template_id guard")
-if "gate.validate_create_task" not in cl:
-    errors.append("WL-P1-02: create_task_v2 missing Gate call")
+if "self._validate_create_task(" not in cl:
+    errors.append("WL-P1-02: create_task_v2 missing Gate call（Gate 已内联为 _validate_create_task）")
 
 gw = files.get("pipeline_workflow/gateway.py", "")
 for fn in ["is_template_exists","is_template_active","check_can_initiate","check_can_execute","is_valid_role","validate_create_task"]:

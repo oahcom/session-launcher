@@ -1,201 +1,118 @@
 # Session Launcher — Technical Deep Dive
 
-## 1. 项目定位
+> 2026-10-22 按代码复核（分支 `r77-routing-daemon-whitelist`）。旧版本列的 `event_log.py`、`signal_parser.py`、
+> `worker_pool.py`、`pool_cli.py`、`lesson_injector.py`、`events/`、`lifecycle/`、`migration/`、`routing/router.py`、
+> `routing/gateway.py`、`workflow/gateway.py`、`workflow/utils.py`、`ecosystem_cli.py` 均已不存在，
+> 本次按 `ls src/` 重写。
 
-Session 生态的**执行层**。创建 CCS（Claude Code Session）进程、管理生命周期、跨 session 协作基础设施。核心职责：让每个专业角色独占一个独立进程、一个独立上下文、一颗独立 /loop，互不污染。
+## 1. 定位
+
+Session 生态的执行层：起 CCS（Claude Code Session）进程、管生命周期、提供跨 session 协作基础设施。
+每个角色独占一个进程、一个上下文、一颗独立 /loop。
+
+## 2. 实际模块
 
 ```
-roles (定义层 JSON) → launcher (执行层) → pipeline (路由层)
-                        ↕
-                   Sister Bus (通信总线)
+src/
+├── ccs.py                    # CLI（19 个子命令）
+├── core.py                   # 生命周期编排（1332 行）
+├── tmux_ops.py               # tmux 底层 + 内存闸门 + 忙判据
+├── ccs_socket.py             # CCSClient（Unix Socket 直连）
+├── codex_ops.py              # Codex session
+├── paths.py                  # 路径常量
+├── ecosystem_health.py       # 三项目健康检查（--json / --ci）
+├── file_size_audit.py        # 文件大小审计
+├── gateway_guard.py          # 红线 1 拦截
+├── user_intent_reminder.py   # 意图提醒（classify_intent/inject_reminder）
+├── ccls_daemon_intent_classifier.py  # 意图守护 daemon
+├── wf.py / workflow_client.py        # wf CLI / 薄包装
+├── ops/  sentinel watchdog tracker runner validators workspace ccs_config
+├── routing/  roles gatekeeper partner
+└── workflow/ client db schema
 ```
 
-## 2. 架构概览
+## 3. 核心模块
 
 模块表以 `CLAUDE.md` 的「目录结构」为准（2026-10-22 复核：原树 17 个具名文件里 14 个已不存在，整段删除）。
 
-## 3. 核心模块详解
+### 3.1 ccs.py — CLI
 
-### 3.1 ccs.py — CLI 主入口
+19 个顶层子命令（`python3 src/ccs.py --help` 实测）：
+start, config, auto-send, roles, stop, status, send, output, dashboard, health, register,
+p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-knowledge。
 
-argparse 分发 19 个子命令（`python3 -m ccs --help` 实测，2026-10-22）：
+### 3.2 core.py — 生命周期
 
-| 命令 | 功能 | 示例 |
-|------|------|------|
-| `start` | 创建并启动 CCS | `ccs.py start verifier --partner rebutter` |
-| `stop` | 终止 CCS | `ccs.py stop verifier` |
-| `status` | 列出所有 CCS 状态 | `ccs.py status` |
-| `send` | 发送消息 | `ccs.py send verifier "你好"` |
-| `output` | 查看输出 | `ccs.py output verifier --tail 20` |
-| `health` | 健康检查 | `ccs.py health` |
-| `dashboard` | 聚合健康仪表板 | `ccs.py dashboard` |
-| `register` | 注册手动 tmux 为 CCS | `ccs.py register role tmux_name` |
-| `workspace` | 管理工作空间 | `ccs.py workspace create <name>` |
-| `send-direct` | 直连通信（<1ms） | `ccs.py send-direct alice bob hi` |
-| `send-safe` | 自动唤醒后发送 | `ccs.py send-safe role msg --by-role src` |
-| `wake` | 唤醒 CCS | `ccs.py wake role --by-role src --context ctx` |
-| `reload-knowledge` | 刷新角色 KNOWLEDGE 块 | `ccs.py reload-knowledge maintainer` |
-| `codex` | Codex session 管理 | `ccs.py codex start role` |
+**start()**：校验角色 → 查重（已在跑则不重复创建）→ `tmux_ops._memory_shortage` 闸门 →
+建 `~/ccs-workspaces/<role>` → 读 persona → 注入 KNOWLEDGE 块 → 起 tmux + claude →
+等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
 
-### 3.2 core.py — 生命周期编排
+**stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
+`--dry-run` 只返回计划（`core.py:835-839`）。
 
-**start() 流程（11 步）:**
-1. 校验角色名合法性
-2. 检查是否已运行（重复启动不创建）
-3. 内存守卫（确认可用内存 ≥ 1000MB）
-4. 创建工作空间 `~/ccs-workspaces/<name>`
-5. 从 hermes-session-roles 加载角色定义
-6. 注入角色知识到 workspace CLAUDE.md
-7. 构建初始 role prompt
-8. 启动 tmux session + claude 进程
-9. 等待 claude 就绪（轮询 `❯` 提示符）
-10. 注入 prompt
-11. 写哨兵 + 启动守护线程
+**send()**：跨角色路由门禁 → 红线 1 拦截 gateway 重启 → 忙判据 → `_tmux_send`；
+tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]`。
 
-**stop():** 终止 tmux session + 清理哨兵
-**send():** 发送消息前经过三源验证 + 敏感命令门禁
-**health_check():** 返回所有 CCS 的存活状态
+### 3.3 内存闸门（tmux_ops.py:111-160）
 
-### 3.3 sentinel.py — 哨兵系统（创新点）
+主判据是 pipeline cgroup 的 `memory.current / memory.high ≥ 95%`（撞限时内核同步回收，
+表现为 `Dl+` 卡死，宿主机 MemAvailable 看不出来）；兜底才是 `MemAvailable < 1000MB`，
+以及 `swap_free < 128MB 且 avail < 1024MB`。连续启动间隔 8s。
 
-数据从 tmux sessions + 角色 JSON **实时派生**；每个角色一行状态落 `~/.hermes/run/ccs-health/{role}.json`（2026-10-22 实测该目录有文件，原写 `/tmp/` 已过时）。
+### 3.4 ops/sentinel.py — 哨兵
 
-**数据结构:**
+**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（2026-10-22 实测 17 个文件），
+健康字段另落 `~/.hermes/run/ccs-health/<role>.json`。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
+键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
+bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 tmux + 角色 JSON 派生，不读这两个目录。
 
-```python
-@dataclass
-class CcsSentinel:
-    role: str
-    title: str
-    tmux_session: str
-    pid: int | None
-    started_at: float
-    lifecycle: str
-    partners: list[str]
-    bus_track: str
-    bus_timeout: int
-    session_id: str
-    engine: str           # "ccs" | "codex"
-    health: CcsHealth
+### 3.5 ops/watchdog.py — 伙伴存活守护
 
-@dataclass
-class CcsHealth:
-    last_watchdog_check: float
-    watchdog_ok: bool
-    last_turn_check: float
-    last_bus_msg_age: float
-    restart_count: int
-```
+`start_watchdog(this_role, partner_role, auto_restart=False, interval=30)`。
+伙伴 tmux 存活但 120s 无输出 → 先发 `/continue` 温和唤醒（`check_auto_continue`，自带节流），
+真死才重启；顺序是 `read_sentinel → delete → start`，防并发重启把哨兵写膨胀。
 
-**兼容性:** `list_sentinels()` 自动发现所有 `ccs-*` 和 `cdx-*` 前缀的 tmux session。
-**跨 session 内存:** 进程内的 `_CROSS_SESSION_MEMORY` dict，记录角色最近的跨 session 动作。
+### 3.6 ops/tracker.py — 轮次追踪
 
-### 3.4 watchdog.py — 伙伴存活守护
+`start_tracker(this_role, bus_cat, timeout_sec=300, interval=10, partners=None)`：
+轮询 bus 最新时间戳，超时提醒；与 watchdog 交叉验证。
 
-**设计:** 每个 CCS 可以为多个伙伴启动守护线程。检测到伙伴 tmux session 死亡后，从哨兵读取上下文自动重启。
+### 3.7 ccs_socket.py — 直连
 
-```python
-start_watchdog(this_role, partner_role, auto_restart=False, interval=30)
-```
+`CCSClient`（`:34`）：SUBSCRIBE/PUBLISH，JSON-over-newline，走 `/tmp/sister_bus_ccs.sock`。
+无认证——同机进程可任意 PUBLISH。
 
-**Auto-Continue 模式:** 当 CCS 无响应超过 120s 时发送 `/continue` 指令唤醒，而非直接重启，减少上下文丢失。
+### 3.8 routing/ — 角色、门禁、伙伴
 
-**重要逻辑:** `read_sentinel → delete_sentinel → start` 顺序关键：先读旧上下文再删旧哨兵，防止并发重启时哨兵膨胀。
+- `roles.py`：persona 加载 + workspace KNOWLEDGE 注入 + 禁区校验。
+- `gatekeeper.py`：工作群组矩阵（`setdefault` 保留内置 `"*"`）→ 每小时 5 条红消息限流 → 三源验证。
+- `partner.py`：伙伴客户端（confirm/status/wake 三层）。
+- 禁区与唤醒权限表的唯一出处是 `core.py` 的 `_FORBIDDEN_MAP` / `_WAKE_PERMISSION_MAP`，本文件不复制。
 
-### 3.5 tracker.py — 轮次追踪 + 死锁检测
+### 3.9 ecosystem_health.py
 
-**设计:** 定期 poll bus 某分类的最新时间戳，超时则发提醒。与 watchdog 交叉验证。
-
-```python
-start_tracker(this_role, bus_cat, timeout_sec=300, interval=10, partners=None)
-```
-
-**降级阶梯:**
-1. 超时 → 检查自己是否是上一轮作者（是则跳过）
-2. 超时 + 伙伴存活 → 发 bus notice 提醒伙伴
-3. 超时 + 伙伴死亡 → 写审计日志（watchdog 负责重启）
-
-### 3.6 ccs_socket.py — 直接通信
-
-通过 `sister_bus_ccs.sock` 实现 CC-SC 间的直连通信（<1ms）。
-
-```
-SUBSCRIBE → 注册为 "ccs-{role}"
-PUBLISH  → 按 JSON-over-newline 路由给目标
-```
-
-### 3.7 routing/roles.py — 角色禁区与权限
-
-**角色禁区（Forbidden Zone）:**
-
-| 角色 | 禁止操作 |
-|------|---------|
-| pg | run_tests, edit_config, deploy, start_ccs, edit_persona_json, write_other_workspace |
-| qa | write_code, edit_config, deploy, edit_persona_json |
-| coordinator | write_code, run_tests, deploy |
-| product_architect | write_code, run_tests, deploy |
-
-**唤醒权限:**
-
-| 角色 | 可唤醒 |
-|------|--------|
-| coordinator, lr | 所有角色（`*`） |
-| qa, pm, reviewer, product_architect | pg |
-| pm, reviewer | qa |
-
-### 3.8 routing/partner.py — 跨角色协作
-
-三层架构（V1.1 COLLAB_ENHANCEMENT）:
-
-- **Layer 1 — Confirm:** 双信号确认交付（task.status 变更 + bus 通知），超时 300s，含 5 级降级阶梯
-- **Layer 2 — Status:** 完整的伙伴状态解析（哨兵 + tmux + workflow DB）
-- **Layer 3 — Wake:** 强制发送消息，必要时自动唤醒
-
-### 3.9 ecosystem_health.py — 统一健康检查
-
-三项目统一健康检查 API，覆盖:
-
-1. 目录存在性（三个项目根）
-2. 模块导入（核心模块可加载）
-3. Python 语法检查（AST 解析所有 .py 文件）
-4. 角色验证（调用 validate_roles.py）
-5. 路由表加载
-6. 硬编码路径检测（`/home/administrator` 路径残留）
-7. CCS 活跃会话数
-8. 工作空间数量
+`--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
+角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。2026-10-22 实测在 112/117(false) 与 116/116(true) 之间波动（失败项都在 session-pipeline 侧：
+`import:router`/`import:reliability`/`import:routing_daemon`/`router:loaded`/`wf:engine`），检查条数本身也随运行态变化。
 
 ## 4. 协作模式
 
-| 模式 | CLI 参数 | 说明 |
-|------|----------|------|
-| 主从 | `--partner role --auto-restart` | 守护伙伴存活，挂了自动重启 |
-| 对等 | `--bus-track category` | 追踪 bus 轮次，超时发死锁提醒 |
-| 仲裁 | `--partner A --partner B --bus-track X` | 同时守护 + 追踪 |
-| 直连 | `send-direct from to msg` | 不走 bus，<1ms Unix Socket |
+| 模式 | CLI | 说明 |
+|------|-----|------|
+| 主从 | `--partner role --auto-restart` | 守护伙伴，挂了自动重启 |
+| 对等 | `--bus-track category` | 追踪 bus 轮次，超时提醒 |
+| 仲裁 | `--partner A --partner B --bus-track X` | 守护 + 追踪 |
+| 直连 | `send-direct from to msg` | 不走 bus，Unix Socket |
 
-## 5. Watcher 线程
+## 5. 工作流
 
-CCS 启动后（detach 模式）自动启动的守护线程:
+`workflow/client.py`（`WorkflowClient`）是唯一实现，`wf.py` 与 `workflow_client.py` 只是入口；
+模板/实例/任务的定义与状态机在 session-pipeline（`template_registry.py`、`lifecycle/manager.py`、
+`pipeflow/`）。本仓没有 `step_engine.py`，也不再有 approval_token 通道（2026-10-22 退场）。
 
-| 线程 | 来源 | 功能 |
-|------|------|------|
-| watchdog | `ops/watchdog.py` | 伙伴存活守护，interval=30s |
-| tracker | `ops/tracker.py` | 轮次死锁检测，interval=10s |
-| feed listener | `ops/runner.py` | 实时监听 bus 分类推送 |
+## 6. 设计原则
 
-## 6. 工作流系统
-
-session-launcher 包含一套完整的工作流管理系统（主要由 routing/partner.py + workflow/ 实现）：
-
-- **三层架构:** Template（可复用）→ Instance（执行）→ Task（目标）
-- **状态机:** created → pending → running → completed / failed / cancelled
-- **5 种步骤类型:** 由 step_engine.py 管理
-- **模板验证门禁:** 10 字段 JSON Schema，5 步验证流程
-
-## 7. 重要设计原则
-
-1. **上下文隔离:** 每个角色独占独立 CLAUDE.md，分 L0-L3 四层（通用准则→红线→专业→经验）
-2. **协作逻辑在代码层:** 不在 prompt 中写协作规则，由 ccs.py + partner.py 代码实现
-3. **死锁超时 300s:** 超过 5 分钟 bus 无消息 → 发提醒；超过 15 分钟 → 升级给人
-4. **连续启动间隔:** 至少 8s 间隔防资源竞争
-5. **内存守卫:** 可用内存 < 1000MB 时拒绝启动新 CCS
+1. 上下文隔离：每角色独占独立 CLAUDE.md（L0 通用→L1 红线→L2 专业→L3 经验）。
+2. 协作逻辑在代码层，不写进 prompt。
+3. 死锁超时 300s 提醒；> 15 分钟写 bus 升级给人。
+4. 连续启动间隔 8s；内存/cgroup 闸门见 §3.3。
