@@ -160,7 +160,6 @@ from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sent
 
 from ops.watchdog import start_watchdog
 from ops.tracker import start_tracker
-# check_signal available via events.signals if needed
 
 from paths import BUS_CLIENT
 FEED_LISTENER = Path(__file__).resolve().parent.parent / "feed_listener.py"
@@ -1115,12 +1114,10 @@ def _req_digest(message: str) -> str:
     text = _redact_secrets(message or "")
     for _pat, _rep in _SECRET_SHAPES:  # 未带标签的凭证形状也要抹（P1#2）
         text = _pat.sub(_rep, text)
-    # 孤立代理项（\ud800 等）会让 encode("utf-8") 抛 UnicodeEncodeError，整条痕迹
-    # 随 except 静默丢失 → 该请求零提醒（审查 P2-1）。errors="replace" 一并兜住。
-    text = text.encode("utf-8", "replace").decode("utf-8")
-    text = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text).split())
-    # 截断必须显形：尾部被切掉的请求不能假装是完整原始请求（P2#10）。
-    return text[:139].rstrip() + "…" if len(text) > 140 else text
+    # 结构清洗（控制字符/孤立代理项/折叠/截断显形）复用提醒模块的同一实现：
+    # daemon 边界也要做同样的洗，两处逻辑必须一致，否则洗过的正文验签对不上。
+    from user_intent_reminder import sanitize_request
+    return sanitize_request(text)
 
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:

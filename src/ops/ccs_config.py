@@ -40,7 +40,6 @@ def _defaults() -> dict:
     return {
         "version": 1,
         "auto_send": {"enabled": True, "interval_sec": 2.0, "messages": {"default": [], "roles": {}}},
-        "defaults": {"drive": "ondemand", "bus_timeout": 300, "bus_track": "", "feed_cat": ""},
     }
 
 

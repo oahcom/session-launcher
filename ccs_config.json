@@ -8,11 +8,5 @@
       "default": [],
       "roles": {}
     }
-  },
-  "defaults": {
-    "drive": "ondemand",
-    "bus_timeout": 300,
-    "bus_track": "",
-    "feed_cat": ""
   }
 }

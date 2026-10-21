@@ -19,7 +19,7 @@ PERSONA_DIR=$HOME/hermes-session-roles/personas/session-roles
 CHECK1=$(python3 -c "
 import sys, json
 sys.path.insert(0, '$HOME/session-launcher/src')
-from launcher import _FORBIDDEN_MAP, _forbidden_list
+from routing.roles import _FORBIDDEN_MAP, _forbidden_list
 
 role = '$ROLE'
 # 本角色禁区枚举列表

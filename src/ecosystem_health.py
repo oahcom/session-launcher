@@ -294,7 +294,7 @@ def check_all() -> HealthReport:
 
     # 2. 模块导入（核心模块——同步实际 src 目录）
     core_modules = {
-        "launcher": ["core", "codex_ops", "ccs", "ccs_socket", "launcher",
+        "launcher": ["core", "codex_ops", "ccs", "ccs_socket",
                      "paths", "tmux_ops", "gateway_guard", "wf",
                      "workflow_client", "user_intent_reminder"],
         "roles": [],  # roles 无独立模块，仅 JSON 定义

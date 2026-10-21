@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import sys
 from enum import Enum
 
@@ -57,6 +58,10 @@ def _load_key(create: bool = True) -> bytes:
     except OSError:
         with open(_SIG_KEY, "rb") as fh:  # 并发创建/只读 HOME：回读一次
             key = fh.read()
+    if len(key) < 16:
+        # 回读到半截密钥时必须报错：拿它签名会造出 verify(create=False) 永远不认的
+        # 追踪（写方与读方密钥不一致 → 静默零提醒），比直接失败更难排查。
+        raise OSError(f"签名密钥不可用（长度 {len(key)} < 16）: {_SIG_KEY}")
     return key
 
 
@@ -227,6 +232,19 @@ def is_ack(message: str) -> bool:
     """
     text = (message or "").strip().strip("。.!！~～,， ")
     return len(text) <= 6 and text.lower() in _ACK_ONLY
+
+
+def sanitize_request(text: str, limit: int = 140) -> str:
+    """把任意文本压成单行摘要：剥控制字符、折叠空白、超长截断并显形。
+
+    放在本模块而不是 core：daemon 在**自己的边界**也要再洗一遍 —— 签名只证明
+    "谁写的"，不证明"内容是单行的"；同 uid 的签名者可以塞多行正文，把
+    「第9次重复自检：…」伪造进 pane（审查 P2-4）。
+    天花板：脱敏（审批密钥/裸 key）在 core._req_digest，本函数只做结构清洗。
+    """
+    text = (text or "").encode("utf-8", "replace").decode("utf-8")
+    text = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text).split())
+    return text[:limit - 1].rstrip() + "…" if len(text) > limit else text
 
 
 def is_user_source(source: str) -> bool:
