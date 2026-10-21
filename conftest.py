@@ -15,8 +15,8 @@ def _no_production_bus(monkeypatch, tmp_path):
 
     2026-10-21 实测：test_core_lifecycle 用 source="cli" 调 send("qa","test message")，
     痕迹落进真实 bus，活体 qa 被注入 22 次「原始请求：test message」。
-    钉 paths + core 两处（实际写入路径）。events.signals / ccls_daemon 各自
-    快照 BUS_CLIENT，当前无测试触达；将来触达时把它们加进本夹具。
+    钉 paths + core + ccls_daemon_intent_classifier 三处（各自快照 BUS_CLIENT）。
+    events.signals / feed_listener 也快照该常量，但 tests/ 无触达；触达时加进来。
     """
     stub = tmp_path / "bus_client.py"
     stub.write_text('#!/usr/bin/env python3\n"""丢弃 bus 写入的测试桩。"""\n',
@@ -29,3 +29,8 @@ def _no_production_bus(monkeypatch, tmp_path):
     except ImportError:  # 非 core 相关测试不必加载整条依赖链
         return
     monkeypatch.setattr(core, "BUS_CLIENT", str(stub), raising=False)
+    try:
+        import ccls_daemon_intent_classifier as _daemon
+    except ImportError:
+        return
+    monkeypatch.setattr(_daemon, "BUS_CLIENT", str(stub), raising=False)
