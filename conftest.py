@@ -15,7 +15,8 @@ def _no_production_bus(monkeypatch, tmp_path):
 
     2026-10-21 实测：test_core_lifecycle 用 source="cli" 调 send("qa","test message")，
     痕迹落进真实 bus，活体 qa 被注入 22 次「原始请求：test message」。
-    所有 bus 写入者都经 BUS_CLIENT，钉住这一处路径即可，不必逐测试 mock。
+    钉 paths + core 两处（实际写入路径）。events.signals / ccls_daemon 各自
+    快照 BUS_CLIENT，当前无测试触达；将来触达时把它们加进本夹具。
     """
     stub = tmp_path / "bus_client.py"
     stub.write_text('#!/usr/bin/env python3\n"""丢弃 bus 写入的测试桩。"""\n',
