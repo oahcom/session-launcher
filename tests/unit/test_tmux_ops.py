@@ -150,12 +150,80 @@ class TestRoleIsBusy:
         with patch("tmux_ops._tmux_output", return_value=pane):
             assert tmux_ops._role_is_busy("ccs-probe") is False
 
+    def test_retrying_attempt_counts_as_busy(self):
+        """429 重试期状态栏只有 "Retrying attempt"、没有 esc 提示，但一样吞按键。"""
+        import tmux_ops
+        from unittest.mock import patch
+        pane = ("  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 11 agents\n"
+                "  Retrying attempt 3/5 in 8s…")
+        with patch("tmux_ops._tmux_output", return_value=pane):
+            assert tmux_ops._role_is_busy("ccs-probe") is True
+
     def test_missing_session_is_not_busy(self):
         """采集失败不得抛异常（_tmux_output 返回错误串）。"""
         import tmux_ops
         from unittest.mock import patch
         with patch("tmux_ops._tmux_output", return_value="[错误] timeout"):
             assert tmux_ops._role_is_busy("ccs-probe") is False
+
+
+# ── --restart-idle 重启判据 ──
+
+class TestRestartIfStale:
+    """只在「进程比 prompt 旧 + pane 空闲 + 确实是 claude」三条同时成立时才 kill。"""
+
+    def test_stale_idle_claude_is_restarted(self, tmp_path):
+        import tmux_ops
+        from unittest.mock import patch
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._find_claude_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=0.0), \
+             patch("pathlib.Path.read_text", return_value="claude\n"), \
+             patch("tmux_ops.os.kill") as kill:
+            assert tmux_ops._restart_if_stale("ccs-probe", md) is True
+        kill.assert_called_once_with(4242, 9)
+
+    def test_busy_role_is_not_killed(self, tmp_path):
+        import tmux_ops
+        from unittest.mock import patch
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._role_is_busy", return_value=True), \
+             patch("tmux_ops.os.kill") as kill:
+            assert tmux_ops._restart_if_stale("ccs-probe", md) is False
+        kill.assert_not_called()
+
+    def test_fresh_process_is_not_killed(self, tmp_path):
+        import tmux_ops
+        from unittest.mock import patch
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._find_claude_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=10 ** 12), \
+             patch("tmux_ops.os.kill") as kill:
+            assert tmux_ops._restart_if_stale("ccs-probe", md) is False
+        kill.assert_not_called()
+
+    def test_wrapper_pid_is_not_killed(self, tmp_path):
+        """_find_claude_pid 兜底可能回落到 bash wrapper：杀它会连 tmux session 一起没。"""
+        import tmux_ops
+        from unittest.mock import patch
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._find_claude_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=0.0), \
+             patch("pathlib.Path.read_text", return_value="bash\n"), \
+             patch("tmux_ops.os.kill") as kill:
+            assert tmux_ops._restart_if_stale("ccs-probe", md) is False
+        kill.assert_not_called()
 
 
 # ── 忙时投递策略 ──
