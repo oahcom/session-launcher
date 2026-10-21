@@ -39,14 +39,17 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     # 不剥壳会让里的"重复派发/误路由"永远落进 other。
     by_caller = False
     if text.startswith("workflow cancelled"):
-        text, by_caller = text[len("workflow cancelled"):].strip(" ()\t"), True
+        # 只剥一层外壳括号；strip("()") 会把 reason 里的右括号也吃掉
+        text, by_caller = text[len("workflow cancelled"):].strip(), True
+        if text.startswith("(") and text.endswith(")"):
+            text = text[1:-1].strip()
     if text.startswith("reason="):
         text, by_caller = text[len("reason="):].strip(), True
     if not text:
         text = (reason or "").strip()
     if not text:
         return "unspecified" if by_caller else "no_log"
-    if "僵尸回收" in text:
+    if "僵尸回收" in text or "zombie" in text.lower():
         if "24h全局阈值" in text:
             return "zombie_24h"
         if "72h全局阈值" in text:
@@ -449,11 +452,29 @@ class WorkflowClient:
                           (task_status, time.time(), task_id))
         self._conn.commit()
 
+    # 实例级终结：reason 记到 _close_reason 子键，不整体覆写 step_results。
+    # 旧实现写 json.dumps({"reason": ...})，把步骤状态连同 notified_at / subflow_id
+    # 一起抹掉：父链回流扫描要求 step_results[step] 是 dict 且有 subflow_id，顶层
+    # 变成 str 就被跳过（session-pipeline 侧同款实测 49 个实例断流），停滞监控也
+    # 因此失去 notified_at 证据。合并语义与 session-pipeline 的 client._close 对齐。
+    _CLOSE_REASON_KEY = "_close_reason"
+
+    def _close(self, wf_id: str, status: str, reason: str):
+        row = self._conn.execute(
+            "SELECT step_results FROM workflow_instances WHERE instance_id=?", (wf_id,)).fetchone()
+        try:
+            sr = json.loads((row[0] if row else None) or "{}")
+        except (TypeError, ValueError):
+            sr = {}          # 已损坏的旧值：宁可只保留 reason，也不整个丢掉
+        if not isinstance(sr, dict):
+            sr = {}
+        sr[self._CLOSE_REASON_KEY] = {"status": status, "reason": reason}
+        return self._update_if_mutable(
+            wf_id, "status=?, completed_at=?, step_results=?",
+            (status, time.time(), json.dumps(sr, ensure_ascii=False)))
+
     def fail(self, wf_id: str, reason: str):
-        if not self._update_if_mutable(
-                wf_id,
-                "status='failed', completed_at=?, step_results=?",
-                (time.time(), json.dumps({"reason": reason}))):
+        if not self._close(wf_id, "failed", reason):
             return None  # 终态，不覆写
         wf = self.get(wf_id)
         if wf and wf.get('task_id'):
@@ -462,10 +483,7 @@ class WorkflowClient:
         return True
 
     def cancel(self, wf_id: str, reason: str = ""):
-        if not self._update_if_mutable(
-                wf_id,
-                "status='cancelled', completed_at=?, step_results=?",
-                (time.time(), json.dumps({"reason": reason}))):
+        if not self._close(wf_id, "cancelled", reason):
             return None  # 终态，不覆写（重复 cancel 幂等无动作）
         wf = self.get(wf_id)
         if wf and wf.get('task_id'):
@@ -619,12 +637,14 @@ class WorkflowClient:
                 "WHERE action IN (%s) AND workflow_instance_id IS NOT NULL "
                 "GROUP BY workflow_instance_id" % ",".join("?" * len(_CANCEL_FAMILY)),
                 _CANCEL_FAMILY)}
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            print(f"警告: 取消归因查询失败，cancelled_by_cause 为空: {e}", file=sys.stderr)
             return {}
         causes: dict[str, int] = {}
         for inst_id, context in instances:
             try:
-                reason = (json.loads(context or "{}") or {}).get("reason", "") or ""
+                ctx = json.loads(context or "{}")
+                reason = (ctx.get("reason", "") if isinstance(ctx, dict) else "") or ""
             except (ValueError, TypeError):
                 reason = ""
             key = _cancel_cause(cancels.get(inst_id), reason)
