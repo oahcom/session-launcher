@@ -77,7 +77,7 @@ except Exception:  # pragma: no cover - 加载失败时降级为不可注入
         return False  # 降级：签不了名就不认正文（挡伪造优先于发提醒）
 
     def is_ack(message: str) -> bool:  # type: ignore
-        return False  # 降级：判不出确认语 → 照常提醒（宁可多发一句，也不吞掉真请求）
+        return False  # 降级：判不出确认语 → 照常提醒（宁可多发一句，也不吞真请求）
 
 
 def _inject_text(session: str, text: str) -> bool | None:
@@ -435,22 +435,24 @@ class IntentReminderDaemon:
                         continue
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
-                # req= 的边界是 sig=，不是行尾：sig 写在正文之后，贪婪吞进来会让
-                # 验签失败（payload 里多了 sig 本身），并把签名渲染进角色 pane。
-                _rq = re.search(r"req=(.*?)(?:\s+sig=[0-9a-f]{32}|$)", ev)
+                # 边界是**最后一个** " sig="：正文自身可能带 " sig=" 字样（用户贴签名/日志），
+                # 按首处切会把正文截断 → 真 sig 验不过 → 该请求静默零提醒
+                # （独立审查 BLOCKER，已复现：msg 含 " sig=deadbeef"）。
+                _body, _sep, _tail = ev.rpartition(" sig=")
+                if not _sep:
+                    _body, _tail = ev, ""       # 旧痕迹无签名
+                _sg = re.match(r"([0-9a-f]{32})", _tail)
+                _rq = re.search(r"\breq=(.*)$", _body)
                 _req = (_rq.group(1).strip() if _rq else "")
                 # bus 无认证、写入方任意，而 req= 会被原样贴进角色 pane：只接受本机
                 # core.send 用本地密钥签过的痕迹。签名不符/缺失一律按"无正文"处理
                 # （不注入），既挡住伪造注入，也不误杀没有正文的旧痕迹。
-                if _req:
-                    _sg = re.search(r"sig=([0-9a-f]{32})", ev)
-                    # 验签对象是**整条正文**（" sig=" 之前），不只是 role|req_ts|req：
-                    # 否则截获合法痕迹后单改 intent= 就能让该角色静默（审查 P2-2）。
-                    # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行；
-                    # "无正文"由 _push_reminder 每 session 只报一次。
-                    _body = ev.split(" sig=", 1)[0]
-                    if not (_sg and verify_trace(_body, _sg.group(1))):
-                        _req = ""
+                # 验签对象是**整条正文**（末尾 sig 之前），不只是 role|req_ts|req：
+                # 否则截获合法痕迹后单改 intent= 就能让该角色静默（审查 P2-2）。
+                # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行；
+                # "无正文"由 _push_reminder 每 session 只报一次。
+                if _req and not (_sg and verify_trace(_body, _sg.group(1))):
+                    _req = ""
                 _m = re.search(r"intent=(\w+)", ev)
                 try:
                     intent = Intent(_m.group(1)) if _m else None

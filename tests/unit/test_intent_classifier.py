@@ -28,6 +28,8 @@ def _import_core():
     """
     for _n in [m for m in sys.modules if m == "routing" or m.startswith("routing.")]:
         del sys.modules[_n]
+    # 必须重钉路径：会话里其他测试/插件会把 session-pipeline/src 插到 sys.path[0]，
+    # 那里也有一个顶层 routing 包；只清缓存不钉路径时本文件单独跑会 13 个用例失败。
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     import core  # noqa: PLC0415 - 必须在清理缓存之后
     return core
@@ -427,6 +429,42 @@ class TestRequestLookup(unittest.TestCase):
                          {"qa": (111.0, None, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_body_containing_sig_marker_still_verifies(self, mock_run):
+        """正文自带 ' sig=' 字样时按首处切会截断正文 → 真 sig 验不过 → 零提醒。
+
+        復現（獨立審查 BLOCKER）：msg='看下 sig=deadbeef 這個值'，8 位也觸發。
+        """
+        import json
+        from user_intent_reminder import sign_trace
+        body = "source=user role=qa req_ts=999.5 intent=task req=看下 sig=deadbeef 這個值"
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0,
+                 "evidence": f"{body} sig={sign_trace(body)}"}]}))
+        self.assertEqual(
+            IntentReminderDaemon._read_request_traces(),
+            {"qa": (999.5, Intent.TASK, "看下 sig=deadbeef 這個值")})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_tampered_body_is_rejected(self, mock_run):
+        """改 intent= 不改 sig → 必須當作無正文（否則一條合法痕跡可被翻成 other 靜默）。"""
+        import json
+        from user_intent_reminder import sign_trace
+        body = "source=user role=qa req_ts=999.5 intent=task req=修隊列"
+        sig = sign_trace(body)
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0,
+                 "evidence": f"source=user role=qa req_ts=999.5 intent=other req=修隊列 sig={sig}"}]}))
+        self.assertEqual(
+            IntentReminderDaemon._read_request_traces(),
+            {"qa": (999.5, Intent.OTHER, "")})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_ignores_non_trace_facts(self, mock_run):
         """非痕跡條目（其他 code_fix）不得被當成請求。"""
         import json
@@ -466,7 +504,7 @@ class TestRequestDigestHardening(unittest.TestCase):
     """_req_digest / req= 解析的边界（獨立審查 2026-10-21 D9/T7/T9/X1）。"""
 
     def test_digest_does_not_end_with_space_after_truncation(self):
-        """140 字符截断落在空格上 → 必须先 rstrip，否則下游 strip 後少 1 字。"""
+        """超长正文截到 139 字 + 「…」：尾部不能留空格，也不能假装完整。"""
         d = _import_core()._req_digest("a" * 139 + " b")
         self.assertEqual(len(d), 140, f"截断後應為 140（139+省略號）: {d[-3:]!r}")
         self.assertTrue(d.endswith("…"))
