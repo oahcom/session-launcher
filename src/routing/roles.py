@@ -43,10 +43,11 @@ _ensure_paths()
 # hermes-session-roles/src/shared_loader.py 是角色加载和 produce/consume
 # 解析的单一权威来源。直接 import 复用 registry.load_all 的加载管线
 # （含 prompt_refs 渲染、旧格式兼容），避免两套解析逻辑不同步。
-# shared_loader 的子进程与导入方都直接读 SESSION_ROLES_ROOT：先归一化成绝对路径，
-# 否则 env 写成 ~/... 时它们各自展开失败 → 加载 0 个角色（注入却"放行"，静默退化）。
+# shared_loader 子进程与导入方都直接读该 env：先归一化（expanduser + 相对值锚回家目录），
+# 否则 env 写成 ~/... 时它们各自展开失败 → 加载 0 个角色（注入"放行"，静默退化）。
 if os.environ.get("SESSION_ROLES_ROOT"):
-    os.environ["SESSION_ROLES_ROOT"] = str(Path(os.environ["SESSION_ROLES_ROOT"]).expanduser())
+    _r = Path(os.environ["SESSION_ROLES_ROOT"]).expanduser()
+    os.environ["SESSION_ROLES_ROOT"] = str(_r if _r.is_absolute() else Path.home() / _r)
 _shared_src = str(Path.home() / "hermes-session-roles" / "src")
 if _shared_src not in sys.path:
     sys.path.insert(0, _shared_src)
@@ -406,8 +407,8 @@ def _strip_stale_prompt_prefix(prefix: str) -> str:
     if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
         return prefix
     kept = [m.group(0) for m in _PROTECTED_BLOCK_RE.finditer(prefix)]
-    # 没有受保护块时整段不动：曾返回空串，等于把 2.3KB 手写前缀（identity/红线表）删光，
-    # 且由 10 分钟定时器自动执行、无备份，workspace 不在 git 里无法回滚。
+    # 没有受保护块时整段不动：曾返回空串 = 10 分钟定时器删光手写前缀；
+    # 该改动平时不提交（~ 仓库 ccs-workspaces 长期脏 690 条），没有 .bak 就回不去。
     return ("\n\n".join(kept) + "\n\n") if kept else prefix
 
 

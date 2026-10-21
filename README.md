@@ -222,8 +222,14 @@ python3 src/ccs.py health
 
 ## 提示词生效方式
 
-`ccs reload-knowledge [role]` 只重写 `ccs-workspaces/*/CLAUDE.md`；Claude Code 只在会话开始/清空时读它。
-改完 prompt 必须对角色 `/clear`（或 `ccs stop`+`ccs start`）才真正生效，否则进程里仍是旧 prompt。
+`ccs reload-knowledge [role]`（以及 ccs-reload-knowledge.timer，每 10 分钟）只重写
+`ccs-workspaces/*/CLAUDE.md`；`core.py:_launch_tmux` 用 `--append-system-prompt-file` 在
+**claude 进程启动时**注入该文件，`/clear` 不会重新读它（实测：/clear 后角色仍背出 9 小时前的旧文案，
+重启进程后才答出新文案）。
+
+生效 = 让进程重新启动：外层 `while true … sleep 3` 会在 claude 退出后自动重拉，
+所以对空闲角色 `kill <claude pid>` 即可（或 `ccs stop` + `ccs start`）。
+判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
 
 ## 环境变量
 
