@@ -40,8 +40,7 @@ def _get_role_json(role: str) -> Optional[dict]:
     return _gr(role)
 
 
-# 延迟导入 parse_tmux_name（在 _role_name_from_tmux 和 list_sentinels 中用到）
-# 在模块级别不导入，避免循环依赖
+# 延迟导入 parse_tmux_name（list_sentinels 里用到），模块级别不导入，避免循环依赖
 
 # ── 哨兵目录（对外暴露）──
 SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"
@@ -156,14 +155,6 @@ def _list_tmux_sessions() -> set[str]:
     except Exception as _e:
         LOG.debug("_list_tmux_sessions failed: %s", _e)
         return set()
-
-
-def _role_name_from_tmux(tmux_name: str) -> str:
-    """从 tmux name 提取角色名（去掉 instance 后缀）。"""
-    _role, _ = _parse_tmux_name(tmux_name)
-    if _role:
-        return _role
-    return tmux_name.removeprefix("ccs-").removeprefix("cdx-")
 
 
 def _parse_tmux_name(tmux_name: str) -> tuple[str, int]:

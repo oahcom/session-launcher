@@ -120,22 +120,6 @@ class CCSClient:
         })
         return True
 
-    async def listen(self, cb: Callable[[dict], None]):
-        """监听接收的消息。阻塞直到连接断开。"""
-        while True:
-            try:
-                line = await self.reader.readline()
-                if not line:
-                    break
-                msg = json.loads(line.decode().strip())
-                if msg.get("event") == "message":
-                    cb(msg.get("msg", {}))
-            except json.JSONDecodeError as e:
-                log.warning("listen(%s): 畸形消息，跳过: %s", self.role, e)
-            except (OSError, asyncio.IncompleteReadError) as e:
-                log.warning("listen(%s): 连接断开: %s", self.role, e)
-                break
-
     async def close(self):
         if self.writer:
             try:

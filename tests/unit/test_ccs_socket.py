@@ -128,29 +128,6 @@ class TestCCSClient:
     @patch("ccs_socket.asyncio.open_unix_connection")
     @patch("ccs_socket.CCSClient._send", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_listen_receives_callback(self, mock_send, mock_open):
-        from ccs_socket import CCSClient
-
-        msg_payload = json.dumps({"event": "message", "msg": {"text": "hi"}}).encode() + b"\n"
-        reader = AsyncMock()
-        reader.readline = AsyncMock(side_effect=[
-            json.dumps({"event": "subscribed"}).encode() + b"\n",
-            msg_payload,
-            b"",  # EOF
-        ])
-        writer = MagicMock()
-        mock_open.return_value = (reader, writer)
-
-        cli = CCSClient("listener")
-        await cli.connect(max_retries=0)
-        received = []
-        await cli.listen(cb=lambda m: received.append(m))
-        assert len(received) == 1
-        assert received[0]["text"] == "hi"
-
-    @patch("ccs_socket.asyncio.open_unix_connection")
-    @patch("ccs_socket.CCSClient._send", new_callable=AsyncMock)
-    @pytest.mark.asyncio
     async def test_close_cleans_pool(self, mock_send, mock_open):
         from ccs_socket import CCSClient
 
