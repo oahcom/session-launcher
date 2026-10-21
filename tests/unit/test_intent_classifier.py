@@ -182,6 +182,36 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
 
+    def test_new_request_does_not_reset_mtime_guard(self):
+        """新投递不得清掉「提醒后角色已动手」的锚点。
+
+        缺陷实证（2026-10-22）：security-auditor 04:13 收 4 条、04:14 收 2 条提醒
+        （间隔 15~30s）；qa 24h 79 条，13 分钟回了 18 条逐字相同的「已完成，无新动作。」。
+        原因：新请求到达时 last_remind_epoch 被清零 → mtime 守卫失效 → 立刻再催一次。
+        """
+        injects = []
+        req_a = time.time()
+        ticks = iter(range(200, 10 ** 6, 100))  # 首次需 > 冷却门控，否则首轮本就该静默
+        with patch("ccls_daemon_intent_classifier._tmux_sessions",
+                   return_value=["ccs-engineer"]), \
+             patch("ccls_daemon_intent_classifier._inject_text",
+                   side_effect=lambda s, t: (injects.append(t), True)[1]), \
+             patch("ccls_daemon_intent_classifier.subprocess.run"), \
+             patch("ccls_daemon_intent_classifier._transcript_mtime",
+                   return_value=time.time() + 60), \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   side_effect=lambda: next(ticks)):
+            self.daemon._read_request_traces = staticmethod(
+                lambda: {"engineer": (req_a, None, "帮我修 workflow 回收")})
+            self.daemon._tick()
+            first = len(injects)
+            self.daemon._read_request_traces = staticmethod(
+                lambda: {"engineer": (req_a + 1, None, "帮我修另一个 workflow")})
+            for _ in range(5):
+                self.daemon._tick()
+        self.assertGreaterEqual(first, 1, "首轮应催一次")
+        self.assertEqual(len(injects), first, "新请求不得绕过 mtime 守卫再催")
+
     def test_cap_constant_matches_class_constant(self):
         """_MAX_REMINDERS_CAP（模块级，供 _load_states clamp）必须与
         IntentReminderDaemon._MAX_REMINDERS 同值。

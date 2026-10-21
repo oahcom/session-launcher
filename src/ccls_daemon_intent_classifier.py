@@ -301,6 +301,7 @@ class IntentReminderDaemon:
     """
     _INTERVAL = 10.0        # 轮询间隔
     _REMIND_COOLDOWN = 30.0  # 同 session 冷却（纯冷却门控，修复 P0#2）
+
     # 单次用户请求的重复提醒预算。冷却只限频率不限总量；同一请求超过此数仍未
     # 对齐（应答恒为同一句"是/是/待命"）说明角色是**选择空闲**而非卡住，转静默
     # 避免空转消耗。3 次跨 90s 已足够让真跑偏的角色察觉。
@@ -605,7 +606,8 @@ class IntentReminderDaemon:
                 # 新一轮用户请求 → 预算重置，可重新提醒
                 st.request_ts = req
                 st.remind_count = 0
-                st.last_remind_epoch = 0.0
+                # 不清 last_remind_epoch：那是「角色在提醒后已经动过手」的锚点，
+                # 清零等于让每条新投递都绕过 mtime 守卫立刻再催一次。
             st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
