@@ -1041,7 +1041,11 @@ def send(role: str, message: str, source: str = "",
                      # 首个请求 30 分钟后永久零提醒（实测 6 角色痕迹 ts 停在 22~100h）。
                      # 也不能读 ut：search 每次命中都会把它刷成当前时刻。
                      f"source={source} role={role} req_ts={time.time():.0f}"
-                     + (f" intent={_intent.value}" if _intent else ""),
+                     + (f" intent={_intent.value}" if _intent else "")
+                     # 请求正文（截断 140）供 daemon 的重复提醒携带：只有轮次号的
+                     # 提醒无法让丢失上下文的角色恢复"要对齐什么"，三次文本逐字
+                     # 相同（2026-10-21 审计 222 次注入）。
+                     + (f" req={_req_digest(message)}" if message else ""),
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
             except Exception as _be:  # noqa: BLE001
@@ -1089,6 +1093,16 @@ def _redact_secrets(message: str) -> str:
     干掉，排障记录就废了（#427435）。
     """
     return _APPROVAL_TOKEN_RE.sub(_redact_token, message or "")
+
+
+def _req_digest(message: str) -> str:
+    """请求正文压成单行摘要（140 字符），供 daemon 重复提醒携带。
+
+    换行必须折叠：bus evidence 是单行字段，且提醒里多行正文会被 Claude CLI
+    当成多条消息逐行提交（实测 coordinator 收到 22 字符裸首行）。脱敏沿用
+    _redact_secrets —— 痕迹落到共享 bus，凭证不得随摘要外泄。
+    """
+    return " ".join(_redact_secrets(message or "").split())[:140]
 
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:

@@ -110,23 +110,34 @@ def classify_intent(message: str) -> Intent:
     return Intent.OTHER
 
 
-def repeat_reminder(intent: Intent, round_no: int = 1) -> str:
-    """守护每轮重复注入两条自检提醒。
+def repeat_reminder(intent: Intent, round_no: int = 1, request: str = "") -> str:
+    """守护每轮重复注入两条自检提醒。request 为原始用户请求摘要，缺失返回 ""。
 
     WHY: 用户要求 daemon 在处理期间"重复提醒" ccs 自检两个问题，
     防止答非所问或偷懒。round_no 标记轮次，让 ccs 可见这是第几次重复。
     intent 用于措辞微调（疑问强调"先回答用户问题"，任务强调"严格按指令"）。
 
+    WHY 必须带 request: 无正文的自检只剩轮次号，三次升级文本逐字相同，角色
+    一旦丢失上下文就无法从中恢复"该对齐哪条请求"，只能回一句"已闭环/待机"
+    （2026-10-21 审计：222 次注入，N 封顶 3 且第 N 次与前次逐字一致；qa 独占
+    198 次，多为复述）。取不到正文时返回空串，调用方跳过投递——宁可不提醒，
+    也不发一条只能被复述的提醒。
+
     调用方仅可在**确知该角色存在未对齐用户请求**时调用（触发源为 bus 里的
     core.send 注入痕迹）。前提不成立时不调用——不得凭"角色空闲"推断用户在等。
     """
+    request = (request or "").strip()
+    if not request or len(_CORE_QUESTIONS) < 2:
+        return ""
     q, t = _CORE_QUESTIONS[0], _CORE_QUESTIONS[1]
     focus = ("（你收到的是疑问，先确保回答了用户的问题）" if intent == Intent.QUESTION
              else "（你收到的是任务，先确保严格按用户指令交付）" if intent == Intent.TASK
              else "")
     return (
         f"{_REMINDER_MARKER} 第{round_no}次重复自检：\n"
-        f"1. {q}\n2. {t}\n{focus}"
+        f"原始请求：{request}\n"
+        f"1. {q}\n2. {t}\n{focus}\n"
+        "若该请求已完成，回一句结论即可；不要为了自检新建任务、子代理或工具调用。"
     ).rstrip()
 
 

@@ -138,13 +138,13 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         """請求已過 TTL → 不再重複提醒。"""
         injects = []
         stale = time.time() - IntentReminderDaemon._REQUEST_TTL - 100
-        self._run(50, injects, {"engineer": (stale, None)})
+        self._run(50, injects, {"engineer": (stale, None, "帮我修 workflow 回收")})
         self.assertEqual(injects, [], "過期請求不應再提醒")
 
     def test_open_request_triggers_reminders_capped(self):
         """存在未對齊請求 → 重複提醒，且不超過單次請求預算。"""
         injects = []
-        self._run(50, injects, {"engineer": (time.time(), None)})
+        self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
@@ -238,7 +238,7 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         """
         injects = []
         with patch("ccls_daemon_intent_classifier._role_is_busy", return_value=True):
-            self._run(50, injects, {"engineer": (time.time(), None)})
+            self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
         self.assertEqual(injects, [], "角色生成中不應注入（會卡進 queued messages）")
         st = self.daemon._states["ccs-engineer"]
         self.assertEqual(st.remind_count, 0,
@@ -248,14 +248,14 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         """反向場景：角色空閒時照常提醒（修復不得把提醒一併廢掉）。"""
         injects = []
         with patch("ccls_daemon_intent_classifier._role_is_busy", return_value=False):
-            self._run(50, injects, {"engineer": (time.time(), None)})
+            self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS,
                          "空閒角色應照常收到提醒")
 
     def test_reminder_uses_user_intent_wording(self):
         """前提已由 bus 痕跡確證 → 用用戶要求的原始措辭，不再用「停滯自檢」框架。"""
         injects = []
-        self._run(50, injects, {"engineer": (time.time(), None)})
+        self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
         self.assertTrue(injects, "應有提醒")
         body = injects[0]
         self.assertIn("你收到的是任务", body)
@@ -266,7 +266,7 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
     def test_question_request_uses_question_wording(self):
         """疑問請求的重複提醒必須用疑問措辭，不得降級成任務措辭。"""
         injects = []
-        self._run(50, injects, {"engineer": (time.time(), Intent.QUESTION)})
+        self._run(50, injects, {"engineer": (time.time(), Intent.QUESTION, "帮我修 workflow 回收")})
         self.assertTrue(injects, "應有提醒")
         self.assertIn("你收到的是疑问", injects[0],
                       "疑問請求不得使用任務措辭")
@@ -274,7 +274,7 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
     def test_missing_intent_degrades_to_task_wording(self):
         """痕跡無 intent 字段（舊痕跡/字段變動）→ 降級 TASK，即修復前行為。"""
         injects = []
-        self._run(50, injects, {"engineer": (time.time(), None)})
+        self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
         self.assertTrue(injects, "應有提醒")
         self.assertIn("你收到的是任务", injects[0])
 
@@ -282,9 +282,9 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         """新一輪用戶請求到達 → 預算重置，可再次提醒。"""
         injects = []
         base = time.time()
-        self._run(50, injects, {"engineer": (base, None)})
+        self._run(50, injects, {"engineer": (base, None, "帮我修 workflow 回收")})
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS)
-        self._run(50, injects, {"engineer": (base + 60, None)})  # 新請求
+        self._run(50, injects, {"engineer": (base + 60, None, "帮我修 workflow 回收")})  # 新請求
         self.assertEqual(len(injects), IntentReminderDaemon._MAX_REMINDERS * 2,
                          "新請求後應可再次提醒（預算重置）")
 
@@ -336,7 +336,7 @@ class TestRequestLookup(unittest.TestCase):
             spec=CompletedProcess, returncode=0,
             stdout=json.dumps(self._facts([("engineer", 111.0), ("qa", 222.0)])))
         self.assertEqual(IntentReminderDaemon._read_request_traces(),
-                         {"engineer": (111.0, None), "qa": (222.0, None)})
+                         {"engineer": (111.0, None, ""), "qa": (222.0, None, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_prefers_req_ts_from_evidence(self, mock_run):
@@ -356,7 +356,7 @@ class TestRequestLookup(unittest.TestCase):
             ))
         self.assertEqual(
             IntentReminderDaemon._read_request_traces(),
-            {"qa": (999.0, Intent.TASK)})
+            {"qa": (999.0, Intent.TASK, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_keeps_latest_per_role(self, mock_run):
@@ -365,7 +365,7 @@ class TestRequestLookup(unittest.TestCase):
         mock_run.return_value = MagicMock(
             spec=CompletedProcess, returncode=0,
             stdout=json.dumps(self._facts([("qa", 222.0), ("qa", 999.0)])))
-        self.assertEqual(IntentReminderDaemon._read_request_traces(), {"qa": (999.0, None)})
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), {"qa": (999.0, None, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_parses_intent_from_evidence(self, mock_run):
@@ -387,7 +387,7 @@ class TestRequestLookup(unittest.TestCase):
             ))
         self.assertEqual(
             IntentReminderDaemon._read_request_traces(),
-            {"qa": (111.0, Intent.QUESTION), "pm": (222.0, Intent.TASK)})
+            {"qa": (111.0, Intent.QUESTION, ""), "pm": (222.0, Intent.TASK, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_unknown_intent_value_degrades_to_none(self, mock_run):
@@ -403,7 +403,7 @@ class TestRequestLookup(unittest.TestCase):
                  "timestamp": 111.0, "evidence": "source=user role=qa intent=wut"}]}
             ))
         self.assertEqual(IntentReminderDaemon._read_request_traces(),
-                         {"qa": (111.0, None)})
+                         {"qa": (111.0, None, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_ignores_non_trace_facts(self, mock_run):
@@ -477,7 +477,7 @@ class TestDeliveryFailureHandling(_HermeticStateFile):
         self.daemon._states.clear()
         self._fixed_ts = time.time()
         self.daemon._read_request_traces = staticmethod(
-            lambda: {"engineer": (self._fixed_ts, None)})
+            lambda: {"engineer": (self._fixed_ts, None, "帮我修 workflow 回收")})
         # 本組用例只考「投遞失敗處理」，忙檢測是另一維（見
         # TestRequestDrivenTrigger 的 busy 用例）。不打樁會讀到真 tmux 狀態：
         # engineer 真忙 → _push_reminder 提前 return → 投遞根本未嘗試 →
@@ -541,7 +541,7 @@ class TestTmuxFlakeResilience(_HermeticStateFile):
         FIXED_TS = time.time()  # 固定值：time.time() 每次都变会被判成"新请求"
         d = IntentReminderDaemon(interval=0.01)
         d._states.clear()
-        d._read_request_traces = staticmethod(lambda: {"engineer": (FIXED_TS, None)})
+        d._read_request_traces = staticmethod(lambda: {"engineer": (FIXED_TS, None, "帮我修 workflow 回收")})
         injects = []
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \
@@ -603,12 +603,29 @@ class TestInjectTextAsSingleMessage(unittest.TestCase):
     def test_push_reminder_sends_whole_body(self, mock_send):
         """_push_reminder 主體走單次注入。"""
         d = IntentReminderDaemon(interval=0.01)
-        d._push_reminder("ccs-probe", round_no=1)
+        d._push_reminder("ccs-probe", round_no=1, request="帮我修 workflow 回收")
         self.assertEqual(mock_send.call_count, 1, "整條提醒應一次投遞")
         body = mock_send.call_args[0][1]
         self.assertIn("重复自检", body)
         self.assertGreater(len(body.split("\n")), 1,
                            "提醒本身應是多行，用於驗證整條投遞")
+
+    @patch("ccls_daemon_intent_classifier._tmux_send")
+    def test_reminder_without_request_body_is_not_injected(self, mock_send):
+        """無請求正文 → 零注入、零預算消耗。
+
+        缺陷實證（2026-10-21 提醒鏈路審計）：無正文提醒只能被複述 —— 三次升級
+        文本逐字相同，角色丟失上下文時無法從中恢復「要對齊哪條請求」（222 次
+        注入，N 封頂 3）。故無正文一律不發。
+        """
+        from user_intent_reminder import repeat_reminder, Intent
+        d = IntentReminderDaemon(interval=0.01)
+        self.assertEqual(d._push_reminder("ccs-probe", 1, Intent.TASK, ""), False)
+        mock_send.assert_not_called()
+        self.assertEqual(d._states["ccs-probe"].remind_count, 0,
+                         "無正文不得消耗預算（否則下輪也發不出有效提醒）")
+        self.assertEqual(repeat_reminder(Intent.TASK, 1, ""), "",
+                         "無正文時應返回空串，由調用方跳過投遞")
 
     def test_tmux_send_not_degraded_stub(self):
         """_tmux_send 必須來自 tmux_ops，不得是降級樁（否則注入靜默失敗）。"""

@@ -94,10 +94,13 @@ def _tmux_sessions() -> list[str] | None:
     使 _empty_polls 在负载抖动时累计到阈值 → 清空 _states → 同一用户请求
     重领满额预算（实测每 ~3 分钟复现一次"预算耗尽(3次)"）。
     2026-10-19 实测：tmux ls 3s 超时在高负载下 11% 概率触发，而 tmux 实际存在。
+    2026-10-21 复测：6 小时窗口 117 次超时（审计小时窗 76/93 行，loadavg 19.2），
+    负载回到 3.2 后归零 —— 3s 是负载尖峰下的紧预算，本 daemon 是这条需求唯一
+    的执行器，失明即当轮零提醒，故放到 10s（与 _INTERVAL 同数量级）。
     """
     try:
         out = subprocess.check_output(["tmux", "ls", "-F", "#{session_name}"],
-                                      text=True, timeout=3)
+                                      text=True, timeout=10)
         return [s for s in out.splitlines() if s.startswith("ccs-")]
     except Exception as e:
         print(f"[ccls_daemon] tmux ls 失败 → 无法判定（不累计 _empty_polls）: {e!r}",
@@ -267,8 +270,12 @@ class IntentReminderDaemon:
         self._stop = threading.Event()
 
     def _push_reminder(self, session: str, round_no: int = 1,
-                       intent: "Intent | None" = None) -> bool:
-        """向 tmux pane 注入「重复自检」提醒。返回 True 表示已推送。"""
+                       intent: "Intent | None" = None,
+                       request: str = "") -> bool:
+        """向 tmux pane 注入「重复自检」提醒。返回 True 表示已推送。
+
+        无请求正文时不注入：见 repeat_reminder 的 WHY（无正文提醒会量产伪造动作）。
+        """
         st = self._states.setdefault(session, _SessionState())
         now = time.monotonic()
         if now - st.last_remind_ts < self._REMIND_COOLDOWN:  # 纯冷却门控 (P0#2)
@@ -297,7 +304,14 @@ class IntentReminderDaemon:
         # 避免虚假前提而设的妥协，现已有 bus 痕迹作为确证。
         # 意图取自痕迹（疑问/任务措辞不同：疑问强调"先回答用户问题"）；取不到
         # （旧痕迹/字段缺失）降级 TASK，即本 daemon 修复前的行为。
-        reminder = repeat_reminder(intent or Intent.TASK, round_no)
+        reminder = repeat_reminder(intent or Intent.TASK, round_no, request)
+        if not reminder:
+            # 旧痕迹无 req= 字段（本字段上线前写入）→ 宁可静默也不发无正文提醒。
+            if not st.deferred_logged:
+                st.deferred_logged = True
+                print(f"[ccls_daemon] {session} 痕迹无请求正文 → 不注入无正文提醒",
+                      file=sys.stderr, flush=True)
+            return False
         try:
             # 必须看返回值：_tmux_send 重试耗尽时 **return False 而不抛异常**
             # （tmux_ops.py:220/270，其 docstring 明写"调用方必须检查返回值"）。
@@ -338,7 +352,7 @@ class IntentReminderDaemon:
 
     @staticmethod
     def _read_request_traces() -> dict[str, tuple[float, "Intent | None"]]:
-        """一次性读回全部用户请求痕迹：{角色名: (最近请求时刻, 意图)}。
+        """一次性读回全部用户请求痕迹：{角色名: (最近请求时刻, 意图, 请求正文)}。
 
         意图取自 core.send 写下的 evidence `intent=` 字段（classify_intent 的
         产物）。缺失时为 None —— 旧痕迹（本字段上线前写入）与证据格式变动都会
@@ -365,24 +379,34 @@ class IntentReminderDaemon:
             data = json.loads(out)
             facts = data.get("facts", data) if isinstance(data, dict) else data
             prefix = "[user_intent_reminder] 已注入意图提醒 → "
-            traces: dict[str, tuple[float, "Intent | None"]] = {}
+            traces: dict[str, tuple[float, "Intent | None", str]] = {}
             for f in facts:
                 title = f.get("title") or ""
                 if not title.startswith(prefix):
                     continue
                 role = title[len(prefix):].strip()
+                ev = f.get("evidence") or ""
+                # 请求时刻取 evidence 的 req_ts：痕迹标题按角色固定，bus UPSERT 保留
+                # 首次 ts，故 timestamp 只反映**第一次**注入；ut 又会被 search 命中
+                # 刷成当前时刻。两者都不能判「最近一次请求」，读它们会让 request_ts
+                # 冻结在首条痕迹 → TTL 过后该角色永久零提醒。
+                # 旧痕迹无 req_ts（字段上线前写入）→ 退回 timestamp，行为同修复前。
+                _rt = re.search(r"req_ts=([\d.]+)", ev)
                 try:
-                    ts = float(f.get("timestamp") or 0.0)
+                    ts = float(_rt.group(1)) if _rt else float(f.get("timestamp") or 0.0)
                 except (TypeError, ValueError):
                     continue
-                ev = f.get("evidence") or ""
+                # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
+                # 旧痕迹 → ""，调用方据此跳过注入。
+                _rq = re.search(r"req=(.*)$", ev)
+                _req = (_rq.group(1).strip() if _rq else "")
                 _m = re.search(r"intent=(\w+)", ev)
                 try:
                     intent = Intent(_m.group(1)) if _m else None
                 except ValueError:
                     intent = None  # 未知取值：降级 TASK，不让脏数据中断整轮
-                if role and ts > traces.get(role, (0.0, None))[0]:
-                    traces[role] = (ts, intent)
+                if role and ts > traces.get(role, (0.0, None, ""))[0]:
+                    traces[role] = (ts, intent, _req)
             return traces
         except Exception as e:
             # 不静默：读不到痕迹 = 所有角色的提醒静默停发，必须留下痕迹。
@@ -432,7 +456,7 @@ class IntentReminderDaemon:
             trace = traces.get(role_key)
             if not trace:
                 continue
-            req, req_intent = trace
+            req, req_intent, req_text = trace
             if time.time() - req > self._REQUEST_TTL:
                 continue  # 请求已过期，不再重复提醒
             if req != st.request_ts:
@@ -442,7 +466,7 @@ class IntentReminderDaemon:
             st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
-            if self._push_reminder(sess, st.remind_count + 1, st.intent):
+            if self._push_reminder(sess, st.remind_count + 1, st.intent, req_text):
                 pushed += 1
                 self._bus_trace(sess)
                 if st.remind_count == self._MAX_REMINDERS:
