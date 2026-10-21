@@ -249,10 +249,13 @@ class WorkflowClient:
         if not row:
             return None
         task = dict(row)
-        task["progress"] = self._compute_progress(task["task_id"])
+        # 按 wf_id 问就只答那一条实例：一个 task 下可能挂多条链（子链/fan-out），
+        # 按 task 聚合会把「你要问的那步」换成另一条链的当前步 —— 角色照错契约交付。
+        only = task_id if task_id.startswith("wf_") else ""
+        task["progress"] = self._compute_progress(task["task_id"], only)
         return task
 
-    def _compute_progress(self, task_id: str) -> dict:
+    def _compute_progress(self, task_id: str, only_instance: str = "") -> dict:
         rows = self._conn.execute(
             "SELECT * FROM workflow_instances WHERE task_id=? ORDER BY created_at", (task_id,)
         ).fetchall()
@@ -261,7 +264,11 @@ class WorkflowClient:
         completed = sum(1 for r in rows if dict(r)["status"] == "completed")
         running = [dict(r) for r in rows if dict(r)["status"] == "running"]
         pending = [dict(r) for r in rows if dict(r)["status"] == "pending"]
-        current = running[0] if running else (pending[0] if pending else None)
+        if only_instance:
+            pinned = [dict(r) for r in rows if dict(r)["instance_id"] == only_instance]
+            current = pinned[0] if pinned else None
+        else:
+            current = running[0] if running else (pending[0] if pending else None)
         total = len(rows)
         return {
             "workflow_count": total, "completed": completed,
