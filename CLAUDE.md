@@ -95,8 +95,6 @@ src/
     client.py          ── WorkflowClient
     db.py              ── DB 连接
     schema.py          ── Schema 定义
-  migration/
-    scripts.py         ── 迁移脚本
 ```
 注：`role_manager.py` / `lifecycle_manager.py` 已于 git f6c19ae 删除（YAGNI 收敛），
 其职责并入 core.py / pipeline lifecycle.manager，此处不再列出。

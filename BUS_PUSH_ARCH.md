@@ -79,7 +79,7 @@
 | 组件 | 职责 | 路径 |
 |------|------|------|
 | `bus_protocol.Blackboard.write()` | SQLite 持久化 + feed socket 推送 | `~/.hermes/scripts/bus_protocol.py` |
-| `sister_socket_server.py` | asyncio 消息路由 (agent=feed → broadcast) | `~/.hermes/scripts/hermes_core/sister_bus/` |
+| `socket_server.py` | asyncio 消息路由 (agent=feed → broadcast) | `~/.hermes/scripts/hermes_core/sister_bus/` |
 | `/tmp/sister_bus_feed.sock` | Unix Socket 通知通道 | 无 |
 | `feed_listener.py` | 实时监听 + 终局检测 + notice 告警 | `session-launcher/feed_listener.py` |
 
@@ -130,7 +130,7 @@ _notify_feed(cat, fid, text, src)
 ### 3. `ccs-monitor` 侧监听脚本
 
 ```python
-# ~/.hermes/scripts/feed_listener.py
+# ~/session-launcher/feed_listener.py
 import json, socket, subprocess
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -173,7 +173,7 @@ while True:
 |------|------|
 | `hermes_core/sister_bus/socket_server.py` | 加 `feed` agent + broadcast |
 | `hermes/scripts/bus_protocol.py` | `write()` 末尾加 `_notify_feed()` |
-| `~/.hermes/scripts/feed_listener.py` | 新增: feed 监听脚本 |
+| `~/session-launcher/feed_listener.py` | 新增: feed 监听脚本 |
 | CCS_COLLAB_PROTOCOL.md | 更新: 推送模式说明 |
 
 ## 不做的
