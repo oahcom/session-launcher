@@ -106,4 +106,3 @@ Browser Harness（53 人格）注册在 hermes-session-roles/personas/browser-ha
 | ALLOW_ROLES_WORKTREE_INJECT | (未设置) | 设为 1/true/yes 才允许从 worktree 注入生产 prompt |
 | SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
 | HERMES_SCRIPTS_DIR | ~/.hermes/scripts | Hermes 脚本目录 |
-| CCS_SOCKET_TOKEN | (无) | CCS Socket 认证令牌 |

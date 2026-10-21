@@ -111,7 +111,7 @@ src/
 # 创建并启动 CCS
 python3 src/ccs.py start <role> [title] [--no-attach] [--prompt "msg"]
 python3 src/ccs.py start <role> --partner <p> --auto-restart --bus-track <cat>
-python3 src/ccs.py start <role> --drive loop|feed|both --feed-cat <category>
+python3 src/ccs.py start <role> --drive loop|feed|ondemand --feed-cat <category>
 
 # 控制
 python3 src/ccs.py stop <role>
@@ -169,7 +169,7 @@ ccs.py send-direct alice bob "hi"
 
 **协议**：JSON-over-newline，支持 SUBSCRIBE/PUBLISH/PING/STATS
 
-**认证**：无——socket 不读 `CCS_SOCKET_TOKEN`（该名仅存在于文档），同机进程可任意 PUBLISH。
+**认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
 
 ### 5. Bus Push 实时推送
 
@@ -272,4 +272,3 @@ PYTHONPATH=src python3 -m ccs register <R> ccs-<R>
 | ALLOW_ROLES_WORKTREE_INJECT | (未设置) | 设为 1/true/yes 才允许从 worktree 注入生产 prompt |
 | SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
 | HERMES_SCRIPTS_DIR | ~/.hermes/scripts | Hermes 脚本目录 |
-| CCS_SOCKET_TOKEN | (无) | CCS Socket 认证令牌 |
