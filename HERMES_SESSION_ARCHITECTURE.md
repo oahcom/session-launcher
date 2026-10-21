@@ -12,7 +12,6 @@
 |---|------|------|
 | 1 | **三层分离** | 角色定义 / 工作空间 / 驱动机制 各自独立 |
 | 2 | **双层监控** | 代码层（机械可靠）+ LLM 层（语义智能） |
-| 3 | **零轮询** | 所有实时通知走 Unix Socket push，非 poll |
 | 4 | **静默降级** | 任何组件故障不影响其他组件，降级到最简单模式 |
 | 5 | **审计可追溯** | 所有决策写入 bus，可事后复盘 |
 
@@ -100,9 +99,9 @@ CLAUDE.md 指令 → claude /loop → 每 30s 自动执行 → 写审计
 
 | 层次 | 实现 |
 |------|------|
-| 角色定义 | `persona_*.json: drive`（实测取值 `infinite`/`ondemand`，无 `loop`） |
-| 启动注入 | `session-launcher/src/ccs.py start` 时发送 `/loop` 到 tmux |
-| 执行 | claude 内部 `/loop` 循环 |
+| 角色定义 | `persona_*.json: drive`（实测取值 `infinite`/`ondemand`/`cron`，无 `loop`） |
+| 启动包装 | `ccs.py start` 起 `bash -c "while true; do claude …; done"`（core.py:627），**不发 `/loop`**（`grep -rn '/loop' src/` = 0） |
+| 执行 | 每轮 claude 由 workspace `CLAUDE.md` 驱动，轮间由包装循环重启 |
 
 ### 4.2 ccs-send 外驱
 
@@ -266,8 +265,8 @@ persona_*.json  → 专业领域 + prompt
 - [x] bus_protocol.py feed push
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
-- [x] watchdog 线程（daemon=False）
-- [x] turn_tracker 线程（daemon=False）
+- [x] watchdog 线程（daemon=True，watchdog.py:248）
+- [x] turn_tracker 线程（daemon=True，tracker.py:167）
 - [x] sentinel 健康字段
 - [x] 三方三轮审查
 

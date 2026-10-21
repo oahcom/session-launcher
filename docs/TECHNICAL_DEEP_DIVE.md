@@ -105,7 +105,7 @@ bus_timeout / session_id / engine / health。
 
 `workflow/client.py`（`WorkflowClient`）是唯一实现，`wf.py` 与 `workflow_client.py` 只是入口；
 模板/实例/任务的定义与状态机在 session-pipeline（`template_registry.py`、`lifecycle/manager.py`、
-`pipeflow/`）。本仓没有 `step_engine.py`，也不再有 approval_token 通道（2026-10-22 退场）。
+`pipeflow/`）。本仓没有 `step_engine.py`；`confirm()` 仍接收 `token` 并原样转发 pipeline 校验（`workflow/client.py:477-507`）。
 
 ## 6. 设计原则
 

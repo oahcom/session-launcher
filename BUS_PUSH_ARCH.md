@@ -8,7 +8,7 @@
 bus_client.py write debate "终局"
   └─ SQLite facts 表（唯一写入路径）
 
-hermes_bus/client.py:45 publish(to_agent, ...)
+hermes_bus/client.py:43 publish(to_agent, ...)
   └─ PUBLISH → /tmp/sister_bus_feed.sock
        └─ socket_server._dispatch（hermes_bus/socket_server.py:144-152）
             └─ _push_to("feed") → 所有订阅者
@@ -39,7 +39,7 @@ hermes_bus/client.py:45 publish(to_agent, ...)
 
 - 连接失败/断线 → 5s 重试（`feed_listener.py:171-198`）。
 - `--tmux-target <ccs-role>` 时按 `~/.hermes/run/feed_listeners/<tmux>.pid` 做单实例锁（`:125-160`）。
-- 注入用两次 `tmux send-keys`：`-l` 发正文，再单独发 `Enter`（`:105-115`）。
+- 注入用两次 `tmux send-keys`：`-l` 发正文，再单独发 `Enter`（`:120-127`）。
 - 角色忙（`_role_is_busy`）时跳过注入，事实本身仍在 bus 里。
 
 ## 降级
