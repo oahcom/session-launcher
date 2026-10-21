@@ -64,7 +64,7 @@
 │  普通级 CCS：全局 ~/.claude/CLAUDE.md                        │
 ├──────────────────────────────────────────────────────────────┤
 │  第三层：驱动机制（session-launcher + session-pipeline）       │
-│  /loop + ccs-send + feed push                                 │
+│  包装循环 + ccs-send + feed push                             │
 │  所有 CCS 统一，不区分系统级和普通级                           │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -91,10 +91,10 @@
 
 ## 四、三种驱动机制（所有 CCS 通用）
 
-### 4.1 /loop 自循环
+### 4.1 角色自循环（while-true 包装，不是 `/loop`）
 
 ```
-CLAUDE.md 指令 → claude /loop → 每 30s 自动执行 → 写审计
+workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启下一轮
 ```
 
 | 层次 | 实现 |
@@ -136,7 +136,7 @@ bus_client.py write → bus_protocol.py Blackboard.write()
 ```
 CCS 启动（session-launcher）
   │
-  ├─ ① 注入 /loop ──── claude 自循环执行 CLAUDE.md 指令
+  ├─ ① 包装循环 ────── bash while true 重启 claude，按 CLAUDE.md 执行
   │
   ├─ ② 启动 feed_listener ── 订阅 feed socket，收到消息 → 唤醒 claude
   │
@@ -154,7 +154,7 @@ CCS 启动（session-launcher）
 │                                                             │
 │  输入: feed push + sentinel + bus 上下文                    │
 │  输出: bus action 指令（重启 / 纠正 / 升级给人）            │
-│  驱动: /loop + ccs-send + feed push（三合一）               │
+│  驱动: 包装循环 + ccs-send + feed push（三合一）            │
 │  可靠: ❌ 不可控但强大 —— 需要驾驭工程                      │
 └────────────────────────┬────────────────────────────────────┘
                          │  escalate on uncertainty
@@ -207,7 +207,7 @@ CCS 启动（session-launcher）
 | 角色 JSON 定义 | ✅ 负责 | 读取 | — |
 | CLAUDE.md 管理 | — | ✅ 负责（启动时注入） | — |
 | 工作空间管理 | — | ✅ 负责（系统级 CCS） | — |
-| /loop 注入 | — | ✅ 负责 | — |
+| 包装循环（core.py:627） | — | ✅ 负责 | — |
 | ccs-send 消息路由 | — | 发送 | ✅ 路由决策 |
 | feed push 推送源 | — | 订阅 | ✅ 写入触发 |
 | watchdog 线程 | — | ✅ 负责 | — |
@@ -242,7 +242,7 @@ CCS 启动（session-launcher）
     - 不直接操作 tmux（通过 bus action 指令）
 
     ## 工作方式（三种驱动）
-    ① /loop 每 30s 巡检
+    ① 包装循环起 claude，tmux pane 每约 30s 巡检状态
     ② ccs-send 接收其他 CCS 发来的指令
     ③ feed push 实时触发
 
