@@ -287,12 +287,25 @@ class TestRestartIfStale:
         kill.assert_called_once_with(4242, 9)
 
     def test_busy_role_is_not_killed(self, tmp_path):
+        """忙且不卡死 → 不杀；其余前置全钉住（陈旧进程 + 确实是 claude），
+        否则挡住 kill 的可能不是「忙」这条判据。
+
+        不能只 patch os.kill 就断言未被调用：patch("tmux_ops.os.kill") 改的是
+        **全局** os.kill，subprocess 清理（Popen.kill）也经它 —— 实测本用例恒录到
+        2 次无关调用（pids 每次不同），用例恒红，与忙判据无关。
+        """
         import tmux_ops
         from unittest.mock import patch
+        tmux_ops._stuck_cache.clear()
         md = tmp_path / "CLAUDE.md"
         md.write_text("x", encoding="utf-8")
         with patch("tmux_ops._is_alive", return_value=True), \
              patch("tmux_ops._role_is_busy", return_value=True), \
+             patch("tmux_ops._looks_stuck", return_value=False), \
+             patch("tmux_ops._tmux_output", return_value="❯ "), \
+             patch("tmux_ops._find_claude_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=0.0), \
+             patch("pathlib.Path.read_text", return_value="claude\n"), \
              patch("tmux_ops.os.kill") as kill:
             assert tmux_ops._restart_if_stale("ccs-probe", md) is False
         kill.assert_not_called()
@@ -304,8 +317,10 @@ class TestRestartIfStale:
         md.write_text("x", encoding="utf-8")
         with patch("tmux_ops._is_alive", return_value=True), \
              patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._tmux_output", return_value="❯ "), \
              patch("tmux_ops._find_claude_pid", return_value=4242), \
              patch("tmux_ops._proc_start_time", return_value=10 ** 12), \
+             patch("pathlib.Path.read_text", return_value="claude\n"), \
              patch("tmux_ops.os.kill") as kill:
             assert tmux_ops._restart_if_stale("ccs-probe", md) is False
         kill.assert_not_called()
@@ -330,6 +345,7 @@ class TestRestartIfStale:
         md.write_text("x", encoding="utf-8")
         with patch("tmux_ops._is_alive", return_value=True), \
              patch("tmux_ops._role_is_busy", return_value=False), \
+             patch("tmux_ops._tmux_output", return_value="❯ "), \
              patch("tmux_ops._find_claude_pid", return_value=4242), \
              patch("tmux_ops._proc_start_time", return_value=0.0), \
              patch("pathlib.Path.read_text", return_value="bash\n"), \
