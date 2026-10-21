@@ -75,7 +75,7 @@ python3 src/ecosystem_health.py --json   # 或 --ci（异常时 exit 1）
 src/
   core.py              ── 生命周期编排
   ccs.py               ── CLI 入口
-  launcher.py          ── CCS 启动编排（start/detach/partner 实际入口）
+  （launcher.py 已在 93a7940 删除；start/detach/partner 实际入口为 ccs.py + core.py）
   ccs_socket.py        ── CCS 直接通信（Unix Socket）
   ecosystem_health.py  ── 三项目健康检查
   paths.py             ── 路径管理
@@ -84,9 +84,6 @@ src/
   workflow_client.py   ── CCS 工作流客户端
   wf.py                ── CLI 快捷入口
   user_intent_reminder.py ── 用户输入意图提醒（deamon 重复提醒 ccs 是否真解决用户问题）
-  events/
-    signals.py         ── 信号常量 + input_signals 检查逻辑
-    parser.py          ── 信号解析器
   ops/
     sentinel.py        ── 哨兵文件读写（CcsSentinel）
     ccs_config.py      ── 配置中心
@@ -108,6 +105,8 @@ src/
 ```
 注：`role_manager.py` / `lifecycle_manager.py` 已于 git f6c19ae 删除（YAGNI 收敛），
 其职责并入 core.py / pipeline lifecycle.manager，此处不再列出。
+`events/`（signal 与 parser 判定器，543 行）已于 git 1ba44dc 删除：persona 声明的 134 条
+`input_signals` 在生产里零消费者，判定器唯一"调用方"是一个没人启动的 daemon 脚本。
 
 ## 测试命令
 ```bash
