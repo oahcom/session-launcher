@@ -44,6 +44,10 @@ def assert_workflows_db_isolated() -> None:
     }
     leaked = [k for k, v in seen.items() if v == prod]
     assert not leaked, f"以下入口仍指向生产 workflows.db: {leaked}"
+    # 生产总线同理：DB 隔离但 bus notify 写生产黑板，会向角色派发真任务
+    _prod_bus = str(Path.home() / ".hermes" / "sister_bus" / "blackboard.db")
+    assert os.environ.get("HERMES_BLACKBOARD_DB", _prod_bus) != _prod_bus, \
+        "测试总线仍指向生产 blackboard.db"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -66,10 +70,18 @@ def _isolate_workflows_db(tmp_path_factory):
     _dst.close()
     _src.close()
 
-    _env_keys = ("HERMES_WORKFLOWS_DB", "SESSION_PIPELINE_WORKFLOWS_DB")
+    # SESSION_PIPELINE_TEST：委托子进程走 pipeline 的 create_task_v2，它只认该
+    # 环境变量（不看 db_path）—— 不设则 DB 隔到 tmp、bus notify 仍写生产黑板
+    # （实测 2026-10-22 00:37 跑 test_wf_create_entry，生产总线新增 #437515
+    # "创建任务: 做一个高质量网页探针1792600679"，行本身落在 tmp 库）。
+    _wf_env_keys = ("HERMES_WORKFLOWS_DB", "SESSION_PIPELINE_WORKFLOWS_DB")
+    _env_keys = _wf_env_keys + ("SESSION_PIPELINE_TEST", "HERMES_BLACKBOARD_DB")
     _saved_env = {k: os.environ.get(k) for k in _env_keys}
-    for k in _env_keys:
+    for k in _wf_env_keys:
         os.environ[k] = tmp
+    os.environ["SESSION_PIPELINE_TEST"] = "1"
+    # 委托子进程的 bus_client 默认写生产黑板，hermes_bus 只认这个环境变量
+    os.environ["HERMES_BLACKBOARD_DB"] = str(Path(tmp).parent / "blackboard.db")
     _saved_paths_db = paths.WORKFLOWS_DB
     paths.WORKFLOWS_DB = tmp
     try:
