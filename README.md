@@ -185,6 +185,10 @@ bus_client.py write debate "消息"
 
 **降级保障**：feed socket 不可用时静默降级，不丢 SQLite 写入。
 
+**写入报 `database is locked`（读取正常）**：不是并发高，是某个进程持有未提交的写事务把 WAL 写锁占死。
+定位：`ino=$(stat -c %i ~/.hermes/sister_bus/blackboard.db-shm); grep ":$ino" /proc/locks | grep WRITE` → 取 pid → `ps -o args= -p <pid>`。
+处置：`systemctl --user restart session-pipeline-daemon.service`（实测锁立即释放，写入 0.07s）。
+
 ---
 
 ## 跨项目接口
