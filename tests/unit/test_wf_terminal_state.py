@@ -14,6 +14,11 @@ _SRC = str(Path(__file__).resolve().parent.parent.parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+# 收集顺序里 tests/test_gateway.py 会先 import session-pipeline 的同名 workflow 包，
+# 留在 sys.modules 里会让下面这行拿到另一仓库的类（无 complete）。清掉再导入。
+for _m in [k for k in list(sys.modules) if k == "workflow" or k.startswith("workflow.")]:
+    del sys.modules[_m]
+
 from workflow.client import WorkflowClient  # noqa: E402
 
 

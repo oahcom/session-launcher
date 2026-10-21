@@ -20,3 +20,4 @@ if _OPS not in sys.path:
 # 模块级自检脚本（非 pytest 用例）在 import 时 raise SystemExit → 收集阶段
 # INTERNALERROR，整套测试无法运行。它们自述用途是 `python3 <file>` 手工执行。
 collect_ignore = ["test_wl_selfcheck.py"]
+

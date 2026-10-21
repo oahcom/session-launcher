@@ -64,7 +64,6 @@ check_import() {
 check_import "$LAUNCHER" "core" "session-launcher core"
 check_import "$LAUNCHER" "tmux_ops" "session-launcher tmux_ops"
 check_import "$LAUNCHER" "codex_ops" "session-launcher codex_ops"
-check_import "$LAUNCHER" "events.parser" "session-launcher signal_parser"
 check_import "$LAUNCHER" "workflow_client" "session-launcher workflow_client"
 
 check_import "$ROLES" "registry" "session-roles registry"

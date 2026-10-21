@@ -35,12 +35,14 @@ def _real_db() -> Path:
 
 
 def test_delegate_method_exists():
-    """缺省路径必须有委托实现——它是入口能通的前提。"""
-    from workflow.client import WorkflowClient
-    assert hasattr(WorkflowClient, "_delegate_create_task_v2"), \
+    """缺省路径必须有委托实现——它是入口能通的前提。
+
+    读源码而非 import：pytest 进程里 `workflow` 可能已被别的测试解析到
+    session-pipeline 的同名包（两个项目各有一份），import 拿到的类不一定是本仓的。
+    """
+    src = (SRC / "workflow" / "client.py").read_text(encoding="utf-8")
+    assert "def _delegate_create_task_v2" in src, \
         "template_id 缺省时无委托实现，wf create 会再次抛 template_id is required"
-    src = Path(WorkflowClient.__module__ and
-               sys.modules[WorkflowClient.__module__].__file__).read_text(encoding="utf-8")
     # 硬闸门不得再挡住缺省路径：create_task_v2 必须先判空再走原逻辑
     idx = src.index("def create_task_v2")
     body = src[idx:idx + 1400]

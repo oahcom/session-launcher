@@ -74,12 +74,6 @@ __all__ = [
     "exec_codex",
 ]
 
-try:
-    from events.signals import check_signal
-except Exception:
-    def check_signal(*a, **kw): return None
-
-
 def is_ccs_running(role_name: str) -> bool:
     """检查 CCS 是否在运行（兼容层）。"""
     return _is_alive(f"ccs-{role_name}")

@@ -17,7 +17,7 @@ session-pipeline → **session-launcher** → hermes-session-roles (单向)
 ```
 src/
 ├── ccs.py              # CLI 入口（start/stop/send/status/output）
-├── ccs_socket.py       # CCS 直接通信（Unix Socket: CCSClient / CCSStreamer）
+├── ccs_socket.py       # CCS 直接通信（Unix Socket: CCSClient）
 ├── core.py             # 生命周期编排（start/send/stop/health）
 ├── launcher.py         # Launcher 编排入口
 ├── routing/roles.py        # RoleManager（角色加载 + workspace 注入 + 权限）
@@ -103,14 +103,14 @@ backward-compat 重导出，实际实现位于 `session-pipeline/src/lifecycle/m
 | `check_ondemand_timeout(max_minutes=30)` | int? | `list[str]` |
 | `cleanup_stale_sentinels()` | — | `list[str]` |
 
-## CCSClient / CCSStreamer (`ccs_socket.py`)
+## CCSClient (`ccs_socket.py`)
 
 Unix Socket 通信客户端（`Sister Bus` 之外的直接 CCS 通信通道）。
 
 | 类 | 说明 |
 |------|------|
 | `CCSClient` | 向 CCS 发送消息的客户端 |
-| `CCSStreamer` | 流式读取 CCS 输出的客户端 |
+| `stream`（已移除） | 原恒零输出，`be758a1` 删除；要 tail 用 `ccs.py output --tail` |
 
 ## Signals (`signals.py`)
 

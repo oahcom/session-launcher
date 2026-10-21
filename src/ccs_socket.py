@@ -12,14 +12,19 @@ SUBSCRIBE 注册为 "ccs-{role}"，PUBLISH 按目标路由。
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 log = logging.getLogger("ccs-socket")
 
-# 复用 sister_bus socket server（由 systemd 管理）
-from paths import SISTER_BUS_CCS_SOCK
+# 复用 sister_bus socket server（由 systemd 管理）。
+# 不经 paths 转接：pipeline 的 src 与本仓同名模块(paths)会被 test_gateway 注入的
+# sys.path 抢先解析，谁先 import 谁赢 —— 直连 hermes_bus.config 断掉对 import 顺序的依赖。
+sys.path.insert(0, str(Path.home() / ".hermes" / "scripts"))
+from hermes_bus.config import SISTER_BUS_CCS_SOCK
 SISTER_BUS_SOCK = SISTER_BUS_CCS_SOCK
 
 # 连接池锁（防止多线程并发修改 _pools）

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """ecosystem_health_daemon.py — Unified system health monitor
 
-Consolidates 3 separate scripts into one efficient daemon:
-1. Signal checkers (from system_monitor.py → events/signals)
-2. Partner health (from partner_health.py → routing/partner)
-3. Gate timeout watch (→ LifecycleManager.check_gate_timeouts)
+Consolidates the health checks into one efficient daemon:
+1. Partner health (from partner_health.py → routing/partner)
+2. Gate timeout watch (→ LifecycleManager.check_gate_timeouts)
 
 Runs at */15 and writes unified report to bus + workspace.
 More efficient than 3 separate cron jobs.
@@ -20,23 +19,7 @@ _TUNING_PATH = Path.home() / ".hermes" / "workflow_tuning.json"
 # 软回退来源：pass_rate 正常期（>=阈值）才会刷新，确保不是坏参数
 _TUNING_SNAPSHOT = Path.home() / ".hermes" / "workflow_tuning.snapshot.json"
 
-SIGNALS_TO_CHECK = [
-    "running_sessions", "mem_disk", "bus_unread", "git_staged",
-    "http_health", "session_size",
-]
 PARTNER_ROLES = ["coordinator", "maintainer", "curator", "ccs-monitor", "codex-dev"]
-
-def check_signals() -> list:
-    """Activate events/signals.py — all signal checkers."""
-    from events.signals import check_signal_by_name
-    results = []
-    for name in SIGNALS_TO_CHECK:
-        try:
-            r = check_signal_by_name(name)
-            results.append({"check": name, "triggered": r})
-        except Exception as e:
-            results.append({"check": name, "error": str(e)})
-    return results
 
 def check_partners() -> list:
     """Activate routing/partner.py — cross-role partner health."""
@@ -135,13 +118,11 @@ def main():
     if not quiet:
         print(f"[{time.strftime('%H:%M:%S')}] Ecosystem Health Daemon")
 
-    # Parallel execution of 3 monitoring subsystems
-    signal_results = check_signals()
+    # Parallel execution of monitoring subsystems
     partner_results = check_partners()
     gate_results = check_gate_timeouts()
 
     # Aggregate
-    triggered_signals = [s for s in signal_results if s.get("triggered")]
     alive_partners = [p for p in partner_results if p.get("alive")]
     active_gates = [g for g in gate_results if not g.get("error")]
     # Gateway health is validated at send-time via gateway_guard.py
@@ -149,15 +130,12 @@ def main():
 
     # Write unified bus trace
     summary_data = {
-        "signals": {"total": len(signal_results), "triggered": len(triggered_signals),
-                    "triggered_list": [s["check"] for s in triggered_signals]},
         "partners": {"total": len(partner_results), "alive": len(alive_partners),
                      "alive_list": [p["role"] for p in alive_partners]},
         "gate_timeouts": len(active_gates),
         "gateway": "validated by gateway_guard.py at send-time",
     }
-    summary = (f"[health-daemon] S:{len(triggered_signals)}/{len(signal_results)} "
-               f"P:{len(alive_partners)}/{len(partner_results)} "
+    summary = (f"[health-daemon] P:{len(alive_partners)}/{len(partner_results)} "
                f"G:{len(active_gates)} timeouts")
     try:
         subprocess.run([sys.executable, str(BUS_CLIENT), "write", "ccs_health", summary,
@@ -173,8 +151,7 @@ def main():
     out_dir = Path.home() / "hermes" / "workspace" / "auto-cycle-v5"
     out_dir.mkdir(parents=True, exist_ok=True)
     report = {"ts": time.time(), "ts_h": time.strftime("%Y-%m-%d %H:%M:%S"),
-              "signals": signal_results, "partners": partner_results,
-              "gates": gate_results}
+              "partners": partner_results, "gates": gate_results}
     (out_dir / f"health-{int(time.time())}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2))
 
