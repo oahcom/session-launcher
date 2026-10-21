@@ -235,6 +235,9 @@ class CrossRoleRouter:
                 ts REAL NOT NULL
             );
         """)
+        # 去重查询按 ts 窗口取候选（300s ≈ 250 行），无索引时会全表扫描
+        # （实测 42k 行 6.29ms/次，且每次 ccs send 都跑）。索引仅 8B/行。
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wf_logs_ts ON workflow_logs(ts)")
         return conn
 
     def intercept(self, source: str, target: str, message: str) -> bool:
