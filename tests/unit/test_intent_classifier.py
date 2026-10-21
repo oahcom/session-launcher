@@ -286,6 +286,19 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         self.assertIn(_CORE_QUESTIONS[0], body)
         self.assertIn(_CORE_QUESTIONS[1], body)
 
+    def test_reminder_demands_evidence_not_a_bare_ack(self):
+        """結尾不得再授權「回一句結論即可」：那句話直接產出零工具回覆。
+
+        2026-10-21 計數：qa 當天 18 輪，逐字全為「已完成，無新動作。」，工具調用 0。
+        """
+        injects = []
+        self._run(50, injects, {"engineer": (time.time(), None, "帮我修 workflow 回收")})
+        self.assertTrue(injects, "應有提醒")
+        body = injects[0]
+        self.assertNotIn("回一句结论即可", body, "舊措辭會直接產出「已完成，無新動作」")
+        self.assertIn("可验证据", body, "必須要求可驗證據或下一步動作")
+        self.assertNotIn("新建任务", body.replace("不要为自检新建任务", ""), "反空轉約束要保留")
+
     def test_question_request_uses_question_wording(self):
         """疑問請求的重複提醒必須用疑問措辭，不得降級成任務措辭。"""
         injects = []

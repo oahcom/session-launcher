@@ -202,6 +202,11 @@ def repeat_reminder(intent: Intent, round_no: int = 1, request: str = "") -> str
 
     调用方仅可在**确知该角色存在未对齐用户请求**时调用（触发源为 bus 里的
     core.send 注入痕迹）。前提不成立时不调用——不得凭"角色空闲"推断用户在等。
+
+    WHY 结尾要求"证据或下一步"，而不是"回一句结论即可"：旧措辞直接授权了
+    「已完成，无新动作。」这类零工具回复。2026-10-21 计数：qa 当天 18 轮，
+    全部逐字是这七个字，且都没有任何工具调用（request 是测试残留的
+    "test message"，触发器已由 conftest 隔离修掉，但措辞仍在邀请复述）。
     """
     request = (request or "").strip()
     if not request or len(_CORE_QUESTIONS) < 2:
@@ -214,7 +219,8 @@ def repeat_reminder(intent: Intent, round_no: int = 1, request: str = "") -> str
         f"{_REMINDER_MARKER} 第{round_no}次重复自检：\n"
         f"原始请求：{request}\n"
         f"1. {q}\n2. {t}\n{focus}\n"
-        "若该请求已完成，回一句结论即可；不要为了自检新建任务、子代理或工具调用。"
+        "已完成就回一行可验证据（命令或文件:行）；未完成就回下一步动作并直接做。"
+        "不要只回「已完成，无新动作」，也不要为自检新建任务或子代理。"
     ).rstrip()
 
 
