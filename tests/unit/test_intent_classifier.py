@@ -472,6 +472,27 @@ class TestRequestDigestHardening(unittest.TestCase):
         self.assertTrue(d.endswith("…"))
         self.assertFalse(d.endswith(" "))
 
+    def test_digest_redacts_unlabeled_secrets(self):
+        """形状脱敏必须真在跑：裸 API key / 口令不得进共享 bus（变异实测：删掉
+        _SECRET_SHAPES 循环后本用例是唯一能抓到的）。
+
+        _redact_secrets 只认"标签+20位以上值"，实测漏掉 sk-proj-… 与「密码 hunter2」。
+        """
+        core = _import_core()
+        d = core._req_digest("export OPENAI_API_KEY=sk-proj-ABCDEFGHIJKLMNOPQRST 帮我跑")
+        self.assertNotIn("sk-proj-ABCDEFGHIJKLMNOPQRST", d)
+        d2 = core._req_digest("密码 hunter2 帮我登录")
+        self.assertNotIn("hunter2", d2)
+        d3 = core._req_digest("AKIA" + "ABCDEFGHIJKLMNOP" + " 我的密钥")  # AKIA+16 位
+        self.assertNotIn("ABCDEFGHIJKLMNOP", d3)
+
+    def test_digest_truncation_is_visibly_marked(self):
+        """截断后的摘要必须带省略号：半截请求不能被提醒当完整原始请求呈现。"""
+        core = _import_core()
+        d = core._req_digest("一" * 200)
+        self.assertLessEqual(len(d), 140)
+        self.assertTrue(d.endswith("…"))
+
     def test_digest_strips_terminal_control_chars(self):
         """^C/^U/ESC/NUL 會經 send-keys -l 原樣寫進角色 pty → 必須剝掉。"""
         d = _import_core()._req_digest("正常开头\x03中断\x15清行\x1b[2J\x00结尾")
