@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from paths import BUS_CLIENT, ensure_paths as _ensure_paths, CCS_WORKSPACES as WORKSPACES
+from paths import ensure_paths as _ensure_paths, CCS_WORKSPACES as WORKSPACES
 _ensure_paths()
 
 # ── shared_loader 导入：统一角色数据入口 ──

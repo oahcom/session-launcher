@@ -19,7 +19,6 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Optional
 
 
 from pathlib import Path
@@ -62,6 +61,21 @@ def _on_new_fact(event: dict):
                    f"[feed-listener] 辩论已结束: {title[:100]}",
                    src="feed-listener")
         print(f"  → 检测到辩论结束，已写 bus notice")
+
+
+def _target_alive(tmux_target: str) -> bool:
+    """目标 tmux 会话是否还在。
+
+    监听器是随角色 start 起的，角色会话自己崩掉时没人回收它 → 孤儿监听器一直占着
+    bus 订阅（实测 16 个 listener 只对应 5 个会话），同一角色还可能有两个监听器
+    重复注入同一条消息。探测失败按"还在"处理：宁可不退，也不要误杀正在服务的监听器。
+    """
+    try:
+        return subprocess.run(
+            ["tmux", "has-session", "-t", tmux_target],
+            capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return True
 
 
 def connect() -> socket.socket:
@@ -160,9 +174,15 @@ def run(notify: bool = False, on_debate_end: bool = False, tmux_target: str = ""
         _sig.signal(_sig.SIGTERM, lambda *_: (atexit._run_exitfuncs(), sys.exit(0)))
     print(f"正在连接 {FEED_SOCKET}...")
     s = None
+    _last_target_check = 0.0
 
     while True:
         try:
+            if tmux_target and time.monotonic() - _last_target_check > 60:
+                _last_target_check = time.monotonic()
+                if not _target_alive(tmux_target):
+                    print(f"目标会话 {tmux_target} 已不存在，feed 监听器退出")
+                    break
             if s is None:
                 s = connect()
                 print(f"✅ 已连接 feed socket，监听中... (Ctrl+C 退出)")
