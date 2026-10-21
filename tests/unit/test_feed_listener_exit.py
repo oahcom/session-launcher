@@ -1,12 +1,33 @@
 """feed_listener 自身不再为已死的角色会话服务。"""
-import subprocess, sys
+import subprocess
+import sys
+import time
 from pathlib import Path
+
+import pytest
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from feed_listener import _target_alive
+
+# 探活给 tmux 的预算是 3s，FailOpen：探不到就当活着。负载高的机器上 tmux 可能要
+# 十几秒才应答，此时两种断言都失去意义（不是代码行为变了）。
+_PROBE_BUDGET_S = 3.0
+
+
+def _tmux_latency() -> float:
+    t0 = time.monotonic()
+    subprocess.run(["tmux", "ls", "-F", "#{session_name}"], capture_output=True, timeout=60)
+    return time.monotonic() - t0
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_responsive_tmux():
+    lat = _tmux_latency()
+    if lat > _PROBE_BUDGET_S:
+        pytest.skip(f"tmux 应答 {lat:.1f}s > {_PROBE_BUDGET_S}s 探活预算，跳过（环境限制）")
 
 
 def test_target_dead_listener_should_exit():

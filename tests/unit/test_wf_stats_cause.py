@@ -4,6 +4,7 @@
 归因口径与 workflow_stats() 的 cancelled_by_cause 一致，
 需求记录见 ~/hermes/workspace/R147-僵尸步取证与取消归因/需求.md。
 """
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -37,6 +38,7 @@ CASES = [
     ("workflow cancelled", "连续6分钟无活跃工作流", "starvation"),  # 默认文案 → 回退 reason
     ("s1: 角色不响应自动取消", "任何理由都不改桶", "role_unresponsive"),  # detail 优先
     ("cascade from parent wf_sub_abc", None, "cascade"),  # 父链级联，不是角色问题
+    ("reason=zombie cleanup", None, "zombie_stall"),      # launcher 自己的清理传英文
 ]
 
 
@@ -61,11 +63,49 @@ def test_cancelled_by_cause_uses_last_cancel_family_log():
         INSERT INTO workflow_instances VALUES ('wf_b', NULL, 'cancelled');
         INSERT INTO workflow_logs VALUES (3, 'wf_b', 'cancelled',
                                             '僵尸回收: running 运行24h > 24h全局阈值');
+        -- 生产主路径：先 stale rescue 写 wf_closed，再写 cancelled；MAX(id) 必须取后者
+        INSERT INTO workflow_instances VALUES ('wf_c', NULL, 'cancelled');
+        INSERT INTO workflow_logs VALUES (4, 'wf_c', 'wf_closed',
+                                          'workflow cancelled (stale rescue: 6h)');
+        INSERT INTO workflow_logs VALUES (5, 'wf_c', 'cancelled',
+                                          '僵尸回收: running 状态 s1 无推进记录 4.1h');
     """)
     wf = object.__new__(WorkflowClient)   # 只借方法，不走 __init__ 的真库
     wf._conn = conn
     try:
-        assert wf._cancelled_by_cause() == {"starvation": 1, "zombie_24h": 1}
+        assert wf._cancelled_by_cause() == {"starvation": 1, "zombie_24h": 1, "zombie_stall": 1}
+    finally:
+        conn.close()
+
+
+def test_cancel_keeps_step_results_and_records_reason():
+    """cancel 只加 _close_reason，不得抹掉步骤状态（旧实现写 {"reason": ...} 覆写）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE workflow_instances (instance_id TEXT PRIMARY KEY, status TEXT,
+            completed_at REAL, step_results TEXT, task_id TEXT);
+        CREATE TABLE workflow_logs (workflow_instance_id TEXT, task_id TEXT, action TEXT,
+            actor TEXT, detail TEXT, ts REAL);
+    """)
+    steps = {"s1": {"status": "notified", "notified_at": 123.0},
+             "s2": {"status": "completed", "subflow_id": "wf_sub_1"}}
+    conn.execute("INSERT INTO workflow_instances VALUES ('wf_x', 'running', NULL, ?, NULL)",
+                 (json.dumps(steps),))
+    wf = object.__new__(WorkflowClient)
+    wf._conn, wf.role, wf.db_path = conn, 'tester', None
+    try:
+        assert wf.cancel('wf_x', 'zombie cleanup') is True
+        row = conn.execute('SELECT status, step_results FROM workflow_instances').fetchone()
+        kept = json.loads(row['step_results'])
+        assert row['status'] == 'cancelled'
+        assert kept['s1']['notified_at'] == 123.0 and kept['s2']['subflow_id'] == 'wf_sub_1'
+        assert kept['_close_reason'] == {'status': 'cancelled', 'reason': 'zombie cleanup'}
+        # 终态不覆写：第二次 cancel 返回 None 且不改 _close_reason
+        assert wf.cancel('wf_x', 'second') is None
+        again = json.loads(conn.execute('SELECT step_results FROM workflow_instances')
+                          .fetchone()[0])
+        assert again['_close_reason']['reason'] == 'zombie cleanup'
     finally:
         conn.close()
 
@@ -73,4 +113,5 @@ def test_cancelled_by_cause_uses_last_cancel_family_log():
 if __name__ == "__main__":
     test_cancel_cause_buckets()
     test_cancelled_by_cause_uses_last_cancel_family_log()
-    print("PASS", len(CASES), "cases + 1 sql case")
+    test_cancel_keeps_step_results_and_records_reason()
+    print("PASS", len(CASES), "cases + 2 sql cases")
