@@ -11,6 +11,8 @@ import time
 import unittest
 from pathlib import Path
 
+import pytest
+
 # 本仓 src 必须排在 sys.path 最前：session-pipeline 以开发模式装进 site-packages，
 # 它**也**提供顶层 `routing` 包 —— 顺序一反，`import core` 就撞到它的
 # routing.roles（实测 ModuleNotFoundError，且只在本文件复现，属安装顺序陷阱）。
@@ -18,6 +20,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_file(tmp_path, monkeypatch):
+    """预算状态必须隔离：读生产文件会让用例被真实 epoch 干扰（实测
+    test_new_request_resets_budget 首轮 0 注入），写生产文件则污染守护进程。"""
+    import ccls_daemon_intent_classifier as _d
+    monkeypatch.setattr(_d, "STATE_FILE", tmp_path / "state.json", raising=False)
 
 
 def _import_core():
@@ -1213,7 +1223,6 @@ class TestStopRemindingAfterReply(unittest.TestCase):
         d._states['ccs-qa'] = _mod._SessionState(
             request_ts=now, remind_count=1, last_remind_epoch=last_remind_epoch)
         with patch.object(_mod, '_transcript_mtime', return_value=transcript_mtime), \
-             patch.object(_mod, 'STATE_FILE', Path(tempfile.mkdtemp()) / 'state.json'), \
              patch.object(d, '_read_request_traces',
                           return_value={'qa': (now, _mod.Intent.TASK, 'test message')}), \
              patch.object(d, '_bus_trace'), \

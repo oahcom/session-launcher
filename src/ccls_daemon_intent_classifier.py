@@ -185,6 +185,9 @@ def _load_states() -> dict[str, _SessionState]:
                 out[k] = _SessionState(
                     request_ts=float(v.get("request_ts", 0.0)),
                     last_remind_ts=0.0,  # 见 docstring：monotonic 不可跨重启继承
+                    # 墙钟时刻，可跨重启继承：今日源码热重载 13 次，每次重启丢掉
+                    # epoch 都会让已回复的角色被再催一次（I1）。
+                    last_remind_epoch=float(v.get("last_remind_epoch", 0.0) or 0.0),
                     remind_count=max(0, min(_rc, _MAX_REMINDERS_CAP)),
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
@@ -219,7 +222,7 @@ def _save_states(states: dict[str, _SessionState]) -> None:
     """原子写回预算状态。失败只留日志 —— 落盘是优化，不该让 daemon 崩。
 
     不写 last_remind_ts（monotonic，跨重启无意义），只持久化能跨重启继承的
-    请求时刻与已用预算。
+    请求时刻、已用预算与上次提醒的墙钟时刻。
     """
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +235,8 @@ def _save_states(states: dict[str, _SessionState]) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(
                     {k: {"request_ts": s.request_ts,
-                         "remind_count": s.remind_count}
+                         "remind_count": s.remind_count,
+                         "last_remind_epoch": s.last_remind_epoch}
                      for k, s in states.items()},
                     ensure_ascii=False))
                 # fsync 才算真正落盘：无它时 os.replace 返回后内容可能仍在
