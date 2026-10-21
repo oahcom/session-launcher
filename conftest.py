@@ -51,5 +51,10 @@ def _no_production_side_effects(monkeypatch, tmp_path):
         return
     monkeypatch.setattr(core, "_kill_feed_listener_by_pidfile", lambda *a, **k: None,
                         raising=False)
+    # 起进程同样要断：core.start() → _start_feed_subprocess() 真 Popen feed_listener，
+    # 会连生产 bus、往真实 tmux 会话注入消息，并把生产 pid 文件覆盖成测试进程 pid
+    # （2026-10-22 审计实测：跑一次 unit 测试多一个常驻 listener，ccs stop qa 会杀错进程）。
+    monkeypatch.setattr(core, "_start_feed_subprocess", lambda *a, **k: None,
+                        raising=False)
     monkeypatch.setattr(core, "_SEND_FAIL_STREAK_FILE", tmp_path / "send_fail_streak.json",
                         raising=False)
