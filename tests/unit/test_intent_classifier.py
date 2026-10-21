@@ -182,12 +182,15 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
                          f"應提醒 {IntentReminderDaemon._MAX_REMINDERS} 次，"
                          f"實際 {len(injects)}")
 
-    def test_new_request_does_not_reset_mtime_guard(self):
-        """新投递不得清掉「提醒后角色已动手」的锚点。
+    def test_new_request_clears_mtime_guard(self):
+        """新请求必须作废「上一条请求已回应」的锚点，否则该 session 永久静默。
 
-        缺陷实证（2026-10-22）：security-auditor 04:13 收 4 条、04:14 收 2 条提醒
-        （间隔 15~30s）；qa 24h 79 条，13 分钟回了 18 条逐字相同的「已完成，无新动作。」。
-        原因：新请求到达时 last_remind_epoch 被清零 → mtime 守卫失效 → 立刻再催一次。
+        反面实证（2026-10-22 06:27 现场）：ccs-pm 的 last_remind_epoch=05:31、
+        ccs-engineer=00:37，而两者的转录 mtime 已到 06:27 → 守卫恒真 →
+        mtime 单调递增使该 session **再也收不到任何提醒**，包括全新请求。
+        提醒链因此退化成「每角色一生一次」（unit 侧 24h 注入 0 条）。
+
+        保留的约束仍由预算承担：同一请求最多 _MAX_REMINDERS 次。
         """
         injects = []
         req_a = time.time()
@@ -210,7 +213,10 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
             for _ in range(5):
                 self.daemon._tick()
         self.assertGreaterEqual(first, 1, "首轮应催一次")
-        self.assertEqual(len(injects), first, "新请求不得绕过 mtime 守卫再催")
+        self.assertGreater(len(injects), first,
+                           "新请求未清锚点 → 该 session 将永久静默（守卫恒真）")
+        self.assertLessEqual(len(injects), 2 * IntentReminderDaemon._MAX_REMINDERS,
+                             "新请求的重提醒仍受单请求预算约束")
 
     def test_cap_constant_matches_class_constant(self):
         """_MAX_REMINDERS_CAP（模块级，供 _load_states clamp）必须与
@@ -1036,20 +1042,6 @@ class TestTmuxFlakeResilience(_HermeticStateFile):
                          f"單輪抖動不得重置預算，實際注入 {len(injects)} 次")
 
 
-class TestReminderQuality(_HermeticStateFile):
-    """bus 痕跡入 monitor_audit，不污染 code_fix。"""
-
-    @patch("ccls_daemon_intent_classifier.subprocess.run")
-    def test_bus_trace_writes_monitor_audit_not_code_fix(self, mock_run):
-        mock_run.return_value = MagicMock(spec=CompletedProcess, returncode=0)
-        d = IntentReminderDaemon(interval=0.01)
-        d._bus_trace("ccs-maintainer")
-        self.assertTrue(mock_run.called, "bus trace 應調用 bus_client")
-        args = mock_run.call_args[0][0]
-        self.assertIn("monitor_audit", args, "痕跡應寫入 monitor_audit")
-        self.assertNotIn("code_fix", args, "不得污染 code_fix")
-
-
 class TestInjectTextAsSingleMessage(unittest.TestCase):
     """多行提醒必須作為**一條**消息注入，不得逐行提交。
 
@@ -1255,7 +1247,6 @@ class TestStopRemindingAfterReply(unittest.TestCase):
         with patch.object(_mod, '_transcript_mtime', return_value=transcript_mtime), \
              patch.object(d, '_read_request_traces',
                           return_value={'qa': (now, _mod.Intent.TASK, 'test message')}), \
-             patch.object(d, '_bus_trace'), \
              patch.object(_mod, '_tmux_sessions', return_value=['ccs-qa']), \
              patch.object(d, '_push_reminder', return_value=True) as push:
             d._tick()

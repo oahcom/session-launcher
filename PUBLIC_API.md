@@ -48,7 +48,7 @@ cancel, confirm, templates, my, ls, kanban, cleanup, stats。
 `workflow_stats` `notify` `get` `close`（行号见 `grep -n '    def ' src/workflow/client.py`）。
 
 - `complete(wf_id, summary)`：已终态则返回 `None`（空操作，不复活实例）；不再签发 approval_token（2026-10-22 退场）。
-- `confirm(wf_id, step_id, approved, reason)`：按审批人身份鉴权，无 token 参数。
+- `confirm(wf_id, step_id, token="", approved=True, reason="")`：token 原样转发 pipeline 做校验（`workflow/client.py:477-507`），按审批人身份鉴权。
 
 ## Sentinel（`ops/sentinel.py`）
 

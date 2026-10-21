@@ -201,7 +201,7 @@ session-pipeline/src/routing/routes.py → subprocess run([sys.executable, CCS_C
 
 **注意**：这是 pipeline→launcher 的唯一调用路径。launcher 不反向调用 pipeline。
 
-`CCS_CLI` 定义在 `paths.py:51`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
+`CCS_CLI` 定义在 `src/paths.py:46`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
 
 **`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：实测三天 497 个 completed 步骤里 32% 连 `exit_messages` 都没有，`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
@@ -277,4 +277,3 @@ PYTHONPATH=src python3 -m ccs register <R> ccs-<R>
 | SESSION_ROLES_ROOT | ~/hermes-session-roles | 角色定义目录（非此路径时注入默认拒绝） |
 | ALLOW_ROLES_WORKTREE_INJECT | (未设置) | 设为 1/true/yes 才允许从 worktree 注入生产 prompt |
 | SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
-| HERMES_SCRIPTS_DIR | ~/.hermes/scripts | Hermes 脚本目录 |

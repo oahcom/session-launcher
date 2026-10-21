@@ -5,11 +5,11 @@
 
 | 条目 | 原缺陷 | 现状与证据 |
 |------|--------|-----------|
-| L1 | feed_listener 把 `Enter` 当字面文本 | 已修：拆成两次 send-keys，`feed_listener.py:105-115` |
+| L1 | feed_listener 把 `Enter` 当字面文本 | 已修：拆成两次 send-keys，`feed_listener.py:120-127` |
 | L2 | persona workgroup 覆盖内置 `"*"` 通配 | 已修：`matrix.setdefault(name, set()).update(roles)`，`src/routing/gatekeeper.py:148` |
 | L3 | `_tmux_send` 吞异常、调用方仍报成功 | 已修：失败返回 False + `error("tmux send 重试耗尽…")`，`src/tmux_ops.py:418-447` |
 | L4 | ondemand 哨兵 `tmux_session=""` 判为存活 | 已修：空串直接 False，`src/tmux_ops.py:215-218` |
-| L5 | feed_listener 跨进程不回收、孤儿常驻 | 已修：pidfile `~/.hermes/run/feed_listeners/<tmux>.pid`，`core.py:1282`、`feed_listener.py:125-160` |
+| L5 | feed_listener 跨进程不回收、孤儿常驻 | 已修：pidfile `~/.hermes/run/feed_listeners/<tmux>.pid`，`core.py:1282`、`feed_listener.py:144-169` |
 | L6 | 限流把绿/黄消息一并计入 | 已修：SQL 只数 `sensitivity='red'`，`gatekeeper.py:296` |
 | L7 | `_check_bus_source` 的 `"partial"` 当通过 | 已修：`partial` 分支已删（`grep partial src/routing/gatekeeper.py` 无命中） |
 | L8 | 3 连败计数键用 role，忽略 instance_id | 已修：键用含实例的 `tmux_name`，`core.py:951-957` |

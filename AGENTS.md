@@ -24,7 +24,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 
 ## Git 工作流
 1. `main` 是基线分支；本仓没有 `quality-gate` 分支（`git branch -a` 实测只有 `main` + 若干 feature 分支）
-2. 编辑在 worktree 的 feature 分支上做：`git worktree list` 实测 `/home/administrator/wt-launcher [main]`、`/tmp/r2-lau [r2-launcher-docs]`；当前 checkout 在 `r77-routing-daemon-whitelist`
+2. 编辑在 worktree 的 feature 分支上做；当前检出分支用 `git branch --show-current` 查（worktree 数量随会话变，不写死清单）
 3. 小步提交，每完成一个逻辑单元立即 commit
 4. 出错用新提交修复，不要 revert
 5. 本地即生产环境
@@ -106,4 +106,3 @@ Browser Harness 注册在 `hermes-session-roles/personas/browser-harness/`，
 | SESSION_ROLES_ROOT | ~/hermes-session-roles | 角色定义目录（非此路径时注入默认拒绝） |
 | ALLOW_ROLES_WORKTREE_INJECT | (未设置) | 设为 1/true/yes 才允许从 worktree 注入生产 prompt |
 | SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
-| HERMES_SCRIPTS_DIR | ~/.hermes/scripts | Hermes 脚本目录 |

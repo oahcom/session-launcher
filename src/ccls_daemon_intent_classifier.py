@@ -615,8 +615,13 @@ class IntentReminderDaemon:
                 # 新一轮用户请求 → 预算重置，可重新提醒
                 st.request_ts = req
                 st.remind_count = 0
-                # 不清 last_remind_epoch：那是「角色在提醒后已经动过手」的锚点，
-                # 清零等于让每条新投递都绕过 mtime 守卫立刻再催一次。
+                # 锚点必须随请求一起作废：它表达的是"**这条请求**在提醒后已经被
+                # 回应过"，不能跨请求继承。转录 mtime 单调递增，一旦锚点留着，
+                # 下面的 mtime 守卫此后恒真 —— 该 session 再也收不到任何提醒
+                # （实测 2026-10-22 06:27：ccs-pm/ccs-engineer 的
+                # last_remind_epoch 分别是 05:31/00:37，mtime 已 06:27，
+                # guard_suppresses=True；全生态因此退化成"每角色一生一次"）。
+                st.last_remind_epoch = 0.0
             st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
@@ -627,7 +632,6 @@ class IntentReminderDaemon:
                 continue
             if self._push_reminder(sess, st.remind_count + 1, st.intent, req_text):
                 pushed += 1
-                self._bus_trace(sess)
                 if st.remind_count == self._MAX_REMINDERS:
                     # 预算耗尽转静默时留痕一次：否则"角色已对齐"与"daemon 挂了"
                     # 在观感上无法区分（journald 侧可查）。
@@ -640,19 +644,6 @@ class IntentReminderDaemon:
         if pushed:
             _save_states(self._states)
         return pushed
-
-    def _bus_trace(self, session: str) -> None:
-        # 重复提醒属监控/健康事件，写入 monitor_audit（语义正确），
-        # 不再污染 code_fix（角色据该 cat 找真实修复方案，噪声会稀释信号）。
-        try:
-            subprocess.run([
-                BUS_CLIENT, "write", "monitor_audit",
-                f"[ccls_daemon] 重复自检提醒 {session} (存在未对齐用户请求)",
-                "--evidence", f"round=R70 session={session}",
-                "--src", "ccls_daemon",
-            ], capture_output=True, timeout=5)
-        except Exception:
-            pass
 
     def run(self) -> None:
         """轮询主循环。
