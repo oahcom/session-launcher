@@ -238,6 +238,27 @@ claude 内部是否缓存该文件——不要当成通用结论，要重测再�
 | prompt 内容（`CLAUDE.md` 被重写） | 杀 claude，wrapper 3s 内重拉即重读。`ccs reload-knowledge --restart-idle` 就是这条：进程启动早于 CLAUDE.md mtime 且 pane 空闲的角色直接重启，忙的跳过。**别挂 timer**——prompt 一改所有空闲角色都该重启一次，10 分钟定时等于定期清空上下文 |
 | 启动参数（flags） | 杀 claude **没用**：argv 烤死在 pane 的 `bash -c` 字符串里，重拉还是旧参数（实测 reviewer：重启后新 pid 的 cmdline 仍带 `--bare`）。必须重建 session：`kill` claude → `tmux kill-session` → `ccs start <role> --no-attach` |
 
+切换启动参数的完整序列（子代理实测可复制；第 4 步是提交点）：
+
+```bash
+cd ~/session-launcher
+# 1 复核空闲：必须 0 命中
+tmux capture-pane -p -J -t ccs-<R> | tail -8 | grep -c "esc to interrupt\|Retrying attempt"
+# 2 内存闸门：MemAvailable > 1229MB
+free -m
+# 3 找该角色的 claude pid（role = cwd basename）
+for p in $(pgrep -x claude); do [ "$(basename "$(readlink /proc/$p/cwd)")" = "<R>" ] && pid=$p; done
+# 4 先杀 claude、立刻杀 session（包装器 sleep 3 是唯一窗口，别超过）
+kill -9 "$pid"; tmux kill-session -t ccs-<R>
+# 5 重建：注册表内角色
+PYTHONPATH=src timeout 200 python3 -m ccs start <R> --no-attach
+#    注册表外角色（archivist/curator/codex-dev 等，ccs start 报「角色不在注册表中」）
+PYTHONPATH=src python3 -c "from core import _launch_tmux; from pathlib import Path; print(_launch_tmux('ccs-<R>', Path.home()/'ccs-workspaces'/'<R>', role='<R>'))"
+PYTHONPATH=src python3 -m ccs register <R> ccs-<R>
+# 6 验证：cmdline 含 --tools + session 存活 + free -m
+```
+
+不要用 `ccs stop`：它的 `tmux kill-session` 有 5s 超时，超时后会留下孤儿 claude。
 判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
 
 ## 环境变量
