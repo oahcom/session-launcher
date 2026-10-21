@@ -79,3 +79,27 @@ def test_intercept_end_to_end_does_not_persist_token(tmp_path):
     raw = "".join(row["detail"] for row in conn.execute("SELECT detail FROM workflow_logs"))
     conn.close()
     assert _TOKEN not in raw, "intercept 路径仍把 token 写进了 workflow_logs"
+
+
+def test_cross_role_send_dedupes_non_red_within_window(tmp_path):
+    """非红消息 300s 窗口内相同内容只落 1 行（bus #432065：单条 /goal 曾 3494 行）。"""
+    r = gk.CrossRoleRouter(db_path=str(tmp_path / "wf.db"))
+    for _ in range(3):
+        r._log_cross_role_send("workflow_engine", "pg", "same goal text", "")
+    conn = r._get_conn()
+    n = conn.execute("SELECT COUNT(*) c FROM workflow_logs "
+                     "WHERE action='cross_role_send'").fetchone()["c"]
+    conn.close()
+    assert n == 1, f"非红重复消息应只落 1 行，实得 {n}"
+
+
+def test_cross_role_send_red_never_dedupes(tmp_path):
+    """红消息逐条落库：速率限制 COUNT 依赖精确行数，去重会削弱门禁。"""
+    r = gk.CrossRoleRouter(db_path=str(tmp_path / "wf.db"))
+    for _ in range(3):
+        r._log_cross_role_send("engineer", "qa", "red msg", "red")
+    conn = r._get_conn()
+    n = conn.execute("SELECT COUNT(*) c FROM workflow_logs "
+                     "WHERE action='cross_role_send'").fetchone()["c"]
+    conn.close()
+    assert n == 3, f"红消息不得去重，应 3 行实得 {n}"

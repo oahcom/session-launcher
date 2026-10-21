@@ -444,20 +444,31 @@ class CrossRoleRouter:
 
         sensitivity 供速率限制按红消息过滤——不记录的话统计会把绿/黄消息
         一并计入，正常协作量即可耗尽 🔴 额度（实测 2026-10-16）。
+
+        非红消息 300s 窗口内相同内容去重（#432065）：workflow_engine 重投
+        同一 /goal 曾单条落库 3494 行、全表 86% 为此类，无上限膨胀。红消息
+        必须逐条落库——速率限制 COUNT 依赖精确行数，去重会削弱门禁。
         """
+        detail = json.dumps({
+            "source": source, "target": target,
+            "message_preview": _redact_secrets(message)[:200],
+            "sensitivity": sensitivity,
+        }, ensure_ascii=False)
         conn = self._get_conn()
         try:
+            if sensitivity != "red":
+                dup = conn.execute(
+                    "SELECT 1 FROM workflow_logs WHERE action='cross_role_send' "
+                    "AND actor=? AND detail=? AND ts>? LIMIT 1",
+                    (source, detail, time.time() - 300)
+                ).fetchone()
+                if dup:
+                    return
             conn.execute(
                 "INSERT INTO workflow_logs (workflow_instance_id, task_id, "
                 "action, actor, detail, ts) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (None, None, "cross_role_send", source,
-                 json.dumps({
-                     "source": source, "target": target,
-                     "message_preview": _redact_secrets(message)[:200],
-                     "sensitivity": sensitivity,
-                 }, ensure_ascii=False),
-                 time.time())
+                (None, None, "cross_role_send", source, detail, time.time())
             )
             conn.commit()
         finally:
