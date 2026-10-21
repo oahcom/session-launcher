@@ -51,10 +51,6 @@ def _wake_ccs(role_name: str, context: str = "",
               by_role: str = "") -> dict:
     return _core().wake_ccs(role_name, context=context, by_role=by_role)
 
-def _force_start(role_name: str, by_role: str = "",
-                 init_prompt: str = "") -> dict:
-    return _core().force_start_ccs(role_name, by_role=by_role)
-
 def _find_pid(tmux_name: str, process_name: str = "claude") -> int | None:
     return _core()._find_claude_pid(tmux_name, process_name)
 
