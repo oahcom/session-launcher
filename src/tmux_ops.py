@@ -22,7 +22,7 @@ __all__ = [
     'CODEX_READY_RETRIES',
     'CODEX_READY_INTERVAL',
     '_MEM_FREE_MIN_MB',
-    '_SWAP_LOW_AVAIL_MB',
+    '_CGROUP_HIGH_PCT',
     '_CCS_LAUNCH_INTERVAL',
 ]
 
@@ -113,12 +113,15 @@ CODEX_READY_RETRIES = 15
 CODEX_READY_INTERVAL = 0.5
 
 _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
-# swap 余量下限：MemAvailable 充足但 swap 见底时，新 claude 仍会卡在内核
-# __mem_cgroup_handle_over_high（实测 2026-10-16：SwapFree=0 时 4 个 claude
-# 停在 Dl+ 不可中断睡眠，pane 空白、界面不出现）。只看 MemAvailable 的
-# 原判据对此完全无感——available 显示 6.1GB 却起不来角色。
+# 2026-10-16 的事故（4 个 claude 停在 Dl+ 不可中断、pane 空白，而 MemAvailable
+# 还有 6.1GB）不是宿主机内存不足，是**角色所在 cgroup 撞到 memory.high**：
+# 撞限时内核在 __mem_cgroup_handle_over_high 里同步回收，表现为不可中断睡眠。
+# 所以这里先看 cgroup 水位，宿主机 swap/avail 只作兜底——只看 /proc/meminfo
+# 的判据对 cgroup 侧回收完全无感。
+_PIPELINE_CGROUP = Path("/sys/fs/cgroup/system.slice/session-pipeline.service")
+_CGROUP_HIGH_PCT = 95  # memory.current 达到 memory.high 的这个百分比就拒启
 _SWAP_FREE_MIN_MB = 128
-_SWAP_LOW_AVAIL_MB = 1024  # swap 见底但可用内存仍有这个数就不拦（见 _memory_shortage）
+_SWAP_LOW_AVAIL_MB = 1024  # 兜底判据：swap 见底且宿主机可用内存也紧才拦
 
 _CCS_LAUNCH_INTERVAL = 8  # 连续启动 CCS 之间至少等待秒数
 
@@ -127,7 +130,15 @@ _last_ccs_launch_ts: float = 0.0
 
 
 def _memory_shortage(role: str) -> str | None:
-    """内存/swap 不足时返回拒启原因，否则 None。"""
+    """cgroup 水位或宿主机内存不足时返回拒启原因，否则 None。"""
+    try:
+        cur = int((_PIPELINE_CGROUP / "memory.current").read_text())
+        high = int((_PIPELINE_CGROUP / "memory.high").read_text())
+        if 0 < high < (1 << 62) and cur * 100 // high >= _CGROUP_HIGH_PCT:
+            return (f"pipeline cgroup 已用 {cur // 2**20}MB / high {high // 2**20}MB"
+                    f"（{cur * 100 // high}%），跳过 {role} 启动：会卡在 cgroup 回收")
+    except (OSError, ValueError):
+        pass  # cgroup 不可见（容器外/权限不足）时退回宿主机判据
     try:
         # /proc/meminfo 里 MemAvailable 排在 SwapTotal/SwapFree 之前，逐个
         # startswith 判并 break 会让 swap 读不到 → 先整体解析，再判断。
@@ -142,13 +153,9 @@ def _memory_shortage(role: str) -> str | None:
         avail_mb = fields.get("MemAvailable", 0) // 1024
         swap_total_mb = fields.get("SwapTotal", 0) // 1024
         swap_free_mb = fields.get("SwapFree", 0) // 1024
-        # swap 见底：新进程会卡在内核 __mem_cgroup_handle_over_high（不可中断
-        # 睡眠）——pane 空白、Claude 界面不出现。MemAvailable 对此无感，必须
-        # 独立判。swap_total=0 表示未启用 swap，不构成拦阻理由。
-        # swap 见底只在内存也紧时才是风险：8G swap 被占满但 MemAvailable 还有 2G
-        # 时，新 claude 正常起来（实测 2026-10-21：swap_free=0/avail=2291MB 启动成功）。
-        # 只看 swap 会导致「swap 一旦占满就再也起不来任何角色」——2026-10-21 就这样
-        # 把 archivist 挡在门外、进程停摆。真正的判据是两者同时紧。
+        # 兜底：swap 见底只在宿主机内存也紧时才是风险（实测 2026-10-21：
+        # swap_free=0/avail=2291MB 时新 claude 正常起来；当时单看 swap 的旧判据
+        # 把 archivist 挡在门外、角色停摆）。cgroup 才是主判据，见函数开头。
         if swap_total_mb > 0 and swap_free_mb < _SWAP_FREE_MIN_MB \
                 and avail_mb < _SWAP_LOW_AVAIL_MB:
             return (f"swap 仅剩 {swap_free_mb}MB 且可用内存仅 {avail_mb}MB"
