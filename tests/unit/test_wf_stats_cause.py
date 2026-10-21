@@ -110,8 +110,59 @@ def test_cancel_keeps_step_results_and_records_reason():
         conn.close()
 
 
+def test_close_does_not_clobber_concurrent_step_updates():
+    """合并必须在一条 UPDATE 里完成：SELECT 之后再 UPDATE 会覆盖并发写入的步骤。"""
+    uri = "file:race_demo_test?mode=memory&cache=shared"
+    a = sqlite3.connect(uri, uri=True, timeout=5)
+    b = sqlite3.connect(uri, uri=True, timeout=5)
+    a.row_factory = sqlite3.Row
+    a.executescript("""
+        CREATE TABLE workflow_instances (instance_id TEXT PRIMARY KEY, status TEXT,
+            completed_at REAL, step_results TEXT, task_id TEXT);
+        CREATE TABLE workflow_logs (workflow_instance_id TEXT, task_id TEXT, action TEXT,
+            actor TEXT, detail TEXT, ts REAL);
+    """)
+    a.execute("INSERT INTO workflow_instances VALUES ('wf1', 'running', NULL, ?, NULL)",
+              (json.dumps({"s1": {"status": "notified", "notified_at": 1.0}}),))
+    a.commit()
+
+    class RaceProxy:
+        """在 _close 的 UPDATE 真正执行前，模拟引擎提交一次步骤更新。"""
+        def __init__(self, conn):
+            self._conn, self.fired = conn, False
+
+        def execute(self, sql, params=()):
+            if not self.fired and sql.startswith("UPDATE workflow_instances SET status=?") \
+                    and "json_set" in sql:
+                self.fired = True
+                b.execute("UPDATE workflow_instances SET step_results=? WHERE instance_id='wf1'",
+                          (json.dumps({"s1": {"status": "completed"},
+                                      "s2": {"subflow_id": "wf_sub"}}),))
+                b.commit()
+            return self._conn.execute(sql, params)
+
+        def commit(self):
+            return self._conn.commit()
+
+        def rollback(self):
+            return self._conn.rollback()
+
+    wf = object.__new__(WorkflowClient)
+    wf._conn, wf.role, wf.db_path = RaceProxy(a), 'tester', None
+    try:
+        assert wf.cancel('wf1', 'zombie cleanup') is True
+        out = json.loads(a.execute("SELECT step_results FROM workflow_instances").fetchone()[0])
+        assert out["s2"] == {"subflow_id": "wf_sub"}, f"并发写入被覆盖: {out}"
+        assert out["s1"]["status"] == "completed"
+        assert out["_close_reason"]["reason"] == "zombie cleanup"
+    finally:
+        a.close()
+        b.close()
+
+
 if __name__ == "__main__":
     test_cancel_cause_buckets()
     test_cancelled_by_cause_uses_last_cancel_family_log()
     test_cancel_keeps_step_results_and_records_reason()
-    print("PASS", len(CASES), "cases + 2 sql cases")
+    test_close_does_not_clobber_concurrent_step_updates()
+    print("PASS", len(CASES), "cases + 3 sql cases")
