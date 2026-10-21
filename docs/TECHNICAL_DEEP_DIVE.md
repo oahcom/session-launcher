@@ -59,7 +59,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 ### 3.4 ops/sentinel.py — 哨兵
 
-**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（实测 17 个文件），
+**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，实测 12~17 波动），
 健康字段另落 `~/.hermes/run/ccs-health/<role>.json`。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
 bus_timeout / session_id / engine / health。
