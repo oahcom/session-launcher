@@ -460,18 +460,16 @@ class WorkflowClient:
     _CLOSE_REASON_KEY = "_close_reason"
 
     def _close(self, wf_id: str, status: str, reason: str):
-        row = self._conn.execute(
-            "SELECT step_results FROM workflow_instances WHERE instance_id=?", (wf_id,)).fetchone()
-        try:
-            sr = json.loads((row[0] if row else None) or "{}")
-        except (TypeError, ValueError):
-            sr = {}          # 已损坏的旧值：宁可只保留 reason，也不整个丢掉
-        if not isinstance(sr, dict):
-            sr = {}
-        sr[self._CLOSE_REASON_KEY] = {"status": status, "reason": reason}
+        # 合并必须在一条 UPDATE 内完成：先 SELECT 再 UPDATE 会覆盖并发写
+        # （engine 在两步之间提交的步骤状态会丢，codex 已复现）。
+        # json_valid 兜住已损坏的历史值：那种情况只能保留 reason。
+        payload = json.dumps({"status": status, "reason": reason}, ensure_ascii=False)
         return self._update_if_mutable(
-            wf_id, "status=?, completed_at=?, step_results=?",
-            (status, time.time(), json.dumps(sr, ensure_ascii=False)))
+            wf_id,
+            "status=?, completed_at=?, step_results=CASE WHEN json_valid(step_results) "
+            "THEN json_set(step_results, '$._close_reason', json(?)) "
+            "ELSE json_object('_close_reason', json(?)) END",
+            (status, time.time(), payload, payload))
 
     def fail(self, wf_id: str, reason: str):
         if not self._close(wf_id, "failed", reason):
