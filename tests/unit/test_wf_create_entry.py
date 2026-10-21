@@ -14,9 +14,13 @@
 
 跑法：python3 -m pytest tests/unit/test_wf_create_entry.py -q
 """
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# sys.executable 在本机 python3 包装下可能为空串 → subprocess 抛 PermissionError: ''。
+_PY = sys.executable or shutil.which("python3") or "python3"
 
 import pytest
 
@@ -62,7 +66,8 @@ def test_pipeline_client_loadable_in_child_process():
         "from workflow.client import WorkflowClient\n"
         "print('OK', WorkflowClient.__module__)\n"
     )
-    r = subprocess.run([sys.executable, "-c", code],
+    # sys.executable 在本机 python3 包装下可能为空串 → PermissionError: ''。
+    r = subprocess.run([_PY, "-c", code],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, f"子进程 import 失败: {r.stderr[-300:]}"
     assert "OK" in r.stdout
@@ -92,7 +97,7 @@ def test_default_path_creates_workflow_and_cleans_up():
         "finally:\n"
         "    wc.close()\n"
     )
-    r = subprocess.run([sys.executable, "-c", code],
+    r = subprocess.run([_PY, "-c", code],
                        capture_output=True, text=True, timeout=120)
     last = (r.stdout or "").strip().splitlines()[-1:] or [""]
     assert last[0].startswith("{"), f"无结构化输出: {r.stderr[-300:]}"
