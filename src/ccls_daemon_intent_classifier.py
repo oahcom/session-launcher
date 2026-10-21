@@ -118,8 +118,11 @@ def _transcript_mtime(session: str) -> float:
     实测 qa 2 小时 34 条零工具调用的回复，33 条是第 2、3 次提醒催出来的
     「已完成/无新增动作」——第 1 次没能让它动手，第 2、3 次只会让它复述。
     """
-    role = session[4:] if session.startswith("ccs-") else session
-    d = Path.home() / ".claude" / "projects" / f"-home-administrator-ccs-workspaces-{role}"
+    role = IntentReminderDaemon._role_of(session)
+    # Claude Code 把角色名里的 _ 也换成 -（ccs-workspaces-knowledge-curator）；
+    # 不替换则下划线角色（knowledge_curator/product_architect/security_auditor）
+    # 恒读到 0.0 → 抑制分支永不生效。
+    d = Path.home() / ".claude" / "projects" / f"-home-administrator-ccs-workspaces-{role.replace('_', '-')}"
     try:
         return max((os.path.getmtime(f) for f in d.glob("*.jsonl")), default=0.0)
     except OSError:

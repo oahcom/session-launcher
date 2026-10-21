@@ -1213,6 +1213,7 @@ class TestStopRemindingAfterReply(unittest.TestCase):
         d._states['ccs-qa'] = _mod._SessionState(
             request_ts=now, remind_count=1, last_remind_epoch=last_remind_epoch)
         with patch.object(_mod, '_transcript_mtime', return_value=transcript_mtime), \
+             patch.object(_mod, 'STATE_FILE', Path(tempfile.mkdtemp()) / 'state.json'), \
              patch.object(d, '_read_request_traces',
                           return_value={'qa': (now, _mod.Intent.TASK, 'test message')}), \
              patch.object(d, '_bus_trace'), \
@@ -1220,6 +1221,15 @@ class TestStopRemindingAfterReply(unittest.TestCase):
              patch.object(d, '_push_reminder', return_value=True) as push:
             d._tick()
         return push
+
+    def test_underscore_role_reads_dash_directory(self):
+        """下划线角色必须读到 dashed 转录目录，否则抑制分支恒不生效。"""
+        root = Path(tempfile.mkdtemp())
+        d = root / ".claude" / "projects" / "-home-administrator-ccs-workspaces-knowledge-curator"
+        d.mkdir(parents=True)
+        (d / "s.jsonl").write_text("{}", encoding="utf-8")
+        with patch.object(_mod.Path, "home", staticmethod(lambda: root)):
+            self.assertGreater(_mod._transcript_mtime("ccs-knowledge_curator"), 0)
 
     def test_no_second_reminder_after_role_replied(self):
         """提醒之后角色已回过一轮（转录比上次提醒新）→ 不再注入。"""
