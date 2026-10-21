@@ -40,9 +40,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 
 ## 测试
 ```bash
-python3 -m pytest tests/test_6dimension_deep_qa.py -v
-python3 -m pytest tests/test_e2e_mock.py -v
-python3 -m pytest tests/test_system_health.py -v
+python3 -m pytest tests/ -q   # 上述三个文件已不存在：顶层 6 个 + unit/
 PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops; print('OK')"
 ```
 
@@ -74,7 +72,7 @@ P5: 可测试性（可 mock/幂等）？         → 函数是否接受 db_path 
 ```bash
 # 改角色定义 → 检查路由表同步
 cd /home/administrator/session-pipeline && PYTHONPATH=src python3 -c \
-  "from router import get_router; r = get_router(); print(len(r._routing))"
+  "from routing.router import get_router; r = get_router(); print(len(r._routing))"
 
 # 改路由逻辑 → 检查 CCS 启动正常
 cd /home/administrator/session-launcher && python3 src/ccs.py health
@@ -98,7 +96,7 @@ cd /home/administrator/session-launcher && python3 src/ccs.py health
 ---
 
 ## Browser Harness 关联
-Browser Harness（57 人格）注册在 hermes-session-roles/personas/browser-harness/，
+Browser Harness（53 人格）注册在 hermes-session-roles/personas/browser-harness/，
 通过 `_bh_to_sr_map.json` 映射到 session 角色。
 
 ## 环境变量

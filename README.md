@@ -86,7 +86,7 @@ src/
   ├── ccs_socket.py         CCS 直接通信客户端（<1ms Unix Socket）
   │
   # ── 基础设施 ──
-  ├── ops/sentinel.py       哨兵文件读写（/tmp/ccs-sentinels/）
+  ├── ops/sentinel.py       哨兵文件读写（~/.hermes/run/ccs-sentinels/）
   ├── ops/watchdog.py       伙伴存活守护线程（自动重启）
   ├── ops/tracker.py        轮次追踪 + 死锁检测
   ├── ops/ccs_config.py     全局配置中心
@@ -128,13 +128,13 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 
 | 单元 | 职责 | 状态检查 |
 |------|------|---------|
-| `ccs-intent-guardian.service` | 用户意图守护：对 ccs 的疑问/任务类输入重复注入两条自检提醒（"你真解决了用户问题吗？"+"你真严格按用户提示完成了吗？"），防止答非所问 | `systemctl --user is-active ccs-intent-guardian.service` |
+| `ccs-intent-guardian.service` | 用户意图守护：对 ccs 的疑问/任务类输入注入两条自检提醒（至多 3 次；角色回过一轮即停，R123）（"你真解决了用户问题吗？"+"你真严格按用户提示完成了吗？"），防止答非所问 | `systemctl --user is-active ccs-intent-guardian.service` |
 
 **意图判定逻辑**：`src/user_intent_reminder.py` 的 `classify_intent` 将输入分为 `QUESTION`/`TASK`/`OTHER`；仅疑问/任务类在 `core.send` 路径经 `inject_reminder` 注入提醒（`pipeline`/`daemon` 自动化来源排除，防递归自提醒）。守护类 `IntentReminderDaemon`（`src/ccls_daemon_intent_classifier.py`）从 systemd 自启动，验证：`python3 src/ccls_daemon_intent_classifier.py --selfcheck`（11/11 PASS）。
 
 ### 2. 哨兵文件
 
-每个 CCS 在 `/tmp/ccs-sentinels/<role>.json` 写入运行状态：
+每个 CCS 在 `~/.hermes/run/ccs-sentinels/<role>.json` 写入运行状态（健康字段另落 `~/.hermes/run/ccs-health/<role>.json`）：
 
 ```json
 {
@@ -169,7 +169,7 @@ ccs.py send-direct alice bob "hi"
 
 **协议**：JSON-over-newline，支持 SUBSCRIBE/PUBLISH/PING/STATS
 
-**认证**：`export CCS_SOCKET_TOKEN=my_secret_key`
+**认证**：无——socket 不读 `CCS_SOCKET_TOKEN`（该名仅存在于文档），同机进程可任意 PUBLISH。
 
 ### 5. Bus Push 实时推送
 
@@ -192,7 +192,7 @@ bus_client.py write debate "消息"
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
 ```
-pipeline/routes.py → subprocess run([sys.executable, CCS_CLI, "send", role, message])
+session-pipeline/src/routing/routes.py → subprocess run([sys.executable, CCS_CLI, "send", role, message])
 ```
 
 **注意**：这是 pipeline→launcher 的唯一调用路径。launcher 不反向调用 pipeline。
@@ -206,7 +206,7 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 ```python
 # core.py: _write_mcp_settings()
 # 从 persona JSON 读取 mcp_servers 字段
-# 只给每个角色开启它声明需要的 MCP server
+# 全局 mcpServers 全量继承，再按 persona 的 mcp_servers 增补（不是只开声明的）
 ```
 
 ---

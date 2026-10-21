@@ -11,7 +11,7 @@ CCS 创建/停止/检测/注入，worktree 管理，哨兵系统，跨角色协�
 ```
 ccs.py start <role>  → 读取 persona JSON + prompt 模板
                      → 创建 tmux session（ccs-<role>）
-                     → 创建 cc-workspaces/<role>/ worktree
+                     → 创建 ccs-workspaces/<role>/ 目录
                      → inject_role_knowledge_into_workspace() 写入角色知识
                      → tmux send 发送初始任务指令
                      → 写入哨兵
@@ -35,13 +35,13 @@ ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块）
 ### 启动参数
 ```bash
 python3 src/ccs.py start <role>               # 交互式
-python3 src/ccs.py start <role> --detach      # 后台
+python3 src/ccs.py start <role> --no-attach   # 后台（无 --detach 参数）
 python3 src/ccs.py start <role> --partner x   # 带伙伴
 ```
 
 ### 服务检查
 ```bash
-python3 src/ccs.py status <role>
+python3 src/ccs.py status          # 不带参数；单角色用 status-role <role>
 python3 src/ecosystem_health.py --json   # 或 --ci（异常时 exit 1）
 ```
 
@@ -59,11 +59,6 @@ python3 src/ecosystem_health.py --json   # 或 --ci（异常时 exit 1）
 
 - 源码更新后 daemon 主动退出，交 systemd `Restart=always` 以新代码拉起 → 重启计数增长属**设计**，非崩溃循环
 - 改触发器/预算后必须重启该 service，否则跑的是旧代码
-
-### 路由策略
-- sticky（默认）：同角色消息路由到同一 CCS
-- round-robin：轮询分发
-- priority：按优先级路由
 
 ### 禁止操作
 - ❌ 直接修改 ccs-workspaces/<role>/ 下的 CLAUDE.md（由 inject 管理）
