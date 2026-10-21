@@ -13,14 +13,14 @@ sys.path.insert(0, str(_HOME / ".hermes" / "scripts"))
 
 # ── 从 hermes_bus.config 统一导入 ──
 from hermes_bus.config import (
-    BUS_CLIENT, BUS_PROTOCOL,
-    SISTER_BUS_CCS_SOCK, SISTER_BUS_FEED_SOCK,
+    BUS_CLIENT,
+    SISTER_BUS_CCS_SOCK,
     SISTER_BUS_DKK_SOCK, SISTER_BUS_SSK_SOCK,
 )
 
 # re-exports：各模块从 paths 导入以上常量
-__all__ = ["BUS_CLIENT", "BUS_PROTOCOL",
-           "SISTER_BUS_CCS_SOCK", "SISTER_BUS_FEED_SOCK",
+__all__ = ["BUS_CLIENT",
+           "SISTER_BUS_CCS_SOCK",
            "SISTER_BUS_DKK_SOCK", "SISTER_BUS_SSK_SOCK",
            "STARVE_STATE", "SESSION_PIPELINE_SRC"]
 # ── 路径常量：由本项目自行管理，不依赖 bus config ──
@@ -36,14 +36,10 @@ LIFECYCLE_SENTINEL_DIR = Path(_HOME / ".hermes" / "run" / "ccs-sentinels")
 HERMES_STATE = _HOME / ".hermes" / "state"
 # 环境变量口子：测试/演练必须能把工作流库重定向到临时路径，否则一跑就是生产。
 WORKFLOWS_DB = Path(os.environ.get("HERMES_WORKFLOWS_DB") or HERMES_STATE / "workflows.db")
-CURSOR_DB = HERMES_STATE / "pipeline_cursor.db"
-ROUTING_DB = HERMES_STATE / "routing.db"
-ACK_TRACKER_DB = HERMES_STATE / "ack_tracker.db"
 # 与 session-pipeline/src/paths.py 保持一致；daemon.py 从 paths 导入此常量
 STARVE_STATE = _HOME / ".hermes" / "run" / "wf_starve.json"
 # ── 模板与配置 ──
 HERMES_TEMPLATES = _HOME / ".hermes" / "templates"
-HERMES_BACKUPS = _HOME / ".hermes" / "backups"
 WORKFLOW_GUIDE = HERMES_TEMPLATES / "WORKFLOW_GUIDE.md"
 
 # ── 项目根目录 ──
@@ -54,15 +50,12 @@ SESSION_PIPELINE_SRC = Path(_SESSION_PIPELINE_SRC)
 # ── CCS CLI（供跨项目引用）──
 CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"
 
-# ── API Endpoints ──
-HEALTH_CHECK_ENDPOINTS = os.environ.get('HEALTH_CHECK_ENDPOINTS', 'http://localhost:8890').split(',')
 
 # ── 角色目录 ──
 SESSION_ROLES_PERSONAS = SESSION_ROLES_ROOT / "personas" / "session-roles"
 
 # ── Hermes 工作流 ──
 HERMES_WORKFLOWS = _HOME / ".hermes" / "workflows"
-HERMES_WORKFLOW_CHAINS = HERMES_WORKFLOWS / "chains"
 
 
 
