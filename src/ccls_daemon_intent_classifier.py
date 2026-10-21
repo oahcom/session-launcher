@@ -111,11 +111,29 @@ def _tmux_sessions() -> list[str] | None:
               file=sys.stderr, flush=True)
         return None
 
+def _transcript_mtime(session: str) -> float:
+    """角色最近一次落盘时刻（epoch，0=读不到）。只 stat，不解析文件。
+
+    用来判"提醒之后角色是否真的回过一轮"：回过就不再提醒。
+    实测 qa 2 小时 34 条零工具调用的回复，33 条是第 2、3 次提醒催出来的
+    「已完成/无新增动作」——第 1 次没能让它动手，第 2、3 次只会让它复述。
+    """
+    role = session[4:] if session.startswith("ccs-") else session
+    d = Path.home() / ".claude" / "projects" / f"-home-administrator-ccs-workspaces-{role}"
+    try:
+        return max((os.path.getmtime(f) for f in d.glob("*.jsonl")), default=0.0)
+    except OSError:
+        return 0.0
+
+
 @dataclass
 class _SessionState:
     """Per-session reminder state."""
     request_ts: float = 0.0   # 该角色最近一次用户请求时刻（bus 注入痕迹 timestamp）
     last_remind_ts: float = 0.0
+    # 上次提醒的 epoch（last_remind_ts 是 monotonic，不能跟落盘时间比）。
+    # 不持久化：重启后归零 → 允许立即提醒一次，无害。
+    last_remind_epoch: float = 0.0
     remind_count: int = 0
     # 该请求的意图（evidence intent= 字段）。取不到时调用方降级 TASK。
     intent: "Intent | None" = None
@@ -345,6 +363,7 @@ class IntentReminderDaemon:
                       file=sys.stderr, flush=True)
                 return False
             st.last_remind_ts = now
+            st.last_remind_epoch = time.time()
             st.remind_count += 1
             # 留一行可观测记录：提醒覆盖率此前只能靠翻 pane/转录才知道，而"角色
             # 对话质量"的第一前提就是提醒本身真的到达了、带着正文。
@@ -542,9 +561,15 @@ class IntentReminderDaemon:
                 # 新一轮用户请求 → 预算重置，可重新提醒
                 st.request_ts = req
                 st.remind_count = 0
+                st.last_remind_epoch = 0.0
             st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
+            if st.last_remind_epoch and _transcript_mtime(sess) > st.last_remind_epoch:
+                # 提醒后角色已经回过一轮 → 不再催。第 1 次没让它动手时，
+                # 第 2、3 次只会催出复述（实测 qa 2h 34 条零动作回复里 33 条
+                # 由此产生）。转录 mtime 一次 stat 即可，不解析内容。
+                continue
             if self._push_reminder(sess, st.remind_count + 1, st.intent, req_text):
                 pushed += 1
                 self._bus_trace(sess)

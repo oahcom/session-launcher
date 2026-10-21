@@ -1168,3 +1168,47 @@ class TestRedactionDoesNotEatRequests(unittest.TestCase):
         core = _import_core()
         for msg in ("密码 hunter2", "口令: Zx9!kLm"):
             self.assertEqual(core._req_digest(msg), "***")
+
+class TestStopRemindingAfterReply(unittest.TestCase):
+    """提醒后角色已回过一轮 → 不再催（第 2、3 次只会催出复述）。
+
+    实测 qa 2h 内 34 条零工具调用的回复，其中 33 条由第 2、3 次提醒触发
+    （请求正文是 test message）。判据用转录 mtime，一次 stat，不解析内容。
+    """
+
+    def _daemon(self, tmpdir):
+        d = IntentReminderDaemon(interval=0.01)
+        d._MAX_REMINDERS = 3
+        return d
+
+    def _tick_with(self, last_remind_epoch, transcript_mtime):
+        d = self._daemon(None)
+        now = time.time()
+        d._states['ccs-qa'] = _mod._SessionState(
+            request_ts=now, remind_count=1, last_remind_epoch=last_remind_epoch)
+        with patch.object(_mod, '_transcript_mtime', return_value=transcript_mtime), \
+             patch.object(d, '_read_request_traces',
+                          return_value={'qa': (now, _mod.Intent.TASK, 'test message')}), \
+             patch.object(d, '_bus_trace'), \
+             patch.object(_mod, '_tmux_sessions', return_value=['ccs-qa']), \
+             patch.object(d, '_push_reminder', return_value=True) as push:
+            d._tick()
+        return push
+
+    def test_no_second_reminder_after_role_replied(self):
+        """提醒之后角色已回过一轮（转录比上次提醒新）→ 不再注入。"""
+        now = time.time()
+        push = self._tick_with(last_remind_epoch=now - 60, transcript_mtime=now - 10)
+        push.assert_not_called()
+
+    def test_still_reminds_when_role_silent(self):
+        """角色一直没回（转录比上次提醒旧）→ 照常催，不许静默停发。"""
+        now = time.time()
+        push = self._tick_with(last_remind_epoch=now - 60, transcript_mtime=now - 600)
+        push.assert_called_once()
+
+    def test_first_reminder_not_blocked_by_old_transcript(self):
+        """还没提醒过（last_remind_epoch=0）→ 转录再新也必须发第一次。"""
+        now = time.time()
+        push = self._tick_with(last_remind_epoch=0.0, transcript_mtime=now)
+        push.assert_called_once()
