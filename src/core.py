@@ -640,6 +640,8 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 排除模型自读文件）能逐字复述文件中段小节，与 --append-system-prompt-file 等价，
     # 所以两个参数都不给——同时给会把同一份 ~10KB prompt 注入两次。
     # 代价：global hooks / MCP 服务器随之启用（7 个 workspace 自带 stop-check hooks）。
+    # 注意：这串 argv 在 tmux session 创建时就烤进 pane 的 bash -c 里，改了参数只有重建
+    # session（ccs start）才生效——只杀 claude 会让 wrapper 用旧 argv 重拉（实测 reviewer）。
     _TOOLSET = "Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill"
     cmd = (
         "while true; do "

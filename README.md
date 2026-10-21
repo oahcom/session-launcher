@@ -222,18 +222,23 @@ python3 src/ccs.py health
 
 ## 提示词生效方式
 
-`ccs reload-knowledge [role] [--restart-idle]`（以及 ccs-reload-knowledge.timer，每 10 分钟）只重写
-`ccs-workspaces/*/CLAUDE.md`；`core.py:_launch_tmux` 用 `--append-system-prompt-file` 把该文件
-在 claude 进程启动时交给 claude。实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，
-重启进程后才答出新文案（n=1，未验证 claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。
-workspace 里没有 CLAUDE.md 时整段参数被省略（claude 对缺失文件直接 exit 1），
-即该角色静默地不注入任何 prompt。
+`core.py:_launch_tmux` 起的是
+`claude --model 9router_hermes --tools Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill --effort high`，
+workspace 的 `CLAUDE.md` 靠 claude 的 auto-discovery 加载（cwd 就是 `~/ccs-workspaces/<role>`）。
+不加 `--bare`：它只暴露 Bash/Edit/Read，Task/Agent、WebSearch、Write、Skill 全部消失。
+也不加 `--append-system-prompt-file`：与 auto-discovery 同时给会把同一份 prompt 注入两次，
+而严格探针（`--tools ""` 禁工具、排除模型自读文件）下发现式加载能逐字复述文件中段小节，两者等价。
+实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，重启进程后才答出新文案（n=1，未验证
+claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。
 
-生效 = 让进程重新启动：外层 `while true … sleep 3` 会在 claude 退出后自动重拉，
-所以对空闲角色 `kill <claude pid>` 即可（或 `ccs stop` + `ccs start`）。
-`--restart-idle` 把这一步做成一条命令：进程启动早于 CLAUDE.md mtime（即 `injected (1 workspace(s))`
-那次写入）且 pane 空闲的角色直接重启，忙的跳过。**不要挂到 timer 上**：每个 prompt 改动都要重启一次
-空闲角色，做成 10 分钟定时 = 定期清掉所有空闲角色的上下文。判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
+**两件不同的事，别混**：
+
+| 变更 | 生效方式 |
+|---|---|
+| prompt 内容（`CLAUDE.md` 被重写） | 杀 claude，wrapper 3s 内重拉即重读。`ccs reload-knowledge --restart-idle` 就是这条：进程启动早于 CLAUDE.md mtime 且 pane 空闲的角色直接重启，忙的跳过。**别挂 timer**——prompt 一改所有空闲角色都该重启一次，10 分钟定时等于定期清空上下文 |
+| 启动参数（flags） | 杀 claude **没用**：argv 烤死在 pane 的 `bash -c` 字符串里，重拉还是旧参数（实测 reviewer：重启后新 pid 的 cmdline 仍带 `--bare`）。必须重建 session：`kill` claude → `tmux kill-session` → `ccs start <role> --no-attach` |
+
+判断空闲要看 pane 同时没有 `esc to interrupt` **和** `Retrying attempt`——只查前者会在 429 重试时误发按键。
 
 ## 环境变量
 
