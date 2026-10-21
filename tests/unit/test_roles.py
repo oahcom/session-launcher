@@ -727,19 +727,33 @@ class TestInjectRoleKnowledge:
         assert "just some text" in content
         assert "产出分类:" in content
 
-    def test_non_canonical_roles_root_refused(self, tmp_path):
-        """P12h: SESSION_ROLES_ROOT 非主仓 → 拒绝注入，文件不动"""
+    def test_non_canonical_roles_root_refused(self, tmp_path, monkeypatch):
+        """P12j: SESSION_ROLES_ROOT 非主仓 → 拒绝注入，文件不动（含 ALLOW=0 的"关"）"""
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("keep me")
+        monkeypatch.delenv("ALLOW_ROLES_WORKTREE_INJECT", raising=False)
         with patch.object(_roles, "SESSION_ROLES_ROOT", tmp_path), \
              patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("refused"), result
         assert md_path.read_text() == "keep me"
 
+    def test_allow_zero_still_refuses(self, tmp_path, monkeypatch):
+        """P12k: ALLOW_ROLES_WORKTREE_INJECT=0/false 是"关"，不得 fail-open"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text("keep me")
+        with patch.object(_roles, "SESSION_ROLES_ROOT", tmp_path), \
+             patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+            for value in ("0", "false", "no"):
+                monkeypatch.setenv("ALLOW_ROLES_WORKTREE_INJECT", value)
+                result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+                assert result.startswith("refused"), (value, result)
+        assert md_path.read_text() == "keep me"
+
     def test_worktree_inject_opt_in(self, tmp_path, monkeypatch):
-        """P12i: 显式 ALLOW_ROLES_WORKTREE_INJECT=1 → 放行"""
+        """P12l: 显式 ALLOW_ROLES_WORKTREE_INJECT=1 → 放行"""
         import routing.roles as _roles
         md_path = tmp_path / "CLAUDE.md"
         md_path.write_text("content")

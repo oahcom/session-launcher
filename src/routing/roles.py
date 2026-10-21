@@ -384,7 +384,8 @@ def _resolve_ws_paths(name: str) -> list[Path]:
         except OSError:
             _txt = ""
         _sys = re.search(r"<!-- WORKSPACE_SYS:START -->(.*?)<!-- WORKSPACE_SYS:END -->", _txt, re.S)
-        _owned = f"你是 {p2.name}，" in _txt[:400] or bool(
+        # 全文搜归属声明，不设偏移窗口：窗口 400 时实测 22 个文件命中位置在 6395-7940 → 死判据。
+        _owned = f"你是 {p2.name}，" in _txt or bool(
             _sys and f"属于 {p2.name}，" in _sys.group(1))
         if not _owned:
             paths.append(p2 / "CLAUDE.md")
@@ -410,7 +411,9 @@ def _strip_stale_prompt_prefix(prefix: str) -> str:
     if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
         return prefix
     kept = [m.group(0) for m in _PROTECTED_BLOCK_RE.finditer(prefix)]
-    return ("\n\n".join(kept) + "\n\n") if kept else ""
+    # 没有受保护块时整段不动：曾返回空串，等于把 2.3KB 手写前缀（identity/红线表）删光，
+    # 且由 10 分钟定时器自动执行、无备份，workspace 不在 git 里无法回滚。
+    return ("\n\n".join(kept) + "\n\n") if kept else prefix
 
 
 def inject_role_knowledge_into_workspace(role: dict) -> str:
@@ -422,8 +425,10 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     # 生产 prompt 只认主仓：worktree 里的 base.md 会整块覆盖 CLAUDE.md（实测 35611B 脏版本），
     # 角色 prompt 被静默换成过期内容且无从察觉，所以非主仓一律拒绝，除非显式豁免。
     _canonical = (Path.home() / "hermes-session-roles").resolve()
-    if SESSION_ROLES_ROOT.resolve() != _canonical and not os.environ.get("ALLOW_ROLES_WORKTREE_INJECT"):
-        return f"refused (SESSION_ROLES_ROOT={SESSION_ROLES_ROOT} != {_canonical}; 设 ALLOW_ROLES_WORKTREE_INJECT=1 才放行)"
+    _root = SESSION_ROLES_ROOT.expanduser().resolve()
+    # 只认显式真值：ALLOW=0/false/no 都是"关"，曾用 os.environ.get() 判真 → 关等于开。
+    if _root != _canonical and os.environ.get("ALLOW_ROLES_WORKTREE_INJECT", "").strip().lower() not in ("1", "true", "yes"):
+        return f"refused (SESSION_ROLES_ROOT={_root} != {_canonical}; 设 ALLOW_ROLES_WORKTREE_INJECT=1 才放行)"
     name = role.get("name", "")
 
     # 读取 role TASKS.md 的 negative 教训，注入 KNOWLEDGE 块（评分信号回写闭环补全）
