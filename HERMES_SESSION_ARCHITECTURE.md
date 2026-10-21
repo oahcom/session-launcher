@@ -209,7 +209,7 @@ CCS 启动（session-launcher）
 | 工作空间管理 | — | ✅ 负责（系统级 CCS） | — |
 | 包装循环（core.py:627） | — | ✅ 负责 | — |
 | ccs-send 消息路由 | — | 发送 | ✅ 路由决策 |
-| feed push 推送源 | — | 订阅 | ✅ 写入触发 |
+| feed push 推送源 | — | 订阅 | —（只写 SQLite，无推送源） |
 | watchdog 线程 | — | ✅ 负责 | — |
 | turn_tracker 线程 | — | ✅ 负责 | — |
 | sentinel 系统 | — | ✅ 负责 | — |

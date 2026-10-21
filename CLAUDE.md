@@ -42,5 +42,5 @@ python3 src/ccs.py start <role> --partner x   # 带伙伴
 ### 服务检查
 ```bash
 python3 src/ccs.py status          # 不带参数；单角色用 status-role <role>
-python3 src/ecosystem_health.py --json                # 实测 116/116 全 pass、exit=0（2026-10-22 06:26）
+python3 src/ecosystem_health.py --json                # 实测 115/115 全 pass、exit=0（2026-10-22）
 ```
