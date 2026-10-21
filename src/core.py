@@ -1074,7 +1074,8 @@ _SECRET_SHAPES = (
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
     # 英文标签必须带显式分隔符：否则 "password is required" 会被抹成 "*** required"，
     # 把提示语义一起毁掉（审查 P3-2 实测）。
-    (re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=：]\s*\S+"), "***"),
+    # api key 允许空格写法："api key: <43 位>" 实测原样进 bus（审查 important）。
+    (re.compile(r"(?i)\b(?:password|passwd|secret|api[ _-]?key|token)\s*[:=：]\s*\S+"), "***"),
     # 中文口令容忍单空格：'密码 hunter2' 不带冒号也很常见（但 '密码是什么' 无分隔符，不命中）。
     (re.compile(r"(?:密码|口令)(?:\s*[:=：]|\s)\s*\S+"), "***"),
 )
