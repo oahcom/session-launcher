@@ -96,7 +96,7 @@ _ROLE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+\Z')
 SESSION_ROLES_ROOT = Path(os.environ.get(
     "SESSION_ROLES_ROOT",
     str(Path.home() / "hermes-session-roles")
-))
+)).expanduser()  # env 里的 ~ 不会自动展开，下游按路径 exists() 判断会静默退化
 
 _WS_MARKER_START = "<!-- WORKSPACE_SYS:START -->"
 _WS_MARKER_END = "<!-- WORKSPACE_SYS:END -->"
@@ -310,7 +310,7 @@ def _contract_block(role: dict) -> str:
 def _role_assembler_output(name: str, role: dict | None = None) -> str:
     """调用 role_assembler.py 获取角色定义文本（不含 BUS_LOOP_SUFFIX）。
     失败时回退到 role.system_prompt。"""
-    assembler = Path(os.environ.get('SESSION_ROLES_ROOT', str(Path.home() / 'hermes-session-roles'))) / 'src' / 'role_assembler.py'
+    assembler = SESSION_ROLES_ROOT / 'src' / 'role_assembler.py'
     if assembler.exists():
         try:
             r = subprocess.run(
@@ -384,8 +384,7 @@ def _resolve_ws_paths(name: str) -> list[Path]:
         except OSError:
             _txt = ""
         _sys = re.search(r"<!-- WORKSPACE_SYS:START -->(.*?)<!-- WORKSPACE_SYS:END -->", _txt, re.S)
-        # 全文搜归属声明，不设偏移窗口：窗口 400 时实测 22 个文件命中位置在 6395-7940 → 死判据。
-        _owned = f"你是 {p2.name}，" in _txt or bool(
+        _owned = f"你是 {p2.name}，" in _txt[:400] or bool(
             _sys and f"属于 {p2.name}，" in _sys.group(1))
         if not _owned:
             paths.append(p2 / "CLAUDE.md")
@@ -399,14 +398,9 @@ _PROTECTED_BLOCK_RE = re.compile(
 
 
 def _strip_stale_prompt_prefix(prefix: str) -> str:
-    """删掉 KNOWLEDGE 块之前的旧版手写 prompt 残留，受保护标记块保留原样。
+    """删旧版手写 prompt 残留，受保护标记块原样保留；两个独有标记缺一就不动文件。
 
-    WHY: 注入只替换 KNOWLEDGE 块之间的内容，块外的旧 prompt 永远留着，并和新契约
-    一起进 system prompt（实测 22/37 个 workspace 残留 :20128、幽灵角色 architect、
-    无口径判据）。判据取旧 prompt 独有的两个标记同时出现，缺一不动文件：
-    只有 <agent_loop> 或只有 </knowledge_reference> 都可能是角色自己写的正文。
-    幂等：删完前缀不再含 <agent_loop>；若残留保护块自身含该标记，第二次也只会
-    重复抽出同样的块，结果字节不变。
+    幂等：删完前缀不再含 <agent_loop>，第二次结果字节不变。
     """
     if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
         return prefix
@@ -485,8 +479,7 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     else:
         # 回退: 仅 contract + base.md（旧路径）
         contract = _contract_block(role)
-        base_path = Path(os.environ.get('SESSION_ROLES_ROOT',
-                          str(Path.home() / 'hermes-session-roles'))) / 'prompts' / 'base.md'
+        base_path = SESSION_ROLES_ROOT / 'prompts' / 'base.md'
         base_content = base_path.read_text(encoding='utf-8') if base_path.exists() else _fallback_base_content()
         knowledge_block = (
             f"\n\n<!-- KNOWLEDGE:START -->\n"
@@ -510,6 +503,9 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         if start_idx > 0:
             _head = _strip_stale_prompt_prefix(content[:start_idx])
             if _head != content[:start_idx]:
+                # 删块外内容不可逆且 workspace 不在 git 里：删前留一份 .bak（同一文件只留首次）
+                if not claude_md.with_name(claude_md.name + ".bak").exists():
+                    claude_md.with_name(claude_md.name + ".bak").write_text(content, encoding="utf-8")
                 content, start_idx = _head + content[start_idx:], len(_head)
         if start_idx >= 0:
             end_idx = content.find(end_marker, start_idx)

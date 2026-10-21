@@ -764,6 +764,12 @@ class TestInjectRoleKnowledge:
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("injected"), result
 
+    def test_strip_keeps_prefix_without_protected_block(self):
+        """P12m: 前缀含两个旧标记但没有受保护块 → 整段原样保留（不得删空）"""
+        import routing.roles as _roles
+        pre = "<agent_loop>手写内容</agent_loop>\n<role_rules>x</role_rules>\n</knowledge_reference>"
+        assert _roles._strip_stale_prompt_prefix(pre) == pre
+
     def test_injects_security_redlines(self, tmp_path):
         """P12e: 注入内容包含通用红线（base.md 回退路径）"""
         import routing.roles as _roles
