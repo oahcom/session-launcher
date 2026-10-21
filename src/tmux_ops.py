@@ -29,7 +29,6 @@ __all__ = [
 
 import logging
 import os
-import threading
 import re
 import subprocess
 import time
@@ -121,7 +120,6 @@ _SWAP_LOW_AVAIL_MB = 1024  # 兜底判据：swap 见底且宿主机可用内存�
 
 _CCS_LAUNCH_INTERVAL = 8  # 连续启动 CCS 之间至少等待秒数
 
-_launch_lock = threading.Lock()
 _last_ccs_launch_ts: float = 0.0
 
 

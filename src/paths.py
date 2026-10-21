@@ -25,9 +25,6 @@ __all__ = ["BUS_CLIENT",
            "STARVE_STATE", "SESSION_PIPELINE_SRC"]
 # ── 路径常量：由本项目自行管理，不依赖 bus config ──
 _SESSION_PIPELINE_SRC = Path(_HOME / "session-pipeline" / "src")
-# 公开别名：launcher 侧需要直接 import pipeline 模块时（如 wf templates 用
-# TemplateRegistry）复用本常量，避免在调用点硬编码路径。
-SESSION_PIPELINE_SRC = _SESSION_PIPELINE_SRC
 SESSION_ROLES_ROOT = Path(_HOME / "hermes-session-roles")
 CCS_WORKSPACES = Path(_HOME / "ccs-workspaces")
 LIFECYCLE_SENTINEL_DIR = Path(_HOME / ".hermes" / "run" / "ccs-sentinels")
@@ -38,17 +35,12 @@ HERMES_STATE = _HOME / ".hermes" / "state"
 WORKFLOWS_DB = Path(os.environ.get("HERMES_WORKFLOWS_DB") or HERMES_STATE / "workflows.db")
 # 与 session-pipeline/src/paths.py 保持一致；daemon.py 从 paths 导入此常量
 STARVE_STATE = _HOME / ".hermes" / "run" / "wf_starve.json"
-# ── 模板与配置 ──
-HERMES_TEMPLATES = _HOME / ".hermes" / "templates"
-WORKFLOW_GUIDE = HERMES_TEMPLATES / "WORKFLOW_GUIDE.md"
 
 # ── 项目根目录 ──
 HERMES_SCRIPTS = Path(_HOME / ".hermes" / "scripts")
 SESSION_LAUNCHER_SRC = Path(__file__).resolve().parent
+# 公开别名：launcher 侧需要直接 import pipeline 模块时复用，避免调用点硬编码路径。
 SESSION_PIPELINE_SRC = Path(_SESSION_PIPELINE_SRC)
-
-# ── CCS CLI（供跨项目引用）──
-CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"
 
 
 # ── 角色目录 ──

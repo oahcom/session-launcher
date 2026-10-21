@@ -131,7 +131,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ── 统一日志初始化（任何模块首次导入 core 时生效）──
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
