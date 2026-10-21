@@ -515,36 +515,6 @@ class WorkflowClient:
             raise ValueError(_res.get("error", "unknown"))
         return _res.get("result") or {}
 
-    def pull_approval(self, wf_id: str, step_id: str) -> dict:
-        """拉取自己是审批人的步骤密钥。委托 pipeline 版实现（同 confirm）。
-
-        WHY 子进程：两个项目都有 `workflow` 包，先加载本 launcher 版后，pipeline
-        的 `workflow.client` 会被已加载模块遮蔽。
-        """
-        import subprocess
-        from paths import SESSION_PIPELINE_SRC as _psrc
-        _code = (
-            "import sys, json\n"
-            f"sys.path.insert(0, {str(_psrc)!r})\n"
-            "from workflow.client import WorkflowClient\n"
-            f"wc = WorkflowClient({self.role!r}, db_path={self.db_path!r})\n"
-            "try:\n"
-            f"    r = wc.pull_approval({wf_id!r}, {step_id!r})\n"
-            "    print(json.dumps(r, default=str))\n"
-            "except Exception as e:\n"
-            "    print(json.dumps({'ok': False, 'error': str(e)}))\n"
-            "finally:\n"
-            "    wc.close()\n"
-        )
-        _r = subprocess.run([sys.executable, "-c", _code],
-                            capture_output=True, text=True, timeout=60)
-        _out = (_r.stdout or "").strip().splitlines()
-        _last = _out[-1] if _out else ""
-        if not _last.startswith("{"):
-            raise ValueError(
-                f"委托 pipeline 拉取失败: {(_r.stderr or _r.stdout or 'no output')[-400:]}")
-        return json.loads(_last)
-
     # ── Kanban ──
 
     def kanban_board(self) -> list[dict]:
