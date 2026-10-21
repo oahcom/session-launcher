@@ -5,6 +5,8 @@
 `from paths import CCS_CLI`，删后 coordinator 连退 5 次、任何 ccs@ 角色单元
 重启即死，仓库内 460 条测试全绿。仓库内引用数不是消费者全集。
 """
+from pathlib import Path
+
 import paths
 
 
@@ -18,7 +20,12 @@ _EXTERNAL = {
 
 def test_external_consumers_can_import():
     for name, why in _EXTERNAL.items():
-        assert getattr(paths, name, None), f"paths.{name} 缺失，仓外消费者会 ImportError：{why}"
+        target = getattr(paths, name, None)
+        # 真值 + 目标存在两件事分开判：常量被删 → AttributeError 前先拿到 None；
+        # 常量还在但指向被挪走的文件 → 同样让 ccs@ 单元启动即崩（codex 审查 P3 补）。
+        # Path() 包一层：conftest 把 BUS_CLIENT 换成 str 桩。
+        assert target and Path(target).exists(), \
+            f"paths.{name} 缺失或指向不存在路径（仓外消费者会 ImportError）：{why}"
 
 
 def test_all_declares_only_existing_names():

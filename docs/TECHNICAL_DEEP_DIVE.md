@@ -8,7 +8,7 @@
 ## 1. 定位
 
 Session 生态的执行层：起 CCS（Claude Code Session）进程、管生命周期、提供跨 session 协作基础设施。
-每个角色独占一个进程、一个上下文、一颗独立 /loop。
+每个角色独占一个进程、一个上下文、一颗独立循环。
 
 ## 2. 实际模块
 
@@ -107,7 +107,7 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 
 `workflow/client.py`（`WorkflowClient`）是唯一实现，`wf.py` 与 `workflow_client.py` 只是入口；
 模板/实例/任务的定义与状态机在 session-pipeline（`template_registry.py`、`lifecycle/manager.py`、
-`pipeflow/`）。本仓没有 `step_engine.py`；`confirm()` 仍接收 `token` 并原样转发 pipeline 校验（`workflow/client.py:477-507`）。
+`pipeflow/`）。本仓没有 `step_engine.py`；`confirm()` 的 `token` 只是兼容形参（pipeline `confirm_step` 不读，审批按 assigner 身份），`wf confirm` 已无 `--token`。
 
 ## 6. 设计原则
 
