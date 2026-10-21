@@ -103,7 +103,8 @@ src/
 
 ## 测试命令
 ```bash
-cd ~/session-launcher && python3 -m pytest tests/ -q
-python3 -m py_compile src/*.py src/**/*.py
-python3 src/ecosystem_health.py --json
+cd ~/session-launcher && python3 -m pytest tests/ -q   # 实测 460 passed
+python3 -m py_compile src/*.py src/*/*.py              # 实测 rc=0
+python3 src/ecosystem_health.py --json                # 实测 112/117(false) ~ 116/116(true) 波动，失败项在
+                                                      # session-pipeline 侧（import:router/reliability/routing_daemon、wf:engine）
 ```

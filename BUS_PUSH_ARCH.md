@@ -1,186 +1,56 @@
-# Bus Push Architecture 设计 V1
+# Bus Push Architecture
 
-## 全局消息流图
+> 2026-07-07 设计稿，2026-10-22 按代码复核。**现状与设计不符之处已在下文标出**。
+
+## 消息流（实测）
 
 ```
-                            ┌─────────────┐
-                            │ bus_client  │
-                            │ .py write   │
-                            │ debate "终局"│
-                            └──────┬──────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │                              │
-                    ▼                              ▼
-          ┌─────────────────┐          ┌──────────────────────┐
-          │ bus_protocol.py  │          │ sister_socket_server │
-          │ Blackboard      │          │ .py (asyncio)        │
-          │ .write()        │          │                      │
-          │                 │          │ AGENT_NAMES = [     │
-          │ ① INSERT INTO   │          │   dkk, ssk, cron,   │
-          │   facts (SQLite) │          │   feed ← NEW         │
-          │   ✅ #8212-#8248 │          │                      │
-          │                 │          │ /tmp/                 │
-          │ ② _notify_feed()│          │  sister_bus_dkk.sock │
-          │   ┌──── socket ─┼──────────┼→ sister_bus_ssk.sock │
-          │   │  PUBLISH    │          │  sister_bus_cron.sock │
-          │   │  to:"feed"  │          │  sister_bus_feed.sock │
-          │   │  {event:    │          │                      │
-          │   │   new_fact, │          │ ③ broadcast 到        │
-          │   │   cat, id,  │          │   所有订阅者          │
-          │   │   src,      │          └──────────┬───────────┘
-          │   │   title}    │                     │
-          │   └─────────────┘                     │
-          └─────────────────┘                     │
-                                   ┌─────────────┼──────────────┐
-                                   │             │              │
-                                   ▼             ▼              ▼
-                         ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-                         │ feed_listener │ │ CCS      │ │ CCS          │
-                         │ .py          │ │ verifier │ │ monitor      │
-                         │              │ │          │ │              │
-                         │ listen to    │ │ 收到 push│ │ 收到 push    │
-                         │ feed.sock    │ │ → 实时    │ │ → 检测       │
-                         │              │ │   反应   │ │   终局关键词  │
-                         │ 检测终局     │ │          │ │              │
-                         │ 关键词       │ │          │ │ 检测到 终局   │
-                         │              │ │          │ │ → write      │
-                         │ 检测到 终局   │ │          │ │   notice     │
-                         │ → write      │ │          │ │   "辩论已结束"│
-                         │   notice     │ │          │ │              │
-                         └──────┬───────┘ └──────────┘ └──────────────┘
-                                │
-                                ▼
-                     ┌────────────────────┐
-                     │ bus notice         │
-                     │ "[feed-listener]   │
-                     │  辩论已结束: ..."   │
-                     │  (src=feed-listener)│
-                     └────────────────────┘
+bus_client.py write debate "终局"
+  └─ SQLite facts 表（唯一写入路径）
 
-
- ──── 实测数据 (2026-07-07) ────
- N=20 压力测试:
-   SQLite 写入:  20/20 ✅
-   实时推送:     20/20 ✅  (100% 到达率)
-   端到端延迟:   43-51ms (P50)
-   终局检测:     触发 ✅
-   feed 降级:    静默 ✅ (不丢 SQLite)
-   断线重连:     5s ✅
-
- ──── 降级保障 ────
-   feed socket DOWN → _notify_feed 静默异常 → SQLite 不中断
-   监听脚本崩溃   → 5s 自动重连
-   CCS 兜底       → read --cat debate --watch (回退到轮询)
+hermes_bus/client.py:45 publish(to_agent, ...)
+  └─ PUBLISH → /tmp/sister_bus_feed.sock
+       └─ socket_server._dispatch（hermes_bus/socket_server.py:144-152）
+            └─ _push_to("feed") → 所有订阅者
+                 └─ feed_listener.py → 检测终局关键词 → 写 bus notice
 ```
 
-## 组件职责
+## 与设计稿的差异（这三条是重点）
+
+| 设计稿 | 实测 |
+|---|---|
+| `Blackboard.write()` 末尾调 `_notify_feed()` 自动推送 | **不存在**：`grep -rn _notify_feed ~/.hermes/scripts` 无命中；`bus_client.py` 无 `PUBLISH` |
+| 服务端在 `hermes_core/sister_bus/socket_server.py` | 实际监听进程是 `~/.hermes/scripts/sister_socket_server.py` → `hermes_bus` 包；`hermes_core/sister_bus/socket_server.py` 只是 5 行兼容 shim |
+| `AGENT_NAMES = (dkk, ssk, cron, feed)` | 属实，见 `hermes_bus/socket_server.py:44` |
+
+结论：**写入不会自动推送**。要推送必须有人显式 `publish('feed', …)`，当前没有调用方
+（`ss -xp | grep feed` 能看到 5 个 LISTEN/ESTAB 的订阅者，说明订阅端活着，但不证明有消息）。
+
+## 组件
 
 | 组件 | 职责 | 路径 |
 |------|------|------|
-| `bus_protocol.Blackboard.write()` | SQLite 持久化 + feed socket 推送 | `~/.hermes/scripts/bus_protocol.py` |
-| `socket_server.py` | asyncio 消息路由 (agent=feed → broadcast) | `~/.hermes/scripts/hermes_core/sister_bus/` |
-| `/tmp/sister_bus_feed.sock` | Unix Socket 通知通道 | 无 |
-| `feed_listener.py` | 实时监听 + 终局检测 + notice 告警 | `session-launcher/feed_listener.py` |
+| Blackboard 存储 | facts 表读写（FTS5） | `~/.hermes/sister_bus/blackboard.db` |
+| socket server | asyncio，SUBSCRIBE/PUBLISH/PRESENCE | `~/.hermes/scripts/hermes_bus/socket_server.py` |
+| feed socket | Unix Socket 通知通道 | `/tmp/sister_bus_feed.sock` |
+| feed_listener | 订阅 + 终局检测 + 注入 tmux | `session-launcher/feed_listener.py` |
 
-## 改动范围
+## feed_listener 行为（可验证）
 
-### 1. `socket_server.py` — 加 `FEED` agent + broadcast 行为
+- 连接失败/断线 → 5s 重试（`feed_listener.py:171-198`）。
+- `--tmux-target <ccs-role>` 时按 `~/.hermes/run/feed_listeners/<tmux>.pid` 做单实例锁（`:125-160`）。
+- 注入用两次 `tmux send-keys`：`-l` 发正文，再单独发 `Enter`（`:105-115`）。
+- 角色忙（`_role_is_busy`）时跳过注入，事实本身仍在 bus 里。
 
-```python
-AGENT_NAMES = ("dkk", "ssk", "cron", "feed")
+## 降级
 
-# FEED 特殊处理: PUSH 到所有订阅者（broadcast）
-if agent == "feed":
-    for name in AGENT_NAMES:
-        await self._push_to(name, cmd)
-else:
-    # 原有单播逻辑
-    await self._push_to(target, cmd)
-```
-
-### 2. `bus_protocol.py` — 写完后 socket push
-
-```python
-_FEED_SOCKET = "/tmp/sister_bus_feed.sock"
-
-def _notify_feed(cat: str, fact_id: int, text: str, src: str):
-    """Best-effort push to feed socket after Blackboard write."""
-    import socket
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        s.connect(_FEED_SOCKET)
-        payload = json.dumps({
-            "cmd": "PUBLISH",
-            "to": "feed",
-            "msg": {"event": "new_fact", "cat": cat, "id": fact_id,
-                    "src": src, "title": text[:200]},
-        }) + "\n"
-        s.sendall(payload.encode())
-        s.shutdown(socket.SHUT_WR)
-        s.close()
-    except Exception:
-        pass  # feed socket 不可用 = 无监听者, 静默忽略
-
-# Blackboard.write() 末尾加:
-_notify_feed(cat, fid, text, src)
-```
-
-### 3. `ccs-monitor` 侧监听脚本
-
-```python
-# ~/session-launcher/feed_listener.py
-import json, socket, subprocess
-
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect("/tmp/sister_bus_feed.sock")
-s.sendall(b'{"cmd":"SUBSCRIBE","agent":"feed"}\n')
-
-while True:
-    line = s.readline()  # 阻塞, 有消息立即返回
-    event = json.loads(line)
-    if event.get("event") == "new_fact":
-        cat = event.get("cat")
-        title = event.get("title", "")
-        # 检测终局关键词
-        if any(k in title for k in ("终局","最终","收束","结束","收官")):
-            subprocess.run([
-                "python3", "~/.hermes/scripts/bus_client.py", "write",
-                "notice", f"[monitor] 辩论已结束: {title}", "--src", "monitor"
-            ])
-```
-
-## 零轮询保证
-
-| 场景 | 延迟 | 系统调用 |
-|------|------|---------|
-| 新消息写入 → CCS 收到 | ~1-5ms | 1 次 socket write |
-| CCS 监听 | 实时阻塞 | 0（有消息才唤醒） |
-| socket 不可用 | — | 静默降级, 不丢数据 |
-| socket 恢复 | — | 自动重连 |
-
-## 降级保障
-
-- **链路**: Blackboard.write() → _notify_feed() (failure is silent)
-- **核心不变**: SQLite 写入是主路径，socket push 是辅路径
-- **CCS 端**: socket 断线不影响 bus 正常工作，只是收不到实时通知
-- **补充**: CCS 仍可定期 `read --cat debate --limit 1` 兜底（回退到轮询）
-
-## 文件清单
-
-| 文件 | 改动 |
-|------|------|
-| `hermes_core/sister_bus/socket_server.py` | 加 `feed` agent + broadcast |
-| `hermes/scripts/bus_protocol.py` | `write()` 末尾加 `_notify_feed()` |
-| `~/session-launcher/feed_listener.py` | 新增: feed 监听脚本 |
-| CCS_COLLAB_PROTOCOL.md | 更新: 推送模式说明 |
+- socket 不可用 → 写入照常（SQLite 是主路径），只是没人收到实时通知。
+- 历史设计稿里的「20/20 到达、43-51ms」是 2026-07-07 的观测，当前代码下无法复验。
 
 ## 不做的
 
-| 方案 | 不做理由 |
-|------|----------|
-| Redis Pub/Sub | 零外部依赖, 单机场景 sock 够用 |
-| WebSocket | 无外部客户端, 不需要 WS 协议 |
-| HTTP callback | 多一层协议栈, 增加延迟 |
-| 修改现有 sister_bus_*.sock | 不影响 DKK/SSK 现有通信路 |
+| 方案 | 理由 |
+|------|------|
+| Redis Pub/Sub | 单机场景 Unix Socket 够用，零外部依赖 |
+| WebSocket | 无外部客户端 |
+| HTTP callback | 多一层协议栈 |

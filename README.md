@@ -76,29 +76,41 @@ Cron 的 CLAUDE.md:
 ## 项目结构
 
 ```
-src/
+src/                                   （ls src 实测）
   # ── CCS 生命周期 ──
-  ├── ccs.py                CLI 主入口（argparse 分发全部子命令）
-  ├── core.py               CCS 生命周期编排（start/stop/status/send/health）
-  ├── tmux_ops.py           tmux 底层操作（PID 查找、pane 捕获、进程管理）
-  ├── routing/roles.py      角色定义加载、禁区映射、workspace CLAUDE.md 注入
+  ├── ccs.py                CLI 主入口（19 个顶层子命令）
+  ├── core.py               生命周期编排（start/stop/status/send/health/dashboard）
+  ├── tmux_ops.py           tmux 底层（_is_alive/_tmux_send/_role_is_busy）
+  ├── ccs_socket.py         CCSClient：Unix Socket 直连
   ├── codex_ops.py          Codex session 管理（start/exec/status）
-  ├── ccs_socket.py         CCS 直接通信客户端（<1ms Unix Socket）
   │
   # ── 基础设施 ──
-  ├── ops/sentinel.py       哨兵文件读写（~/.hermes/run/ccs-sentinels/）
+  ├── ops/sentinel.py       哨兵文件（~/.hermes/run/ccs-sentinels/ + ccs-health/）
   ├── ops/watchdog.py       伙伴存活守护线程（自动重启）
   ├── ops/tracker.py        轮次追踪 + 死锁检测
-  ├── ops/ccs_config.py     全局配置中心
+  ├── ops/runner.py         仪表板（dashboard）
+  ├── ops/ccs_config.py     全局配置中心（ccs_config.json）
+  ├── ops/validators.py     参数校验
+  ├── ops/workspace.py      工作空间管理
   │
   # ── 路由与门禁 ──
   ├── routing/roles.py      角色加载 + workspace 注入 + 禁区映射
   ├── routing/gatekeeper.py 三源验证 + 敏感操作门禁 + 工作群组
   ├── routing/partner.py    伙伴客户端
   │
-  # ── 兼容 ──
-  ├── paths.py              统一路径管理（从 hermes_bus.config 导入）
-  └── ...
+  # ── 工作流 ──
+  ├── workflow/client.py    WorkflowClient（wf.py 的实现在此）
+  ├── workflow/db.py        DB 连接
+  ├── workflow/schema.py    Schema
+  ├── wf.py                 wf CLI（check/create/complete/confirm/…）
+  ├── workflow_client.py    薄包装：re-export + check()
+  │
+  # ── 其他 ──
+  ├── paths.py              路径常量（BUS_CLIENT/SISTER_BUS_*_SOCK/CCS_CLI）
+  ├── ecosystem_health.py   三项目健康检查（--json/--ci）
+  ├── gateway_guard.py      红线 1：拦截 gateway 重启指令
+  ├── user_intent_reminder.py + ccls_daemon_intent_classifier.py  意图提醒与守护
+  └── file_size_audit.py    文件大小审计
 ```
 
 ---
@@ -124,15 +136,16 @@ python3 src/ccs.py health [role]          # 健康检查
 python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 ```
 
-### 3. 守护进程 (systemd 托管)
+### 2. 守护进程 (systemd 托管)
 
 | 单元 | 职责 | 状态检查 |
 |------|------|---------|
+| `ccs-reload-knowledge.timer` | 每 10 分钟重注入角色 KNOWLEDGE 块（不带 `--restart-idle`，不重启进程） | `systemctl --user is-active ccs-reload-knowledge.timer` |
 | `ccs-intent-guardian.service` | 用户意图守护：对 ccs 的疑问/任务类输入注入两条自检提醒（至多 3 次；角色回过一轮即停，R123）（"你真解决了用户问题吗？"+"你真严格按用户提示完成了吗？"），防止答非所问 | `systemctl --user is-active ccs-intent-guardian.service` |
 
 **意图判定逻辑**：`src/user_intent_reminder.py` 的 `classify_intent` 将输入分为 `QUESTION`/`TASK`/`OTHER`；仅疑问/任务类在 `core.send` 路径经 `inject_reminder` 注入提醒（`pipeline`/`daemon` 自动化来源排除，防递归自提醒）。守护类 `IntentReminderDaemon`（`src/ccls_daemon_intent_classifier.py`）从 systemd 自启动，验证：`python3 src/ccls_daemon_intent_classifier.py --selfcheck`（11/11 PASS）。
 
-### 2. 哨兵文件
+### 3. 哨兵文件
 
 每个 CCS 在 `~/.hermes/run/ccs-sentinels/<role>.json` 写入运行状态（健康字段另落 `~/.hermes/run/ccs-health/<role>.json`）：
 
@@ -149,7 +162,7 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 }
 ```
 
-### 3. 协作模式
+### 4. 协作模式
 
 | 模式 | 命令 | 说明 |
 |------|------|------|
@@ -158,7 +171,7 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 | 仲裁 | `--partner A --partner B --bus-track X` | 同时守护 + 追踪 |
 | 直连 | `send-direct <from> <to> <msg>` | 不走 bus，<1ms Unix Socket |
 
-### 4. 直接通信 Socket
+### 5. 直接通信 Socket
 
 ```
 ccs.py send-direct alice bob "hi"
@@ -171,19 +184,20 @@ ccs.py send-direct alice bob "hi"
 
 **认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
 
-### 5. Bus Push 实时推送
+### 6. Bus Push 实时推送
 
 ```
 bus_client.py write debate "消息"
-  └─ Blackboard.write()
-       ├─ INSERT INTO facts (SQLite)   ← 主路径
-       └─ _notify_feed()              ← 辅路径
-            └─ /tmp/sister_bus_feed.sock → broadcast
+  └─ INSERT INTO facts (SQLite)        ← 唯一路径
+
+显式 PUBLISH 才推 socket（hermes_bus/socket_server.py:144-152）
+  └─ /tmp/sister_bus_feed.sock → 订阅者（feed_listener.py）
 ```
 
-依赖服务：`socket_server.py`（asyncio Unix Socket）、`feed_listener.py`（实时监听）
-
-**降级保障**：feed socket 不可用时静默降级，不丢 SQLite 写入。
+**实测**：写入路径没有推送调用——`bus_client.py` 里无 `PUBLISH`，`hermes_bus` 里无 `_notify_feed`
+（`grep -rn '_notify_feed' ~/.hermes/scripts` 无命中）。所以「写完自动推送」这条链路**未实现**，
+feed_listener 只有在有人显式 `publish('feed', …)` 时才收到消息；当前无调用方（未验证实际到达率）。
+SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 
 **写入报 `database is locked`（读取正常）**：不是并发高，是某个进程持有未提交的写事务把 WAL 写锁占死。
 定位：`ino=$(stat -c %i ~/.hermes/sister_bus/blackboard.db-shm); grep ":$ino" /proc/locks | grep WRITE` → 取 pid → `ps -o args= -p <pid>`。
@@ -201,7 +215,7 @@ session-pipeline/src/routing/routes.py → subprocess run([sys.executable, CCS_C
 
 **注意**：这是 pipeline→launcher 的唯一调用路径。launcher 不反向调用 pipeline。
 
-`CCS_CLI` 定义在 `paths.py`（从 `hermes_bus.config` 导入），两个项目的 `paths.py` 指向同一路径。
+`CCS_CLI` 定义在 `paths.py:51`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
 
 **`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：实测三天 497 个 completed 步骤里 32% 连 `exit_messages` 都没有，`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
@@ -220,10 +234,15 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 ## 验证
 
 ```bash
-python3 tests/test_wl_selfcheck.py -v
-python3 src/ecosystem_health.py --json
+python3 -m pytest tests/ -q          # 实测 460 passed (2026-10-22)
+python3 src/ecosystem_health.py --json   # 2026-10-22 实测 116/116 连跑两次一致；
+                                         # 兄弟仓正在改代码时会掉到 112/117，失败项集中在 pipeline 侧 import
 python3 src/ccs.py health
 ```
+
+`tests/test_wl_selfcheck.py` 断言的是本仓 `src/workflow/client.py` 里的 `kanban_board` /
+`_validate_create_task`（2026-10-22 修：原断言去已不存在的 `pipeline_workflow/client.py` 找，
+4 条全假失败；Gate 已内联为 `_validate_create_task`）。
 
 ## 提示词生效方式
 

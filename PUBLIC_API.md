@@ -1,136 +1,72 @@
 # PUBLIC_API — session-launcher
 
-## Public API
-
-> **位置**: `~/session-launcher/src/`
+> 实测基准：分支 `r77-routing-daemon-whitelist`（2026-10-22）。可执行验证：
+> `PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops, routing.roles, routing.gatekeeper, workflow.client; print('OK')"`
 
 ## Direction
 
-session-pipeline → **session-launcher** → hermes-session-roles (单向)
+session-pipeline → **session-launcher** → hermes-session-roles（定义层只读）。
 
-任何反向依赖（launcher→pipeline, roles→launcher, roles→pipeline）标记为 debt。
-
-## Dependencies
+launcher → pipeline 是已知的反向引用，全部是路径常量，不是业务调用：
+- `paths.py` 的 `SESSION_PIPELINE_SRC = ~/session-pipeline/src`
+- `ecosystem_health.py` 用它做 pipeline 侧 import/路由检查
+- `wf.py` 的 `templates` 子命令 `from template_registry import TemplateRegistry`
 
 ## Subpackage Structure
 
 ```
 src/
-├── ccs.py              # CLI 入口（start/stop/send/status/output）
-├── ccs_socket.py       # CCS 直接通信（Unix Socket: CCSClient）
-├── core.py             # 生命周期编排（start/send/stop/health）
-├── routing/roles.py        # RoleManager（角色加载 + workspace 注入 + 权限）
-├── paths.py            # 路径常量
-├── sentinel.py         # 根目录哨兵（跨会话动作记录）
-├── tmux_ops.py         # tmux 操作封装
-├── codex_ops.py        # Codex CLI 集成
-├── ecosystem_health.py # 三项目健康检查
-├── migration_scripts.py# 迁移脚本
-├── wf.py               # CLI 快捷入口
-├── workflow_client.py  # WorkflowClient — CCS 角色工作流客户端
-├── events/             # 信号/解析子系统
-│   ├── signals.py      # 信号常量 + 所有 input_signals 检查逻辑
-│   └── parser.py       # 信号解析器（signal_parser）
-├── ops/                # 基础设施
-│   ├── sentinel.py     # CcsSentinel 哨兵文件读写
-│   ├── ccs_config.py   # 配置中心
-│   ├── mcp_settings.py # MCP 设置
-│   ├── runner.py       # Runner 执行器
-│   ├── tracker.py      # 轮次追踪
-│   ├── validators.py   # 参数校验
-│   ├── watchdog.py     # 伙伴存活守护
-│   └── workspace.py    # Workspace 管理
-├── routing/            # 跨角色路由
-│   ├── gatekeeper.py   # 门禁系统 + CrossRoleRouter
-│   ├── partner.py      # PartnerClient
-│   └── roles.py        # RoleManager（角色加载 + workspace 注入 + 权限）
-├── workflow/           # 工作流客户端封装
-│   ├── client.py       # WorkflowClient 类
-│   ├── db.py           # DB 连接
-│   └── schema.py       # Schema 定义
-└── migration/          # 迁移脚本
-    └── scripts.py
+├── ccs.py                       # CLI 入口（19 个顶层子命令，argparse）
+├── core.py                      # 生命周期编排（start/stop/status/send/health/dashboard）
+├── tmux_ops.py                  # tmux 底层（_is_alive / _tmux_send / _role_is_busy）
+├── ccs_socket.py                # CCSClient：Unix Socket 直连
+├── codex_ops.py                 # Codex session 管理
+├── paths.py                     # BUS_CLIENT / SISTER_BUS_*_SOCK / CCS_CLI / SESSION_PIPELINE_SRC
+├── ecosystem_health.py          # 三项目健康检查（--json / --ci）
+├── file_size_audit.py           # 文件大小审计
+├── gateway_guard.py             # 红线 1：拦截 gateway 重启指令
+├── user_intent_reminder.py      # classify_intent / inject_reminder
+├── ccls_daemon_intent_classifier.py  # 意图守护 daemon（--selfcheck）
+├── workflow_client.py           # 薄包装：re-export workflow.client + check()
+├── wf.py                        # wf CLI
+├── ops/                         # sentinel watchdog tracker runner validators workspace ccs_config
+├── routing/                     # roles gatekeeper partner
+└── workflow/                    # client db schema
 ```
 
-## WorkflowClient (`workflow_client.py`)
+CLI 子命令（`python3 src/ccs.py --help` 实测 19 个）：
+start, config, auto-send, roles, stop, status, send, output, dashboard, health,
+register, p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-knowledge。
 
-被 pipeline/composite_runner 及所有 CCS agent 消费。
+wf 子命令（`src/wf.py`）：check, create, complete, fail, notify, task, state, logs,
+cancel, confirm, templates, my, ls, kanban, cleanup, stats。
 
-| 方法 | 参数 | 返回 | 说明 |
-|------|------|------|------|
-| `check_task()` | — | `Optional[dict]` | 查当前角色待办任务 |
-| `create_task_v2(title, assignee, template_id, initiator_role, description="")` | str×4+str? | `(task_id, wf_id)` | 创建任务+工作流（标题质量门禁） |
-| `complete(wf_id, summary, files=None)` | str, str, list? | `None` | 标记完成（防重闭合守卫） |
-| `fail(wf_id, reason)` | str, str | `None` | 标记失败 |
-| `get_logs(wf_id=None, task_id=None)` | str?, str? | `list` | 查日志 |
-| `cancel(wf_id, reason="")` | str, str? | `None` | 取消 |
-| `notify(category, title, evidence="")` | str, str, str? | `None` | 发 bus 通知（subprocess 调 bus_client） |
+## WorkflowClient（实现于 `workflow/client.py`，`workflow_client.py` 与 `wf.py` 转导出）
 
-## LifecycleManager (`lifecycle/manager.py`)
+公开方法：`create_task_v2` `get_task` `state` `list_tasks` `list_my_tasks` `check_task`
+`complete` `fail` `cancel` `confirm` `get_logs` `find_zombies` `kanban_board`
+`workflow_stats` `notify` `get` `close`（行号见 `grep -n '    def ' src/workflow/client.py`）。
 
-backward-compat 重导出，实际实现位于 `session-pipeline/src/lifecycle/manager.py`。
+- `complete(wf_id, summary)`：已终态则返回 `None`（空操作，不复活实例）；不再签发 approval_token（2026-10-22 退场）。
+- `confirm(wf_id, step_id, approved, reason)`：按审批人身份鉴权，无 token 参数。
 
-| 方法 | 参数 | 返回 |
-|------|------|------|
-| `complete_step(wf_id, step_id)` | str, str | `str` |
-| `fail_step(wf_id, step_id, reason)` | str, str, str | `str` |
-| `confirm_step(wf_id, step_id)` | str, str | `str` |
+## Sentinel（`ops/sentinel.py`）
 
-## CrossRoleRouter (`routing/gatekeeper.py`)
+- `CcsHealth`（:55）`CcsSentinel`（:64）两个 dataclass。
+- `SENTINEL_DIR = ~/.hermes/run/ccs-sentinels`（:46），健康字段另落 `~/.hermes/run/ccs-health/`。
+- 函数：`write_sentinel`（:216）`read_sentinel`（:248）`list_sentinels`（:321）`delete_sentinel`（:226）`update_health`（:380）。
 
-| 方法 | 参数 | 返回 |
-|------|------|------|
-| `intercept(source, target, message)` | str, str, str | `bool` |
+## CrossRoleRouter（`routing/gatekeeper.py`）
 
-## Sentinel (`ops/sentinel.py`)
+`intercept(source, target, message) -> bool`：工作群组矩阵 → 每小时 5 条红消息限流 → 三源验证。
 
-| 函数 | 参数 | 返回 |
-|------|------|------|
-| `write_sentinel(s)` | `CcsSentinel` | `Path` |
-| `read_sentinel(key_or_role, instance_id=0)` | str, int? | `Optional[CcsSentinel]` |
-| `list_sentinels()` | — | `list[CcsSentinel]` |
-| `delete_sentinel(key_or_role, instance_id=0)` | str, int? | `bool` |
-| `update_health(role, instance_id=0, **kwargs)` | str, int? | `bool` |
+## CCSClient（`ccs_socket.py:34`）
 
-## LifecycleSentinel (`core.py`)
+SUBSCRIBE/PUBLISH/PING/STATS，JSON-over-newline。**无认证**：同机进程可任意 PUBLISH。
+原 `stream` 方法已删（`be758a1`）；要 tail 用 `ccs.py output --tail`。
 
-生命周期哨兵写入/超时检查/清理（内联在 core.py，无独立模块）。
+## 已不存在，勿引用
 
-| 函数 | 参数 | 返回 |
-|------|------|------|
-| `write_lifecycle_sentinel(role)` | `dict` | `None` |
-| `check_ondemand_timeout(max_minutes=30)` | int? | `list[str]` |
-| `cleanup_stale_sentinels()` | — | `list[str]` |
-
-## CCSClient (`ccs_socket.py`)
-
-Unix Socket 通信客户端（`Sister Bus` 之外的直接 CCS 通信通道）。
-
-| 类 | 说明 |
-|------|------|
-| `CCSClient` | 向 CCS 发送消息的客户端 |
-| `stream`（已移除） | 原恒零输出，`be758a1` 删除；要 tail 用 `ccs.py output --tail` |
-
-## Signals (`signals.py`)
-
-常量 + 检查器模块。对外暴露 `SIGNAL_*` 系列信号定义，并承载所有 `input_signals` 的检查逻辑。
-
----
-
-## Dependencies
-
-- `paths.py` — 集中管理路径常量
-- `routing/gatekeeper.py` — 门禁系统 + CrossRoleRouter
-- `routing/roles.py` — 角色加载与 workspace 注入
-- `ops/ccs_config.py` — 配置中心
-
----
-
-## 违反单向依赖的 import (debt)
-
-| 文件 | 引用 | 说明 |
-|------|------|------|
-| `ecosystem_health.py:36` | `PIPELINE = HOME / "session-pipeline"` | 路径引用 |
-| `paths.py:30` | `SESSION_PIPELINE_SRC` | 路径常量（常量） |
-| `lifecycle/manager.py` | `from lifecycle.manager import *` | 跨项目重导出 |
-
+`src/sentinel.py`、`src/migration_scripts.py`、`src/migration/`、`src/events/`、`src/lifecycle/`、`src/ops/mcp_settings.py`
+（`ls src/` 均无；`events/` 于 `1ba44dc` 删，`role_manager.py`/`lifecycle_manager.py` 于 `f6c19ae` 删）。
+LifecycleManager 在 session-pipeline 的 `lifecycle/manager.py`，launcher 侧没有重导出。

@@ -41,7 +41,7 @@ def main():
   #   - 返工门禁       → review 步骤被拒 → 自动创建 rework subflow
   #   - 循环审计       → loop.producer_roles + value_gate
   # 使用方式：定义 workflow 模板（~/.hermes/workflows/*.json），
-  # 见 session-pipeline/docs/collab-modes-to-workflow.md
+  # 见 session-pipeline/docs/collab-modes-implementation.md
   #
   # 旧参数（--partner/--bus-track/--auto-restart）保留兼容但不再推荐，
   # 守护线程随 CLI 进程退出失效，请改用 workflow 模板。

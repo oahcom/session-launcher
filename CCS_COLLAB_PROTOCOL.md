@@ -138,7 +138,7 @@ else:
 tmux has-session -t ccs-<对方角色> 2>/dev/null && echo "alive" || echo "dead"
 
 # 检查哨兵记录的 PID 是否存活
-cat /tmp/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=json.load(sys.stdin); pid=d.get('pid'); os.kill(pid, 0) if pid else None; print('alive')" 2>/dev/null || echo "dead"
+cat ~/.hermes/run/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=json.load(sys.stdin); pid=d.get('pid'); os.kill(pid, 0) if pid else None; print('alive')" 2>/dev/null || echo "dead"
 ```
 
 ### 4.4 超时自愈
@@ -149,7 +149,7 @@ cat /tmp/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=j
 | 2 | 计算距离上轮时间差 | sleep 后执行 |
 | 3 | 未超时 → 继续下一轮 | - |
 | 4 | 超时 5 分钟 → 检查对方存活 | `tmux has-session -t ccs-<role>` |
-| 5 | 对方死 → 重启 | `ccs_start.py <role> --detach --prompt "..."` |
+| 5 | 对方死 → 重启 | `python3 src/ccs.py start <role> --no-attach --prompt "..."` |
 | 6 | 对方活 → 发 bus 提醒 | `bus_client.py write notice "@<role> 请回复 #<上轮ID>" --src <本方> |
 
 ---
@@ -164,7 +164,7 @@ cat /tmp/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=j
 2. 每 3 轮必须检查一次对方存活:
    tmux has-session -t ccs-<对方角色>
 3. 对方挂了立刻重启:
-   cd /home/administrator/session-launcher && python3 src/ccs_start.py <角色> --detach
+   cd ~/session-launcher && python3 src/ccs.py start <角色> --no-attach
 4. 对方 > 5 分钟无回复:
    - 检查存活
    - 发 bus 提醒: bus_client.py write notice "@<角色> 请继续 #<上轮ID>" --src <本方>
@@ -197,25 +197,9 @@ cat /tmp/ccs-sentinels/<对方角色>.json | python3 -c "import sys,json,os; d=j
 
 ### 6.0 Bus Push 架构
 
-零轮询、毫秒级延迟的实时消息推送。
-
-**数据流：**
-```
-bus_client.py write debate "终局..."
-  └─ bus_protocol.Blackboard.write()
-       ├─ INSERT INTO facts (SQLite)  ← 主路径
-       └─ _notify_feed()              ← 辅路径，推送
-            └─ /tmp/sister_bus_feed.sock
-                 └─ socket_server.py → broadcast
-                      ├── ccs-verifier → 实时收到
-                      ├── ccs-monitor  → 实时收到
-                      └── feed_listener.py → 检测终局关键词
-```
-
-**降级保障：**
-- feed socket 不可用 → `_notify_feed()` 静默异常 → 不丢 SQLite 写入
-- 监听脚本断线 → 自动重连
-- CCS 兜底 → `read --cat debate --watch` 回退到轮询
+数据流与证据见 `BUS_PUSH_ARCH.md`（唯一出处）。此处只留一条现状：写入路径无推送调用，
+feed socket 仅在显式 `PUBLISH` 时广播；`feed_listener` 断线 5s 自动重连（`feed_listener.py:171-198`），
+socket 不可用不影响 SQLite 写入。
 
 **feed_listener.py 用法：**
 ```bash
@@ -241,7 +225,7 @@ else
 fi
 ```
 
-### 6.2 存活检查 (bash)
+### 7.2 存活检查 (bash)
 
 ```bash
 for role in verifier rebutter; do
@@ -255,7 +239,7 @@ done
 
 ---
 
-## 7. 红线
+## 8. 红线
 
 1. **绝不两个 CCS 同时处于被动监听** — 至少一方承担主动推进职责
 2. **创建方必须守护被创建方的生命周期** — verifier 创建 rebutter → verifier 负责检查 rebutter 存活
@@ -267,7 +251,7 @@ done
 
 ---
 
-## 8. 验证方法
+## 9. 验证方法
 
 | 场景 | 验证方法 | 预期 |
 |------|----------|------|
@@ -275,108 +259,10 @@ done
 | 一方死锁 | bus 最新消息 < 5 分钟 | 超时触发检查 |
 | 一方挂掉 | `tmux has-session` 返回非 0 | 存活检查触发重启 |
 | 仲裁介入 | 仲裁扫描 bus + 双方存活 | 死锁检测 + 唤醒指令 |
-
 ---
 
-## 9. 重构原则：向后兼容设计
+## 10. 已删除的旧入口（只留结论）
 
-### 问题背景
-
-> 本节是重构当时的记录（`2e2af8b` 删 ccs_start.py、`93a7940` 删 launcher.py 之前）。
-> 现在 `ccs_start.py`、`launcher.py`、`deploy_all.sh` 均已删除，下文「旧 API 保留」「旧用户手动调用旧脚本仍然工作」
-> 这类描述已经失效，唯一入口是 `ccs.py`。
-
-重构 `ccs_start.py` → `ccs.py` 时，已有多个用户和系统依赖旧 API：
-- bash aliases（`ccs-status`、`ccs-stop`）
-- `deploy_all.sh` 调用 `launcher.py`（两者均已删除；现直接调用 `ccs.py`）
-- `session-pipeline` 曾有 `auto_route.py` 调用 `launcher.send_to_ccs()`（该脚本与 launcher 均已不存在，pipeline 现无任何 launcher import）
-- 其他 CCS 内部使用 `ccs_start.py`
-
-### 设计原则
-
-**"新代码是旧代码的超集，不是替代品"**
-
-```
-旧 API (ccs_start.py, launcher.py)  ←── 已删除，调用方改用 ccs.py 直连
-         │
-         │  新 API (ccs.py) 是完整重写
-         │
-         └──  别名切换到新 API（.bash_aliases）
-              旧 API 保留但不再维护
-```
-
-### 实施策略
-
-1. **新建 `ccs.py` 而非修改 `ccs_start.py`**
-   - 旧文件保持不变，现有调用方不中断
-   - 新文件包含所有新功能（多伙伴、健康检查、交叉验证）
-
-2. **别名层切换，而非代码层修改**
-   - `.bash_aliases` 从 `ccs_start.py` 切换到 `ccs.py`
-   - 旧用户手动调用旧脚本仍然工作
-
-3. **哨兵字段只增不改**
-   - 旧哨兵缺少 `health` 字段 → 新代码用默认值（`health: CcsHealth()`）
-   - 新哨兵有完整字段 → 旧代码忽略未知字段（JSON 静默丢弃）
-
-4. **依赖方向单向**
-   ```
-   ccs.py → core.py → sentinel.py
-                      → watchdog.py → sentinel.py
-                      → tracker.py  → sentinel.py
-   ```
-   旧文件（`ccs_start.py`、`launcher.py`）已删除，调用方改用 `ccs.py` 直连，不再有循环引用风险。
-
-5. **迁移窗口内双轨运行**
-   - 阶段 1：新旧 API 并存，别名切换到新 API
-   - 阶段 2：验证所有调用方已迁移
-   - 阶段 3：标记旧 API 为 `deprecated`（保留但打印警告）
-   - 阶段 4：删除旧文件（可选，不急）
-
-### 代码中的体现
-
-```python
-# ccs.py 是薄包装，只做 CLI 解析
-# 所有逻辑在 core.py（可独立 import）
-from core import start, stop, status, send, output, health_check
-
-# sentinel.py 读旧哨兵时用默认值兜底
-@classmethod
-def from_dict(cls, data: dict) -> "CcsSentinel":
-    h = data.get("health", {})  # 旧哨兵没有 health → {} → 默认值
-    health = CcsHealth(
-        last_watchdog_check=h.get("last_watchdog_check", 0.0),
-        ...
-    )
-```
-
-### 关键教训
-
-| # | 教训 | 表现 |
-|---|------|------|
-| 1 | **不要删除旧代码，要扩展新代码** | 旧 `ccs_start.py` 保留，新 `ccs.py` 是超集 |
-| 2 | **别名是廉价的抽象层** | 一次 `.bash_aliases` 改动 = 所有终端立即生效 |
-| 3 | **哨兵字段用 `data.get()` + 默认值** | 旧文件缺字段不会崩溃 |
-| 4 | **依赖单向，不循环** | 旧代码不 import 新模块，新代码不依赖旧模块 |
-| 5 | **迁移分阶段，不一刀切** | 双轨运行 → 验证 → 标记废弃 → 删除 |
-
-### 适用场景
-
-这套策略适用于：
-- **生产环境热更新**：不停服，新旧 API 并存
-- **多用户协作**：其他开发者/agent 调用旧 API 不中断
-- **渐进式迁移**：可以花几天验证，不急于删除旧代码
-
----
-
-## 10. 文件映射
-
-| 旧文件 | 新文件 | 状态 | 迁移方式 |
-|--------|--------|------|----------|
-| `ccs_start.py` | `ccs.py` | 保留旧，新别名指向新 | 别名切换 |
-| `launcher.py` | `core.py` | 已删除，调用方改用 `ccs.py` 直连 | - |
-| `signals.py` | `signals.py` | 保持不变 | - |
-| `worker_pool.py` | `worker_pool.py` | 保持不变 | - |
-| - | `sentinel.py` | 新增 | - |
-| - | `watchdog.py` | 新增 | - |
-| - | `tracker.py` | 新增 | - |
+`ccs_start.py`（`2e2af8b` 删）、`launcher.py`（`93a7940` 删）、`deploy_all.sh` 均已不存在，`src/events/`、
+`signals.py`、`worker_pool.py` 同样不在 `ls src/` 里；唯一入口是 `ccs.py`。历史上「旧 API 保留、双轨运行」
+那一套迁移策略随旧文件一起失效，不要再按它设计兼容层。
