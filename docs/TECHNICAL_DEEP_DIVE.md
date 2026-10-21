@@ -75,7 +75,6 @@ argparse 分发 12 个子命令：
 | `status` | 列出所有 CCS 状态 | `ccs.py status` |
 | `send` | 发送消息 | `ccs.py send verifier "你好"` |
 | `output` | 查看输出 | `ccs.py output verifier --tail 20` |
-| `stream` | 流式输出 | `ccs.py stream verifier` |
 | `health` | 健康检查 | `ccs.py health` |
 | `dashboard` | 聚合健康仪表板 | `ccs.py dashboard` |
 | `register` | 注册手动 tmux 为 CCS | `ccs.py register role tmux_name` |

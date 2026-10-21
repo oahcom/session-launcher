@@ -117,7 +117,6 @@ python3 src/ccs.py start <role> --drive loop|feed|both --feed-cat <category>
 python3 src/ccs.py stop <role>
 python3 src/ccs.py send <role> "message"
 python3 src/ccs.py output <role> [--tail N]
-python3 src/ccs.py stream <role>          # 流式输出（0.5s 增量轮询）
 
 # 状态
 python3 src/ccs.py status
