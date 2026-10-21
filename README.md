@@ -226,7 +226,7 @@ python3 src/ccs.py health
 `claude --model 9router_hermes --tools Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill --effort high`，
 workspace 的 `CLAUDE.md` 靠 claude 的 auto-discovery 加载（cwd 就是 `~/ccs-workspaces/<role>`）。
 不加 `--bare`：它只暴露 Bash/Edit/Read，Task/Agent、WebSearch、Write、Skill 全部消失。
-也不加 `--append-system-prompt-file`：与 auto-discovery 同时给会把同一份 prompt 注入两次，
+也不加 `--append-system-prompt-file`：与 auto-discovery 同时给会把同一份 prompt（实测 15–40KB/角色）注入两次，
 而严格探针（`--tools ""` 禁工具、排除模型自读文件）下发现式加载能逐字复述文件中段小节，两者等价。
 实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，重启进程后才答出新文案（n=1，未验证
 claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。

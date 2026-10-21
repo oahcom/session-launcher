@@ -129,6 +129,37 @@ class TestLaunchTmuxInjectsEnv:
         assert "ANTHROPIC_BASE_URL=http://localhost:20127/v1" in joined
         assert "ANTHROPIC_API_KEY=9router-local" in joined
 
+    @patch("core._router_env")
+    @patch("core.subprocess.run")
+    @patch("core._find_claude_pid")
+    @patch("core.time.sleep")
+    def test_launch_command_keeps_agent_tool(
+        self, mock_sleep, mock_find_pid, mock_run, mock_router_env
+    ):
+        """claude 命令行必须给角色 Agent 工具，且不能退回 --bare。
+
+        --bare 只暴露 Bash/Edit/Read（init 事件实测），Task/Agent、WebSearch、
+        Write、Skill 全部消失；prompt 却在要求角色联网检索、写产出、开子代理。
+        2026-10-21 之前这条没有任何断言，退化只能靠人工发现。
+        """
+        mock_router_env.return_value = {"ANTHROPIC_BASE_URL": "http://x/v1",
+                                       "ANTHROPIC_API_KEY": "k"}
+        mock_find_pid.return_value = 12345
+        ok = MagicMock()
+        ok.returncode = 0
+        ok.stdout = ""
+        ok.stderr = ""
+        mock_run.return_value = ok
+
+        _launch_tmux("ccs-testrole", Path("/tmp"))
+
+        joined = " ".join(
+            " ".join(c.args[0]) for c in mock_run.call_args_list
+            if c.args and c.args[0] and c.args[0][0] == "tmux" and "new-session" in c.args[0]
+        )
+        assert "--bare" not in joined, "退回 --bare 会让角色失去 Agent/WebSearch/Write"
+        assert "--tools" in joined and "Agent" in joined, "工具白名单里必须有 Agent"
+
 
 def _real_launch_env_check():
     """真机集成：起真实角色 pane，抓 claude 进程 env 验证。需 TEST_LAUNCH_REAL=1。"""

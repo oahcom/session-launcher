@@ -170,10 +170,12 @@ class TestRoleIsBusy:
 # ── 启动前的内存闸门 ──
 
 class TestMemoryShortage:
-    """swap 见底只在内存也紧时才拦：8G swap 占满但 avail 还有 2G 时照常启动。
+    """主判据是 pipeline cgroup 的 memory.current/high，宿主机 swap/avail 只作兜底。
 
-    2026-10-21 现场：swap_free=0/avail=2291MB 时 archivist 被拦下、角色停摆，
-    而同样条件下新 claude 正常起来。
+    两条现场互斥、都得钉住：
+    2026-10-16 swap_free=0 但 avail 6.1GB 也起不来（撞 cgroup high → 不可中断睡眠）；
+    2026-10-21 swap_free=0/avail=2291MB 却正常起来（cgroup 有余量），当时旧判据
+    挡住了 archivist、角色停摆 10 分钟。
     """
 
     def _meminfo(self, avail_mb, swap_total_mb, swap_free_mb):
@@ -181,11 +183,21 @@ class TestMemoryShortage:
                 f"SwapTotal: {swap_total_mb*1024} kB\n"
                 f"SwapFree: {swap_free_mb*1024} kB\n")
 
-    def _check(self, avail_mb, swap_total_mb, swap_free_mb):
+    def _check(self, avail_mb, swap_total_mb, swap_free_mb, cgroup=None):
+        """cgroup=(current_bytes, high_bytes)；None = cgroup 文件不可见。"""
         import tmux_ops
         from unittest.mock import patch
-        with patch("pathlib.Path.read_text",
-                   return_value=self._meminfo(avail_mb, swap_total_mb, swap_free_mb)):
+        _mem = self._meminfo(avail_mb, swap_total_mb, swap_free_mb)
+
+        def fake_read(self_path):
+            name = str(self_path)
+            if name.endswith("memory.current") or name.endswith("memory.high"):
+                if cgroup is None:
+                    raise OSError("cgroup absent")
+                return str(cgroup[0] if name.endswith("memory.current") else cgroup[1])
+            return _mem
+
+        with patch("pathlib.Path.read_text", new=fake_read):
             return tmux_ops._memory_shortage("probe")
 
     def test_full_swap_with_ram_free_is_allowed(self):
@@ -199,7 +211,30 @@ class TestMemoryShortage:
         assert self._check(avail_mb=300, swap_total_mb=0, swap_free_mb=0) is not None
 
     def test_healthy_is_allowed(self):
-        assert self._check(avail_mb=4000, swap_total_mb=8191, swap_free_mb=4000) is None
+        assert self._check(avail_mb=4000, swap_total_mb=8191, swap_free_mb=4000,
+                           cgroup=(5000 * 2**20, 6144 * 2**20)) is None
+
+    def test_swap_boundary_127_blocks_128_allows(self):
+        """avail 取 1010MB：刚好在 _MEM_FREE_MIN_MB(1000) 之上、_SWAP_LOW_AVAIL_MB
+        (1024) 之下，这样唯一能拦的就只有 swap 那一条分支。"""
+        assert self._check(avail_mb=1010, swap_total_mb=8191, swap_free_mb=127,
+                           cgroup=(5000 * 2**20, 6144 * 2**20)) is not None
+        assert self._check(avail_mb=1010, swap_total_mb=8191, swap_free_mb=128,
+                           cgroup=(5000 * 2**20, 6144 * 2**20)) is None
+
+    def test_cgroup_high_blocks_with_plenty_of_host_ram(self):
+        """2026-10-16 的形状：宿主机还富余，但 cgroup 撞 high → 必须拦。"""
+        err = self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169,
+                          cgroup=(6144 * 2**20 * 96 // 100, 6144 * 2**20))
+        assert err and "cgroup" in err
+
+    def test_cgroup_below_threshold_allowed(self):
+        assert self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169,
+                           cgroup=(5000 * 2**20, 6144 * 2**20)) is None
+
+    def test_cgroup_unreadable_falls_back_to_host_checks(self):
+        """cgroup 不可见时不抛异常，退回宿主机判据（本例宿主机宽松 → 放行）。"""
+        assert self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169) is None
 
 
 # ── --restart-idle 重启判据 ──

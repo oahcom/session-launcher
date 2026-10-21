@@ -638,8 +638,15 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 是物理不可能，角色只能退化成 bash heredoc + curl。
     # CLAUDE.md 走 auto-discovery（cwd 就是 ws_path）：严格探针实测（--tools "" 禁工具，
     # 排除模型自读文件）能逐字复述文件中段小节，与 --append-system-prompt-file 等价，
-    # 所以两个参数都不给——同时给会把同一份 ~10KB prompt 注入两次。
-    # 代价：global hooks / MCP 服务器随之启用（7 个 workspace 自带 stop-check hooks）。
+    # 所以两个参数都不给——同时给会把同一份 prompt（实测 15–40KB/角色，另加
+    # ~/.claude/CLAUDE.md 18KB）注入两次。
+    # MCP 与 hooks 不受这里影响：--tools 只裁「内置工具集」（help 原话），
+    # 用户级 ~/.claude.json 里的 hex-line/hex-graph 照样随每个 pane 起 2 个 server
+    # （实测 15 个新 pane 带 30 个 MCP 子进程；带 --bare 的旧 pane 同样有）——
+    # 角色大量在用 mcp__hex-line__read_file（近 6h 1712 次），所以不能加
+    # --strict-mcp-config，那条会让角色的文件读写习惯全线失效。
+    # hooks 同理：21 个 workspace 的 settings.json 都继承 hex-line 的
+    # SessionStart/PreToolUse/PostToolUse（node hook.mjs，5s 超时）。
     # 注意：这串 argv 在 tmux session 创建时就烤进 pane 的 bash -c 里，改了参数只有重建
     # session（ccs start）才生效——只杀 claude 会让 wrapper 用旧 argv 重拉（实测 reviewer）。
     _TOOLSET = "Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill"
@@ -729,7 +736,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
 def _assert_router_env_in_pane(tmux_name: str) -> None:
     """启动后校验 claude 进程已继承 ANTHROPIC_*；缺失则 loud error（不静默）。
 
-    --bare 模式下 tmux pane_pid 有时就是 claude 主进程本身（bash wrapper 已退出），
+    tmux pane_pid 有时就是 claude 主进程本身（bash wrapper 已退出），
     故需同时检查 pane_pid 自身与其直接子进程。
     """
     try:

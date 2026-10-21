@@ -22,7 +22,6 @@ __all__ = [
     'CODEX_READY_RETRIES',
     'CODEX_READY_INTERVAL',
     '_MEM_FREE_MIN_MB',
-    '_CGROUP_HIGH_PCT',
     '_CCS_LAUNCH_INTERVAL',
 ]
 
