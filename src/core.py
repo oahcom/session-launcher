@@ -12,8 +12,6 @@ from pathlib import Path
 __all__ = [
     'start',
     'StartOptions',
-    '_start_compat',
-    'register_hook',
     'stop',
     'status',
     'send',
@@ -111,25 +109,6 @@ def _reset_send_fail_streak(role: str) -> None:
         del streak[role]
         _save_send_fail_streak(streak)
 
-# ── 生命周期钩子（NeMo-Relay 模式）──
-_LIFECYCLE_HOOKS: dict[str, list] = {
-    "before_start": [], "after_start": [],
-    "before_stop": [], "after_stop": [],
-    "before_send": [], "after_send": [],
-    "on_health_check": [],
-}
-
-def register_hook(event: str, fn) -> None:
-    if event in _LIFECYCLE_HOOKS:
-        _LIFECYCLE_HOOKS[event].append(fn)
-
-def _trigger_hooks(event: str, **kwargs) -> None:
-    for fn in _LIFECYCLE_HOOKS.get(event, []):
-        try:
-            fn(**kwargs)
-        except Exception as e:
-            _log.info("[hooks:%s] %s error: %s", event, fn.__name__, e)
-
 from tmux_ops import (_check_memory_before_launch, _find_claude_pid,
     _is_alive, _tmux_send, _tmux_output, _tmux_kill, _find_codex_pid,
     TMUX_PREFIX)
@@ -176,10 +155,6 @@ class StartOptions:
     no_auto_send: bool = False
     instance_id: int = 0
     dry_run: bool = False
-
-def _start_compat(**kwargs) -> dict:
-    """向后兼容包装器：將 kwargs 轉為 StartOptions 委派給 start()。"""
-    return start(StartOptions(**kwargs))
 
 from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels
 
@@ -371,7 +346,6 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
     if o.workspace and not _validate_role_name(o.workspace):
         return {"success": False, "error": f"非法 workspace 名: {o.workspace}"}
     # P1-1 fix: 同步所有本地變數到 o.*，避免 direct StartOptions 調用時本地默認值(0/""/None) 覆蓋實際值
-    _locals_from_opts = o  # noqa: F841 — alias for clarity, all reads below use o.*
     tmux_name = make_tmux_name(o.role, o.instance_id)
     o.partners = o.partners or []
     ws_name = o.workspace or o.role
@@ -1058,8 +1032,6 @@ def send(role: str, message: str, source: str = "",
             except Exception as _be:  # noqa: BLE001
                 _log.warning("user_intent_reminder bus 证据写失败（不影响投递）: %s", _be)
     delivered = _tmux_send(tmux_name, send_message)
-    # ponytail: 自动触发 after_send 钩子（生命周期 hooks 预留）
-    _trigger_hooks("after_send", role=role, message=send_message, source=source)
     if delivered == "busy":
         # 忙 ≠ 故障：角色正在推理，消息未发送也未丢弃。不累计连败、不写
         # fallback 通知（那是真丢消息的信号），只告诉调用方稍后重试。
@@ -1108,8 +1080,12 @@ def _req_digest(message: str) -> str:
     换行必须折叠：bus evidence 是单行字段，且提醒里多行正文会被 Claude CLI
     当成多条消息逐行提交（实测 coordinator 收到 22 字符裸首行）。脱敏沿用
     _redact_secrets —— 痕迹落到共享 bus，凭证不得随摘要外泄。
+    控制字符必须剥掉：^C/^U/ESC 会经 _tmux_send 原样写进角色 pty（清行、清屏、
+    中断），且同一条正文会被重复提醒重发至多 3 次。末尾空白先剥再截，否则
+    140 字符截断可能停在空格上，下游 strip 后只剩 139（独立审查 D9）。
     """
-    return " ".join(_redact_secrets(message or "").split())[:140]
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", _redact_secrets(message or ""))
+    return " ".join(text.split())[:140].rstrip()
 
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:

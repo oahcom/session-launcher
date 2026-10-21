@@ -395,10 +395,15 @@ class IntentReminderDaemon:
                 try:
                     ts = float(_rt.group(1)) if _rt else float(f.get("timestamp") or 0.0)
                 except (TypeError, ValueError):
-                    continue
+                    # 脏 req_ts（1.2.3 / 空值）不得整条丢弃：丢一条 = 该角色静默零
+                    # 提醒。退回 facts 时间戳，再失败才跳过（独立审查 T7）。
+                    try:
+                        ts = float(f.get("timestamp") or 0.0)
+                    except (TypeError, ValueError):
+                        continue
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
-                _rq = re.search(r"req=(.*)$", ev)
+                _rq = re.search(r"req=(.*)", ev)
                 _req = (_rq.group(1).strip() if _rq else "")
                 _m = re.search(r"intent=(\w+)", ev)
                 try:

@@ -441,6 +441,51 @@ class TestRequestLookup(unittest.TestCase):
         self.assertEqual(IntentReminderDaemon._read_request_traces(), {})
 
 
+class TestRequestDigestHardening(unittest.TestCase):
+    """_req_digest / req= 解析的边界（獨立審查 2026-10-21 D9/T7/T9/X1）。"""
+
+    def test_digest_does_not_end_with_space_after_truncation(self):
+        """140 字符截断落在空格上 → 必须先 rstrip，否則下游 strip 後少 1 字。"""
+        from core import _req_digest
+        d = _req_digest("a" * 139 + " b")
+        self.assertEqual(len(d), 139, f"截断尾部空格未剝離: {d[-3:]!r}")
+        self.assertFalse(d.endswith(" "))
+
+    def test_digest_strips_terminal_control_chars(self):
+        """^C/^U/ESC/NUL 會經 send-keys -l 原樣寫進角色 pty → 必須剝掉。"""
+        from core import _req_digest
+        d = _req_digest("正常开头\x03中断\x15清行\x1b[2J\x00结尾")
+        self.assertNotIn("\x03", d)
+        self.assertNotIn("\x1b", d)
+        self.assertNotIn("\x00", d)
+        self.assertIn("正常开头", d)
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_dirty_req_ts_falls_back_to_fact_timestamp(self, mock_run):
+        """req_ts 脏（1.2.3）不得整條丟棄：丟一條 = 該角色靜默零提醒。"""
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 42.0, "evidence": "source=user role=qa req_ts=1.2.3"}]}))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(),
+                         {"qa": (42.0, None, "")})
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_req_parsed_without_relying_on_end_of_string(self, mock_run):
+        """req= 不得依賴"正文在串尾"：舊式 (.*)$ 遇換行整條丟失。"""
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 7.0,
+                 "evidence": "source=user role=qa req_ts=9 req=修队列\n下一行"}]}))
+        self.assertEqual(IntentReminderDaemon._read_request_traces(),
+                         {"qa": (9.0, None, "修队列")})
+
+
 class TestSingleBusReadPerTick(unittest.TestCase):
     """每輪只讀一次 bus（回歸：曾每 session 各讀一次 → N+1 子進程）。
 
