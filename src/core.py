@@ -632,25 +632,19 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
     # 权限由 workspace settings.json permissions.allow 控制
     _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
-    # --append-system-prompt-file 注入 workspace CLAUDE.md：--bare 跳过
-    # CLAUDE.md auto-discovery，不注入则角色职责/红线/Sister Bus 用法（实测
-    # 每角色 ~40KB）完全到不了模型，只靠 init prompt 的百来字符知道名字。
-    # 严格探针（--tools "" 禁工具，排除模型自读文件）实测 R42：
-    #   --append-system-prompt-file → 能答出文件内暗号；纯 --bare → 答不出；
-    #   --add-dir 同探针下也答不出（--bare 下不预载 CLAUDE.md，与 help 描述不符）。
-    # 保留 --bare 是有意的：它还跳过 hooks/plugin-sync/auto-memory，
-    # 去掉会让 stop-check 回合门控与 guard-fs-scan 拦搜生效。
-    # 文件不存在时必须省略该参数：claude 对缺失的 --append-system-prompt-file
-    # 直接 exit 1，配上外层 while 循环即成"每 3s 报错一次"的僵尸
-    # （与 R41 的 closer/writer 同一形态）。workspace 无 CLAUDE.md 是可能的：
-    # 注入失败、新建实例、手工清理都会留下这种状态。
-    _role_md = ws_path / "CLAUDE.md"
-    _md_arg = (f" --append-system-prompt-file {shlex.quote(str(_role_md))}"
-               if _role_md.is_file() else "")
+    # 不带 --bare：bare 模式只暴露 Bash/Edit/Read 三个工具（实测 init 事件
+    # "tools":["Bash","Edit","Read"]），Task/Agent、WebSearch、Write、Skill 全部没有
+    # ——而 prompt 一直在要求角色联网检索、写产出、按任务开子代理，这些在 bare 下
+    # 是物理不可能，角色只能退化成 bash heredoc + curl。
+    # CLAUDE.md 走 auto-discovery（cwd 就是 ws_path）：严格探针实测（--tools "" 禁工具，
+    # 排除模型自读文件）能逐字复述文件中段小节，与 --append-system-prompt-file 等价，
+    # 所以两个参数都不给——同时给会把同一份 ~10KB prompt 注入两次。
+    # 代价：global hooks / MCP 服务器随之启用（7 个 workspace 自带 stop-check hooks）。
+    _TOOLSET = "Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill"
     cmd = (
         "while true; do "
-        "claude --bare --model 9router_hermes"
-        f"{_md_arg}"
+        "claude --model 9router_hermes"
+        f" --tools {shlex.quote(_TOOLSET)}"
         f" {_PERM_FLAGS}"
         # --effort high 而非 max：9router 回退链含 oc/big-pickle 节点，该节点
         # 只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
