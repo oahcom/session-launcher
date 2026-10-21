@@ -32,11 +32,20 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     分类规则按生产日志实际文案反推，见 tests/unit/test_wf_stats_cause.py。
     """
     text = (detail or "").strip()
-    generic = text == "workflow cancelled"   # 无信息的默认文案，不代表原因
-    if not text or generic:
+    # 父链死了被级联取消，不是角色或引擎的错，单列一桶
+    if text.startswith("cascade from parent"):
+        return "cascade"
+    # 两种"调用方给了理由"的包装：reason=... 与 workflow cancelled (...)。
+    # 不剥壳会让里的"重复派发/误路由"永远落进 other。
+    by_caller = False
+    if text.startswith("workflow cancelled"):
+        text, by_caller = text[len("workflow cancelled"):].strip(" ()\t"), True
+    if text.startswith("reason="):
+        text, by_caller = text[len("reason="):].strip(), True
+    if not text:
         text = (reason or "").strip()
     if not text:
-        return "unspecified" if generic else "no_log"
+        return "unspecified" if by_caller else "no_log"
     if "僵尸回收" in text:
         if "24h全局阈值" in text:
             return "zombie_24h"
@@ -51,18 +60,13 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
         return "role_unresponsive"
     if "delivery_blocked" in text:
         return "delivery_blocked"
-    if text.startswith("reason="):
-        tail = text[len("reason="):]
-        if any(k in tail for k in ("重复派发", "冗余", "背压")):
-            return "dedup"
-        if any(k in tail for k in ("误路由", "误派")):
-            return "misroute"
-        if any(k in tail for k in ("孤子", "幽灵")):
-            return "orphan_subflow"
-        return "manual"
-    if text == "workflow cancelled":
-        return "unspecified"
-    return "other"
+    if any(k in text for k in ("重复派发", "冗余", "背压")):
+        return "dedup"
+    if any(k in text for k in ("误路由", "误派")):
+        return "misroute"
+    if any(k in text for k in ("孤子", "幽灵")):
+        return "orphan_subflow"
+    return "manual" if by_caller else "other"
 
 
 class WorkflowClient:
