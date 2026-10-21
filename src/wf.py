@@ -167,7 +167,12 @@ def main():
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
             t = wf.get_task(args.task_id)
-            print(json.dumps(t, indent=2, ensure_ascii=False) if t else "未找到")
+            if not t:
+                # stdout + rc=0 会被当成"查到了但没内容"：角色按 rc 判成败，
+                # 契约查不到就静默提交（实测角色只持 wf_id，见 client.get_task 注释）。
+                print(f"未找到: {args.task_id}（task_id 或 wf_id）", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(t, indent=2, ensure_ascii=False))
 
     elif args.cmd == "logs":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
