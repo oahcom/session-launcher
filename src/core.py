@@ -1191,7 +1191,7 @@ def wake_ccs(role_name: str, context: str = "",
     if alive:
         if context:
             # 必须透传 by_role 作 source：丢空会导致 source="" → 既不走三源验证门禁
-            # （core.py:873 `source != "cli"` 之外的路径），又让角色间唤醒无法归因。
+            # （send() 里 `role != "self" and source != "cli"` 之外的路径），又让角色间唤醒无法归因。
             # 回归实证（R88）：`ccs send` 的 CLI 默认 source="cli" 被当作人类来源，
             # 每次唤醒写入一条 `已注入意图提醒` 痕迹；bus 对同内容 UPSERT 刷新 ts →
             # 痕迹永不过期（_REQUEST_TTL=1800 形同虚设）→ qa 被反复唤醒空转，

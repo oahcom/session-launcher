@@ -594,8 +594,8 @@ class TestDeliveryFailureHandling(_HermeticStateFile):
     """投遞失敗必須被識別，不得計為成功。
 
     缺陷實證（2026-10-16 獨立審查 D-2 P1）：`_tmux_send` 重試耗盡時
-    **return False 而非拋異常**（tmux_ops.py:220/270，docstring 明寫「調用方
-    必須檢查返回值」）。舊寫法丟棄返回值 → 投遞全失敗也計成功 → 預算空燒、
+    **return False 而非拋異常**（其 docstring 明寫「調用方必須檢查返回值」；
+    不按行號引用——行號會隨改動漂移，2026-10-21 审查实测已漂 190 行）。舊寫法丟棄返回值 → 投遞全失敗也計成功 → 預算空燒、
     bus 留下「已提醒」假痕跡、daemon 側無失敗信號。
     """
 

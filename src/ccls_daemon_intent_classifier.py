@@ -322,7 +322,7 @@ class IntentReminderDaemon:
             return False
         try:
             # 必须看返回值：_tmux_send 重试耗尽时 **return False 而不抛异常**
-            # （tmux_ops.py:220/270，其 docstring 明写"调用方必须检查返回值"）。
+            # （其 docstring 明写"调用方必须检查返回值"；不按行号引用——行号会漂）。
             # 旧写法丢弃返回值 → 投递全失败也计成功，三重后果：用户请求一次没送到
             # 预算却已耗尽（此后永久静默）、bus 留下"已提醒"的假痕迹（把"没送到"
             # 伪装成"已对齐"）、daemon 侧无任何失败信号。
@@ -337,6 +337,10 @@ class IntentReminderDaemon:
                 return False
             st.last_remind_ts = now
             st.remind_count += 1
+            # 留一行可观测记录：提醒覆盖率此前只能靠翻 pane/转录才知道，而"角色
+            # 对话质量"的第一前提就是提醒本身真的到达了、带着正文。
+            print(f"[ccls_daemon] {session} 已注入提醒 第{st.remind_count}次 "
+                  f"含正文={'原始请求：' in reminder}", file=sys.stderr, flush=True)
             return True
         except Exception as e:
             # 不静默：注入失败会让角色永久停在未对齐态而无人知晓。

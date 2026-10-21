@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # 落库前必须跑一遍：workflow_logs 不是凭证存储。实测 107 行 detail 里是明文审批
 # 密钥（curator #429005），任何能读 workflows.db 的角色都能在 TTL 内拿它 wf confirm。
-# 正则放在本模块而非从 core 导入：core.py:949 才延迟 import gatekeeper，
+# 正则放在本模块而非从 core 导入：core 的 send() 才延迟 import gatekeeper，
 # 反向依赖会成环。core 侧只用于 bus 降级通知，落库通道以本函数为准。
 # 不盲抹「不跟标签的 40+ 长串」：message_preview 里还有 wf_id/路径/sha，
 # 抹了排障记录就废了（#427435 已有一批不可读的抹除行）。
