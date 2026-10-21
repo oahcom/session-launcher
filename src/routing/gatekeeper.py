@@ -443,11 +443,6 @@ class CrossRoleRouter:
                 return True
         return False
 
-    def check_send_permission(self, source: str, target: str,
-                               category: str = "") -> bool:
-        """检查发送权限（兼容旧接口）。"""
-        return self.intercept(source, target, category)
-
     def _log_cross_role_send(self, source: str, target: str, message: str,
                              sensitivity: str = ""):
         """记录跨角色消息到 workflow_logs。

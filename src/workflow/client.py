@@ -97,16 +97,6 @@ class WorkflowClient:
             raise ValueError("assignee is required")
 
 
-    def create_task(self, title: str, description: str = "",
-                    assignee: str = None, priority: int = 0,
-                    template_id: str = None) -> str:
-        if template_id is None:
-            raise ValueError(
-                "template_id is required. Use create_task_v2(title, assignee, template_id, initiator_role)."
-            )
-        return self._create_task_impl(title, description, assignee, priority, template_id)
-
-
     @classmethod
     def _title_is_placeholder(cls, title: str) -> bool:
         """检查标题是否为占位符（纯编号/角色+编号），拒绝创建空转任务。"""
@@ -573,33 +563,6 @@ class WorkflowClient:
     # ── Confirm 密钥验证 ──
 
         # ponytail: thin wrapper over lifecycle manager; full TTL/consumed-once semantics live there
-    def confirm_step(self, wf_id: str, token: str, reason: str = "assigner approval") -> dict:
-        """审批步骤：按 approval_token 反查 step_id，委托 lifecycle.manager 状态流转。
-        不在此处自行 UPDATE（旧实现字段名/状态值错乱，绕过审批链路）。"""
-        import json
-        inst = self.get(wf_id)
-        if not inst:
-            return {"confirmed": False, "reason": f"workflow {wf_id} 不存在"}
-        step_results = json.loads(inst.get("step_results", "{}"))
-        hit_step_id = None
-        for step_id, res in step_results.items():
-            if res.get("approval_token") == token:
-                hit_step_id = step_id
-                break
-        if not hit_step_id:
-            return {"confirmed": False, "reason": "approval_token 不匹配，审批拒绝"}
-        # 委托 lifecycle.manager：密钥验证 + _advance_unsafe 推进
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "session-pipeline" / "src"))
-        from lifecycle.manager import LifecycleManager
-        lm = LifecycleManager(role=self.role)
-        ok = lm.confirm_step(wf_id, step_id=hit_step_id, token=token,
-                             approved=True, reason=reason)
-        if ok:
-            self._log(wf_id=wf_id, action="step_confirmed",
-                      detail=f"token={token[:8]}... step={hit_step_id} 审批通过")
-        return {"confirmed": ok}
-
     # ── 子工作流 ──
 
     # ── Kanban ──
