@@ -45,7 +45,8 @@ _MAX_REMINDERS_CAP = 3
 # repeat_reminder，不再各自维护副本（v3 收敛：消除重复定义与符号覆盖冲突）。
 try:
     from user_intent_reminder import (  # type: ignore
-        classify_intent, Intent, repeat_reminder, verify_trace, is_ack)
+        classify_intent, Intent, repeat_reminder, verify_trace, is_ack,
+        sanitize_request)
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -59,6 +60,7 @@ except Exception:  # pragma: no cover - 同目录兜底
     repeat_reminder = _mod.repeat_reminder
     verify_trace = _mod.verify_trace
     is_ack = _mod.is_ack
+    sanitize_request = _mod.sanitize_request
 
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
 try:
@@ -72,12 +74,6 @@ except Exception:  # pragma: no cover - 加载失败时降级为不可注入
 
     def _role_is_busy(tmux_name: str) -> bool:  # type: ignore
         return False  # 降级：判不出忙 → 照常投递（宁可投递也不静默停发）
-
-    def verify_trace(payload: str, sig: str) -> bool:  # type: ignore
-        return False  # 降级：签不了名就不认正文（挡伪造优先于发提醒）
-
-    def is_ack(message: str) -> bool:  # type: ignore
-        return False  # 降级：判不出确认语 → 照常提醒（宁可多发一句，也不吞真请求）
 
 
 def _inject_text(session: str, text: str) -> bool | None:
@@ -411,6 +407,8 @@ class IntentReminderDaemon:
                         "[user_intent_reminder] 已注入意图提醒 → ")
             traces: dict[str, tuple[float, "Intent | None", str]] = {}
             for f in facts:
+              if not isinstance(f, dict):
+                  continue  # 形状漂移（bus 返回别的东西）不逐条打日志：20 键=20 行/tick
               try:  # 单条坏事实只丢一条：整体 try 会让一条脏数据清空所有角色的提醒
                 title = f.get("title") or ""
                 _hit = next((p for p in prefixes if title.startswith(p)), "")
@@ -426,6 +424,10 @@ class IntentReminderDaemon:
                 _rt = re.search(r"req_ts=([\d.]+)", ev)
                 try:
                     ts = float(_rt.group(1)) if _rt else float(f.get("timestamp") or 0.0)
+                    # 未签名的未来 req_ts 会赢下 max-ts 竞争并让该角色永久静默
+                    # （TTL 永不生效）。夹到当前时间+60s：允许时钟小幅漂移，不允许穿越
+                    # （审查 P2-2，实测 no-sig 远未来事实可永久压住合法痕迹）。
+                    ts = min(ts, time.time() + 60)
                 except (TypeError, ValueError):
                     # 脏 req_ts（1.2.3 / 空值）不得整条丢弃：丢一条 = 该角色静默零
                     # 提醒。退回 facts 时间戳，再失败才跳过（独立审查 T7）。
@@ -444,15 +446,25 @@ class IntentReminderDaemon:
                 _sg = re.match(r"([0-9a-f]{32})", _tail)
                 _rq = re.search(r"\breq=(.*)$", _body)
                 _req = (_rq.group(1).strip() if _rq else "")
-                # bus 无认证、写入方任意，而 req= 会被原样贴进角色 pane：只接受本机
-                # core.send 用本地密钥签过的痕迹。签名不符/缺失一律按"无正文"处理
-                # （不注入），既挡住伪造注入，也不误杀没有正文的旧痕迹。
+                # bus 无认证、写入方任意，而 req= 会被贴进角色 pane：只接受带有效签名的
+                # 痕迹。签名不符/缺失一律按"无正文"处理（不注入），既挡住手滑误写，
+                # 也不误杀没有正文的旧痕迹。
+                # **天花板**：密钥与角色同 uid，持有者（任何角色 shell）仍可签出合法
+                # 痕迹 —— 这是完整性证据，不是同 uid 认证（审查 P1-1）。
                 # 验签对象是**整条正文**（末尾 sig 之前），不只是 role|req_ts|req：
                 # 否则截获合法痕迹后单改 intent= 就能让该角色静默（审查 P2-2）。
                 # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行；
                 # "无正文"由 _push_reminder 每 session 只报一次。
                 if _req and not (_sg and verify_trace(_body, _sg.group(1))):
                     _req = ""
+                # 标题角色必须与**签名正文里的** role= 一致：否则任何 bus 写入方都能
+                # 把一条合法签名痕迹"改投"到另一个角色的 pane（审查 P2-1，实测可把
+                # qa 的请求重放到 ops/pm）。签名只绑内容，不绑投递目标，需在此校验。
+                if _req and re.search(r"(?:^|\s)role=" + re.escape(role) + r"(?:\s|$)", _body) is None:
+                    _req = ""
+                # 边界再洗一遍：签名证明"谁写的"，不证明"内容是单行" —— 同 uid 的
+                # 签名者能塞多行，把伪造的「第N次重复自检：…」写进 pane（审查 P2-4）。
+                _req = sanitize_request(_req) if _req else ""
                 _m = re.search(r"intent=(\w+)", ev)
                 try:
                     intent = Intent(_m.group(1)) if _m else None
