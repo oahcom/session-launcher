@@ -234,9 +234,8 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 ## 验证
 
 ```bash
-python3 -m pytest tests/ -q          # 实测 460 passed (2026-10-22)
-python3 src/ecosystem_health.py --json   # 2026-10-22 实测 116/116 连跑两次一致；
-                                         # 兄弟仓正在改代码时会掉到 112/117，失败项集中在 pipeline 侧 import
+python3 -m pytest tests/ -q          # 全 passed 即基线（数量不写死：并发改动会增减）
+python3 src/ecosystem_health.py --json   # 全 true 即健康；兄弟仓改代码期间失败项集中在 pipeline 侧 import
 python3 src/ccs.py health
 ```
 
