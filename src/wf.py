@@ -126,8 +126,10 @@ def main():
     elif args.cmd == "create":
         r = args.role or args.assignee
         if not r:
-            print("--role 或 --assignee 必填")
-            return
+            # rc=0 + stdout 会把这句话当成"建好了"：调用方（角色/脚本）按返回码判成败，
+            # 需求静默丢弃 = 链根本没起。与 complete 的终态分支同口径：写 stderr + 非 0。
+            print("--role 或 --assignee 必填", file=sys.stderr)
+            sys.exit(2)
         init = args.initiator or r
         with WorkflowClient(r) as wf:
             desc = args.desc or ""

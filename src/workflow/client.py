@@ -1,7 +1,6 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -78,19 +77,12 @@ class WorkflowClient:
         if not template_id:
             raise ValueError("template_id is required")
         row = self._conn.execute(
-            "SELECT 1 FROM workflow_templates WHERE template_id=?", (template_id,)
+            "SELECT is_active FROM workflow_templates WHERE template_id=?", (template_id,)
         ).fetchone()
         if not row:
             raise ValueError(f"template_id not found: {template_id}")
-        # check is_active column if it exists (SQLite schema may vary)
-        try:
-            active = self._conn.execute(
-                "SELECT is_active FROM workflow_templates WHERE template_id=?", (template_id,)
-            ).fetchone()
-            if active and active["is_active"] not in (1, "1", True):
-                raise ValueError(f"template is inactive: {template_id}")
-        except (sqlite3.OperationalError, KeyError):
-            pass  # no is_active column in schema
+        if row["is_active"] not in (1, "1", True):
+            raise ValueError(f"template is inactive: {template_id}")
         if not initiator_role:
             raise ValueError("initiator_role is required")
         if not assignee:
@@ -286,32 +278,6 @@ class WorkflowClient:
 
     # ── Workflow Instance CRUD ──
 
-    def create(self, assignee: str, task_description: str,
-               workflow_json: dict = None, task_id: str = None) -> str:
-        import uuid
-        wf_id = f"wf_{uuid.uuid4().hex[:12]}"
-        now = time.time()
-        if not task_id:
-            task_id = f"task_{int(now * 1000) % 100000000}"
-            self._conn.execute("""
-                INSERT OR IGNORE INTO tasks (task_id, title, description, assigner, assignee,
-                                             status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-            """, (task_id, task_description, task_description, self.role, assignee, now, now))
-        self._conn.execute("""
-            INSERT OR IGNORE INTO workflow_instances (instance_id, task_id, assigner, assignee,
-                                            status, created_at)
-            VALUES (?, ?, ?, ?, 'pending', ?)
-        """, (wf_id, task_id, self.role, assignee, now))
-        self._conn.commit()
-        if task_id:
-            self._conn.execute(
-                "UPDATE tasks SET current_workflow_id=?, status='in_progress' WHERE task_id=?",
-                (wf_id, task_id))
-            self._conn.commit()
-        self._log(wf_id=wf_id, task_id=task_id, action="created", detail=f"assignee={assignee}")
-        return wf_id
-
     def get(self, wf_id: str) -> Optional[dict]:
         row = self._conn.execute("SELECT * FROM workflow_instances WHERE instance_id=?", (wf_id,)).fetchone()
         return dict(row) if row else None
@@ -335,14 +301,16 @@ class WorkflowClient:
         return [dict(r) for r in rows]
 
     def complete(self, wf_id: str, summary: str, files: list = None):
-        # 终态守卫见 _update_if_mutable。原实现只挡 completed，实测把 cancelled 的
-        # 实例复活成 step_done_ready 并生成新 approval_token（角色用旧 wf_id 重复
-        # 提交即可让已取消的链重新待审）。守卫放在 UPDATE 上，守卫与写入不可分离。
-        import uuid
+        # 终态守卫见 _update_if_mutable：守卫放在 UPDATE 上，守卫与写入不可分离
+        # （原实现只挡 completed，实测把 cancelled 实例复活成 step_done_ready）。
+        #
+        # 不再自铸 approval_token（2026-10-22）：执行者在提交完成时自己生成密钥、
+        # 自己写 ttl、硬编码审批人 reviewer，而写入位置是 step_results **顶层**，
+        # 引擎只读 step_results[step_id] 的 token（engine.py 审批门控段）——引擎
+        # 永远看不见它，于是审批被静默跳过，同时把顶层污染成非 dict 键（实测 413
+        # 个）。全库 429 张密钥 approval_consumed_at 全为 null，两条签发路径没有
+        # 一条被消费过。评审结论改由 review_gate 判据在推进路径上消费。
         files_str = ", ".join(files) if files else ""
-        approval_token = uuid.uuid4().hex[:16]
-        # 合并到既有 step_results（保留 approval_token_ttl 等生命周期字段），
-        # 统一字段名 approval_token 与 lifecycle.manager 保持一致
         import json as _json
         _cur = self._conn.execute(
             "SELECT step_results FROM workflow_instances WHERE instance_id=?", (wf_id,)
@@ -350,32 +318,20 @@ class WorkflowClient:
         _step_results = {}
         if _cur and _cur["step_results"]:
             _step_results = _json.loads(_cur["step_results"])
-        _step_results.update({
-            "summary": summary,
-            "files": files_str,
-            "approval_token": approval_token,
-            "approval_token_ttl": time.time() + 3600,
-            "approval_consumed_at": None,
-        })
+        _step_results.update({"summary": summary, "files": files_str})
         if not self._update_if_mutable(
                 wf_id,
                 "status='step_done_ready', completed_at=?, step_results=?",
                 (time.time(), _json.dumps(_step_results, ensure_ascii=False))):
             return None  # 终态：不写库，也不发审批通知
         wf = self.get(wf_id)
-        # 通知审批者：把 token 发给下一步审批人
+        # 不再向 reviewer 广播「审批请求」：没有密钥可批，这条通知只会制造
+        # 无法完成的 confirm 往返（实测角色侧 172 次 engineer confirm 全失败）。
         if wf:
-            task_id = wf.get("task_id", "")
-            reviewer = "reviewer"
-            if wf.get("template_id") == "writer_document":
-                reviewer = "lr"
-            self.notify("workflow", f"审批请求 {wf_id}",
-                evidence=f"task={task_id}, 审批者={reviewer}, token_available=true")
-            self._log(wf_id=wf_id, action="step_done_ready",
-                      detail=f"审批者={reviewer}, token_written=true")
+            self._log(wf_id=wf_id, action="step_done_ready", detail="completed_by_role")
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
-        return approval_token
+        return True
 
     def _sync_task_from_workflows(self, task_id: str):
         rows = self._conn.execute(
@@ -418,17 +374,6 @@ class WorkflowClient:
         if wf and wf.get('task_id'):
             self._sync_task_from_workflows(wf['task_id'])
         self._log(wf_id=wf_id, action="cancelled", detail=f"reason={reason}")
-        return True
-
-    def delete(self, wf_id: str) -> bool:
-        wf = self.get(wf_id)
-        if not wf:
-            return False
-        if wf['assigner'] == self.role:
-            return False
-        self._log(wf_id=wf_id, action="deleted")
-        self._conn.execute("DELETE FROM workflow_instances WHERE instance_id=?", (wf_id,))
-        self._conn.commit()
         return True
 
     def find_zombies(self, minutes: int = 120, limit: int = 50) -> list[dict]:
@@ -551,19 +496,6 @@ class WorkflowClient:
             raise ValueError(
                 f"委托 pipeline 拉取失败: {(_r.stderr or _r.stdout or 'no output')[-400:]}")
         return json.loads(_last)
-
-    def confirm_delivery(self, task_id: str, target_role: str, timeout: int = 300) -> dict:
-        from routing.partner import PartnerClient
-        return PartnerClient(self.role).confirm_delivery(task_id, target_role, timeout)
-
-    def check_wake_permission(self, target: str) -> bool:
-        from routing.partner import PartnerClient
-        return PartnerClient(self.role).check_wake_permission(target)
-
-    # ── Confirm 密钥验证 ──
-
-        # ponytail: thin wrapper over lifecycle manager; full TTL/consumed-once semantics live there
-    # ── 子工作流 ──
 
     # ── Kanban ──
 
