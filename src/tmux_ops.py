@@ -292,6 +292,16 @@ def _looks_stuck(tmux_name: str, pid: int) -> bool:
     return cpu - prev_cpu < 5.0
 
 
+def _kill(pid: int, sig: int = 9) -> None:
+    """杀进程的唯一出口。
+
+    单独一层是为了可测：直接 os.kill 时测试只能 patch 全局 os.kill，而
+    subprocess 超时清理（Popen.kill）也走它——实测三个用例因此恒录到无关
+    kill（pid 每次不同），在负载高的机器上 100% 红（2026-10-22）。
+    """
+    os.kill(pid, sig)
+
+
 def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
     """进程比 prompt 文件旧且角色空闲时重启它——claude 只在启动时读该文件，/clear 不重读。
 
@@ -313,7 +323,7 @@ def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
         return False
     if _proc_start_time(pid) >= prompt_file.stat().st_mtime:
         return False
-    os.kill(pid, 9)
+    _kill(pid)
     print(f"    {tmux_name}: 已重启 pid={pid}（wrapper 3s 内重拉）")
     return True
 
