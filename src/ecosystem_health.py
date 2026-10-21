@@ -271,6 +271,74 @@ def _check_sentinels() -> CheckItem:
                      duration_ms=(time.time() - start) * 1000)
 
 
+def _check_workflow_engine() -> CheckItem:
+    """引擎活着 ≠ 链在推进（coordinator.md:6 的 #428132）。
+
+    2026-10-22 03:1x 实测：service 显示 active，锁文件里的 PID 却是另一个
+    手工起在 tmux 外的 daemon，systemd 拉起的那个一直在等锁——三套巡检都报绿，
+    16 个实例停在 running 无人推进。判据分三层，任一不成立即 fail：
+
+    1. systemd 单元 active
+    2. 锁归属（~/.hermes/run/workflow-daemon.lock）== 单元 MainPID
+    3. 有活跃实例时，最近 30 分钟必须有 workflow_logs 落库（步骤真的在动）
+    """
+    start = time.time()
+    def _fail(why: str) -> CheckItem:
+        return CheckItem(name="wf:engine", passed=False, detail=why,
+                         duration_ms=(time.time() - start) * 1000)
+    try:
+        state = subprocess.run(
+            ["systemctl", "--user", "is-active", "workflow-engine"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        if state != "active":
+            return _fail(f"workflow-engine 状态={state or 'unknown'}，链无人推进")
+        main_pid = subprocess.run(
+            ["systemctl", "--user", "show", "workflow-engine", "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        lock = HOME / ".hermes" / "run" / "workflow-daemon.lock"
+        lock_pid = lock.read_text().strip() if lock.exists() else ""
+        # 锁文件内容是上次成功的写入，进程死后不清 → 必须真探一次 flock。
+        # 实测 03:1x：文件里留着已 kill 的 1160496，单元 MainPID 却在重启循环里
+        # 从未进过主循环；只比内容会把"没人持锁"误判成"被旧进程占着"。
+        import fcntl
+        _held = False
+        try:
+            with lock.open("a+") as _fh:
+                try:
+                    fcntl.flock(_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(_fh, fcntl.LOCK_UN)
+                except OSError:
+                    _held = True
+        except OSError:
+            pass
+        if not _held:
+            return _fail(f"单元 active(MainPID={main_pid}) 但锁未被持有——"
+                         "进程没进主循环或在静默重启，链无人推进")
+        if lock_pid and main_pid and lock_pid != main_pid:
+            return _fail(f"锁被 pid={lock_pid} 持有，单元 MainPID={main_pid}"
+                         "（手工 daemon 占锁，系统单元在空转等锁）")
+        import sqlite3
+        db = HOME / ".hermes" / "state" / "workflows.db"
+        if not db.exists():
+            return _fail(f"生产库不存在: {db}")
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+        try:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM workflow_instances "
+                "WHERE status IN ('pending','running','step_done_ready')").fetchone()[0]
+            last = conn.execute("SELECT MAX(ts) FROM workflow_logs").fetchone()[0] or 0
+        finally:
+            conn.close()
+        idle_min = (time.time() - last) / 60 if last else -1
+        if active and idle_min > 30:
+            return _fail(f"{active} 个活跃实例，但 {idle_min:.0f} 分钟无步骤日志（链停）")
+        return CheckItem(name="wf:engine", passed=True,
+                         detail=f"active pid={main_pid} 活跃实例={active} 最近日志={idle_min:.0f}min前",
+                         duration_ms=(time.time() - start) * 1000)
+    except Exception as _e:  # noqa: BLE001 - 健康检查自身不得抛出
+        return _fail(f"探测失败: {_e}")
+
+
 def _check_workspaces() -> CheckItem:
     """检查工作空间。"""
     start = time.time()
@@ -330,6 +398,7 @@ def check_all() -> HealthReport:
     # 7. 运行状态
     report.checks.append(_check_sentinels())
     report.checks.append(_check_workspaces())
+    report.checks.append(_check_workflow_engine())
 
     return report
 
