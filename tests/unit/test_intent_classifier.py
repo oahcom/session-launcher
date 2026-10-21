@@ -1065,3 +1065,17 @@ class TestStatePersistence(_HermeticStateFile):
         self.assertEqual(st["good"].remind_count, 1, "合法條目的預算應原樣保留")
         self.assertEqual(st["bad"].remind_count, _mod._MAX_REMINDERS_CAP,
                          "臟條目應按已耗盡處理（fail-closed），而非丟棄後重獲滿額")
+
+
+class TestRedactionDoesNotEatRequests(unittest.TestCase):
+    """中文口令标签只抹 ASCII token：否则整句请求被吞成 ***（第二轮审查实测）。"""
+
+    def test_chinese_password_question_not_redacted(self):
+        core = _import_core()
+        for msg in ("密码 忘了怎么办", "密码：过期了怎么办", "密码是什么"):
+            self.assertEqual(core._req_digest(msg), msg)
+
+    def test_chinese_password_value_still_redacted(self):
+        core = _import_core()
+        for msg in ("密码 hunter2", "口令: Zx9!kLm"):
+            self.assertEqual(core._req_digest(msg), "***")
