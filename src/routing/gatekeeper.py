@@ -46,8 +46,11 @@ def _redact_secrets(text: str) -> str:
 # 按影响范围分级：info / operation / admin
 SENSITIVE_CMDS: dict[str, list[str]] = {
     "admin": ["stop", "kill", "force_start_ccs", "register_hook"],
-    "operation": ["start", "wake_ccs", "send-safe", "send-direct", "codex start"],
-    "info": ["send", "output", "status", "health", "workspace"],
+    "operation": ["start", "wake_ccs"],
+    # send-safe 目标在线时与 send 走同一条 _send（partner.py:321,340），只有离线才多一步
+    # 唤醒，而唤醒已由 roles.py:226-232 按 target 粒度默认拒绝地守着。放在 operation 会让
+    # 任何使分类器真正生效的改动一次性拦死 84 条/5 天的合法跨角色派活（pm 占 72 条）。
+    "info": ["send", "send-safe", "send-direct", "output", "status", "health", "workspace"],
 }
 # 允许执行 admin/operation 级别的角色
 ADMIN_ROLES: set = {"coordinator", "maintainer", "closer"}
