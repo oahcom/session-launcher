@@ -79,7 +79,10 @@ _FORBIDDEN_MAP: dict[str, list[str]] = {
     "writer": ["edit_config", "deploy", "start_ccs", "edit_persona_json", "write_code"],
     # closer 实测有 3 个 .py 产出（收尾脚本），不禁 write_code
     "closer": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
-    "curator": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
+    # 键名必须与会话名逐字一致：persona_03 "curator" 已随零产出角色一起删除
+    # （roles ad6815b），活体是 knowledge_curator；写成旧名等于没写——查不到条目
+    # 就落回含 run_tests 的默认表（bus #417927 同型误判）。
+    "knowledge_curator": ["edit_config", "deploy", "start_ccs", "edit_persona_json"],
     "pm": ["edit_config", "deploy", "start_ccs", "edit_persona_json", "write_code"],
 }
 
