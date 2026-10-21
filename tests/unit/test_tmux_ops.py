@@ -239,6 +239,35 @@ class TestMemoryShortage:
 
 # ── --restart-idle 重启判据 ──
 
+class TestLooksStuck:
+    """状态栏挂着 esc-to-interrupt 但 pane/CPU 都不动 = 卡死，不是「在生成」。"""
+
+    def _run(self, panes, cpus, times):
+        import tmux_ops
+        from unittest.mock import patch
+        tmux_ops._stuck_cache.clear()
+        out = []
+        with patch("tmux_ops._tmux_output", side_effect=panes), \
+             patch("tmux_ops._proc_cpu_seconds", side_effect=cpus), \
+             patch("tmux_ops.time.monotonic", side_effect=times):
+            for _ in panes:
+                out.append(tmux_ops._looks_stuck("ccs-probe", 1234))
+        return out
+
+    def test_frozen_pane_with_no_cpu_is_stuck(self):
+        assert self._run(["same", "same"], [100.0, 101.0], [0.0, 200.0]) == [False, True]
+
+    def test_changing_pane_is_not_stuck(self):
+        assert self._run(["a", "b"], [100.0, 101.0], [0.0, 200.0]) == [False, False]
+
+    def test_short_interval_never_judges(self):
+        assert self._run(["same", "same"], [100.0, 100.0], [0.0, 60.0]) == [False, False]
+
+    def test_burning_cpu_is_not_stuck(self):
+        """长时间流式输出也会让 pane 不变（同一行原地刷新），靠 CPU 区分。"""
+        assert self._run(["same", "same"], [100.0, 160.0], [0.0, 200.0]) == [False, False]
+
+
 class TestRestartIfStale:
     """只在「进程比 prompt 旧 + pane 空闲 + 确实是 claude」三条同时成立时才 kill。"""
 

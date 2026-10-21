@@ -257,12 +257,47 @@ def _proc_start_time(pid: int) -> float:
     return btime + ticks / (os.sysconf("SC_CLK_TCK") or 100)
 
 
+_STUCK_MIN_SECS = 120  # 两次采样间隔下限
+_PROC_CPU_HZ = os.sysconf("SC_CLK_TCK") or 100
+_stuck_cache: dict[str, tuple[float, str, float]] = {}
+
+
+def _proc_cpu_seconds(pid: int) -> float:
+    """进程累计 CPU 秒数（utime+stime）。"""
+    f = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return (int(f[11]) + int(f[12])) / _PROC_CPU_HZ
+
+
+def _looks_stuck(tmux_name: str, pid: int) -> bool:
+    """状态栏说忙，但 pane 一字未动且 CPU 也没走 → 判定卡死。
+
+    只看状态栏的忙判据会把卡死的 CLI 永久当成「在生成」：2026-10-21 实测
+    consumer / product_architect / maintainer 挂着 esc-to-interrupt 90+ 分钟，
+    45 秒只烧 1–2 秒 CPU、pane 内容完全不变，因此一直不重启、一直拿不到新 prompt。
+    要求两次采样间隔 ≥ _STUCK_MIN_SECS，所以单次调用不会判卡死（首次调用只记样本）。
+    """
+    now = time.monotonic()
+    pane = _tmux_output(tmux_name, tail=40)
+    try:
+        cpu = _proc_cpu_seconds(pid)
+    except (OSError, ValueError, IndexError):
+        return False
+    prev = _stuck_cache.get(tmux_name)
+    _stuck_cache[tmux_name] = (now, pane, cpu)
+    if not prev:
+        return False
+    prev_ts, prev_pane, prev_cpu = prev
+    if now - prev_ts < _STUCK_MIN_SECS or pane != prev_pane:
+        return False
+    return cpu - prev_cpu < 5.0
+
+
 def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
     """进程比 prompt 文件旧且角色空闲时重启它——claude 只在启动时读该文件，/clear 不重读。
 
     只杀 claude 不碰 wrapper：杀 wrapper 会连 tmux session 一起没。
     """
-    if not _is_alive(tmux_name) or _role_is_busy(tmux_name):
+    if not _is_alive(tmux_name):
         return False
     # 采集失败按忙处理：宁可漏一次重启，也不能把生成中的进程杀到一半
     if not _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL):
@@ -272,7 +307,11 @@ def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
         ok = bool(pid) and Path(f"/proc/{pid}/comm").read_text().strip() == "claude"
     except OSError:
         ok = False
-    if not ok or _proc_start_time(pid) >= prompt_file.stat().st_mtime:
+    if not ok:
+        return False
+    if _role_is_busy(tmux_name) and not _looks_stuck(tmux_name, pid):
+        return False
+    if _proc_start_time(pid) >= prompt_file.stat().st_mtime:
         return False
     os.kill(pid, 9)
     print(f"    {tmux_name}: 已重启 pid={pid}（wrapper 3s 内重拉）")
