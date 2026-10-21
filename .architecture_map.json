@@ -448,27 +448,6 @@
       "is_wrapper": false,
       "line_count": 230
     },
-    "launcher.py": {
-      "classes": [],
-      "functions": [
-        "ccs_capture_output_raw",
-        "is_ccs_running",
-        "main"
-      ],
-      "imports": [
-        "sys",
-        "pathlib",
-        "core",
-        "core",
-        "core",
-        "sentinel",
-        "core",
-        "core",
-        "ccs"
-      ],
-      "is_wrapper": false,
-      "line_count": 81
-    },
     "lesson_injector.py": {
       "classes": [
         {
@@ -1556,8 +1535,7 @@
       "desc": "Orchestration, launcher, CCS management",
       "modules": [
         "core.py",
-        "ccs.py",
-        "launcher.py"
+        "ccs.py"
       ]
     },
     "🧪 Testing (测试)": {
@@ -1643,11 +1621,6 @@
       "paths.py",
       "events/parser.py"
     ],
-    "launcher.py": [
-      "ccs.py",
-      "core.py",
-      "sentinel.py"
-    ],
     "lesson_injector.py": [
       "paths.py"
     ],
@@ -1699,7 +1672,6 @@
       "ops/sentinel.py"
     ],
     "ops/watchdog.py": [
-      "launcher.py",
       "sentinel.py",
       "ops/sentinel.py"
     ],

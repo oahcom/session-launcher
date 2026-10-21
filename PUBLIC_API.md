@@ -19,7 +19,6 @@ src/
 ├── ccs.py              # CLI 入口（start/stop/send/status/output）
 ├── ccs_socket.py       # CCS 直接通信（Unix Socket: CCSClient）
 ├── core.py             # 生命周期编排（start/send/stop/health）
-├── launcher.py         # Launcher 编排入口
 ├── routing/roles.py        # RoleManager（角色加载 + workspace 注入 + 权限）
 ├── paths.py            # 路径常量
 ├── sentinel.py         # 根目录哨兵（跨会话动作记录）

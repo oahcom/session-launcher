@@ -284,7 +284,7 @@ done
 
 重构 `ccs_start.py` → `ccs.py` 时，已有多个用户和系统依赖旧 API：
 - bash aliases（`ccs-status`、`ccs-stop`）
-- `deploy_all.sh` 调用 `launcher.py`
+- `deploy_all.sh` 调用 `launcher.py`（两者均已删除；现直接调用 `ccs.py`）
 - `session-pipeline` 的 `auto_route.py` 调用 `launcher.send_to_ccs()`
 - 其他 CCS 内部使用 `ccs_start.py`
 
@@ -293,7 +293,7 @@ done
 **"新代码是旧代码的超集，不是替代品"**
 
 ```
-旧 API (ccs_start.py, launcher.py)  ←── 保持可用
+旧 API (ccs_start.py, launcher.py)  ←── 已删除，调用方改用 ccs.py 直连
          │
          │  新 API (ccs.py) 是完整重写
          │
@@ -321,7 +321,7 @@ done
                       → watchdog.py → sentinel.py
                       → tracker.py  → sentinel.py
    ```
-   旧文件（`ccs_start.py`、`launcher.py`）不依赖新模块，避免循环引用。
+   旧文件（`ccs_start.py`、`launcher.py`）已删除，调用方改用 `ccs.py` 直连，不再有循环引用风险。
 
 5. **迁移窗口内双轨运行**
    - 阶段 1：新旧 API 并存，别名切换到新 API
@@ -370,7 +370,7 @@ def from_dict(cls, data: dict) -> "CcsSentinel":
 | 旧文件 | 新文件 | 状态 | 迁移方式 |
 |--------|--------|------|----------|
 | `ccs_start.py` | `ccs.py` | 保留旧，新别名指向新 | 别名切换 |
-| `launcher.py` | `core.py` | 保留旧，新 API 统一 | 内部调用 |
+| `launcher.py` | `core.py` | 已删除，调用方改用 `ccs.py` 直连 | - |
 | `signals.py` | `signals.py` | 保持不变 | - |
 | `worker_pool.py` | `worker_pool.py` | 保持不变 | - |
 | - | `sentinel.py` | 新增 | - |

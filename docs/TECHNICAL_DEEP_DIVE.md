@@ -20,7 +20,6 @@ session-launcher/
 ├── codex_ops.py           # Codex session 管理
 ├── ccs_socket.py          # CCS 直接通信客户端（<1ms Unix Socket）
 ├── routing/roles.py       # → 角色定义加载与知识注入
-├── launcher.py            # 兼容层
 ├── event_log.py           # 事件日志
 ├── paths.py               # 统一路径管理
 ├── signal_parser.py       # 信号解析器
