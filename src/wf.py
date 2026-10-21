@@ -84,14 +84,13 @@ def main():
     p_cleanup.add_argument("--limit", type=int, default=50)
     p_cleanup.add_argument("--yes", action="store_true", help="执行取消(默认 dry-run)")
 
-    # 审批入口：引擎为 handoff/review/subflow 步骤签发 approval_token 并通过
-    # ccs send 推给审批人，但没有 CLI 能把它提交回来 —— 角色只能眼看步骤卡在
-    # step_done_ready，最终靠 daemon 的 TTL+30min 兜底自动 approve（质量闸门失效）。
-    # 实测 24h：step_done_ready 410 次 vs step_confirmed 5 次。
-    p_confirm = sub.add_parser("confirm", help="审批步骤（提交 approval_token）")
+    # 审批入口只保留「结论」语义：引擎按 review 结论推进，不再签发密钥
+    # （2026-10-22 退场）。--token 一并删除 —— 留着 required=True 的密钥参数，
+    # 等于让角色去要一把系统不再签发的钥匙（实测 24h 仍有 107 条「步骤审批请求」
+    # 灌进角色上下文）。鉴权走 confirm_step 的审批人身份校验（无 token 分支）。
+    p_confirm = sub.add_parser("confirm", help="驳回/确认评审步（按审批人身份鉴权）")
     p_confirm.add_argument("wf_id")
     p_confirm.add_argument("step_id")
-    p_confirm.add_argument("--token", "-t", required=True, help="引擎下发的审批密钥")
     p_confirm.add_argument("--reject", action="store_true", help="驳回而非通过")
     p_confirm.add_argument("--reason", "-r", default="")
 
@@ -193,7 +192,8 @@ def main():
                       f"status={st.get('status')}  step={st.get('current_step_id') or '-'}  "
                       f"age={st.get('age_h')}h  task={st.get('task_id') or '-'}")
                 for s in st["steps"]:
-                    extra = f"  queued={s['queued']} ({s['queued_h']}h)" if s["queued"] else ""
+                    extra = (f"  被拒={s['requeued']}次 静默={s['since_h']}h"
+                             if s["requeued"] or s["since_h"] else "")
                     who = f"  by={s['completed_by']}" if s["completed_by"] else ""
                     print(f"  {s['step']:<8} {s['status'] or '-':<18}{who}{extra}")
 
@@ -220,7 +220,7 @@ def main():
     elif args.cmd == "confirm":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
-            wf.confirm(args.wf_id, args.step_id, token=args.token,
+            wf.confirm(args.wf_id, args.step_id,
                        approved=not args.reject, reason=args.reason)
             print(f"{'已驳回' if args.reject else '已通过'}: {args.wf_id}/{args.step_id}")
 

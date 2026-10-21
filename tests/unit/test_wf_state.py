@@ -52,7 +52,7 @@ def test_state_reports_step_level_truth(tmp_path):
     steps = {s["step"]: s for s in st["steps"]}
     assert steps["s1"]["status"] == "completed"
     assert steps["s1"]["completed_by"] == "workflow_engine"
-    assert steps["s2"]["queued"] == 12 and steps["s2"]["queued_h"] > 0
+    assert steps["s2"]["requeued"] == 12 and steps["s2"]["since_h"] > 0, "计数与时长必须是两个字段"
     assert "s3" not in steps, "非 dict 的 step_results 值应跳过而不是当状态读"
     c.close()
 
@@ -78,3 +78,19 @@ def test_cli_state_missing_instance_exits_nonzero(tmp_path):
     )
     assert r.returncode != 0, r.stdout + r.stderr
     assert "未找到" in r.stderr
+
+
+def test_state_survives_malformed_step_results(tmp_path):
+    """坏 JSON 不能让整条链的查询打崩：降级为"该步没有结构化状态"。"""
+    from workflow.db import create_connection
+    conn = create_connection(str(tmp_path / "wf2.db"))
+    conn.execute(
+        "INSERT INTO workflow_instances (instance_id,task_id,assigner,assignee,status,created_at,step_results) "
+        "VALUES ('wf_y','t1','qa','engineer','running',0,'{not json')"
+    )
+    conn.commit()
+    c = WorkflowClient("engineer", db_path=str(tmp_path / "wf2.db"))
+    c._conn = conn
+    st = c.state("wf_y")
+    assert st and st["status"] == "running" and st["steps"] == []
+    c.close()

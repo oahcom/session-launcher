@@ -303,42 +303,14 @@ class WorkflowClient:
         return None
 
     def state(self, wf_id: str) -> Optional[dict]:
-        """一条链的当前状态：实例 + 每步的状态/排队/完成者。
+        """一条链的当前状态：实例 + 每步的状态/被拒次数/完成者。
 
         为什么需要这个浅接口：角色 48h 内手写了 14,909 次 sqlite3 查询（占全部
         Bash 调用 32%），其中 1,207 次只为了读 workflow_instances.step_results
-        这一列 —— 每步状态、排队次数、谁完成的。且角色得自己记住列名
-        （实测 6 个角色 1 小时 11 次猜错列名空跑）。查询语法散在角色提示词里，
-        引擎改一次列名，全部角色一起空跑。
-
-        只读，不改库。step_results 里的非 dict 值（历史遗留的 'summary'/'files'
-        简写）跳过，不猜语义。返回 None 表示实例不存在。
+        这一列。实现放在 workflow/state.py（client 已过 600 行红线）。
         """
-        row = self._conn.execute(
-            "SELECT instance_id, task_id, template_id, status, current_step_id, "
-            "step_results, created_at FROM workflow_instances WHERE instance_id=?",
-            (wf_id,)).fetchone()
-        if not row:
-            return None
-        inst = dict(row)
-        now = time.time()
-        steps = []
-        for sid, val in (json.loads(inst.pop("step_results") or "{}") or {}).items():
-            if not isinstance(val, dict):
-                continue
-            since = val.get("queued_since") or 0
-            steps.append({
-                "step": sid,
-                "status": val.get("status") or "",
-                "completed_by": val.get("completed_by") or "",
-                "queued": val.get("queued") or 0,
-                "queued_h": round((now - since) / 3600, 2) if since else 0,
-            })
-        steps.sort(key=lambda s: s["step"])
-        created = inst.get("created_at") or 0
-        inst["age_h"] = round((now - created) / 3600, 2) if created else 0
-        inst["steps"] = steps
-        return inst
+        from workflow.state import chain_state
+        return chain_state(self._conn, wf_id)
 
     def list_tasks(self, status: str = None, assignee: str = None) -> list[dict]:
         query = "SELECT * FROM tasks WHERE 1=1"
