@@ -372,19 +372,46 @@ def _resolve_ws_paths(name: str) -> list[Path]:
         # ccs-<name> 可能是**另一个角色/工作区自己的** workspace（persona `ccs-coordinator`、
         # 目录 `ccs-product_architect` 与 `coordinator`/`product_architect` 并存）。实测
         # ccs-coordinator 的 KNOWLEDGE 块曾被写成 coordinator 的 33KB 契约，两个角色抢一份身份。
-        # 判据读文件自己声明的归属，两种写法都要认（都出现在文件头部）：
-        #   <identity>你是 <name>，CCS 角色…      —— 角色身份块
-        #   本 workspace 属于 <name>，由 CCS Launcher 自动管理 —— WORKSPACE_SYS 块
-        # 不依赖角色表：角色表加载失败时该判据仍成立，本模块也不在运行时依赖另一个仓库。
-        # 读不到这两行时按旧行为注入（fail-open）：少注入一个目录是静默退化，
+        # 归属只在两处结构化位置取证，不做全文子串匹配（"不属于 ccs-X" 也会命中）：
+        #   1. 文件头的 `<identity>你是 <name>，…`
+        #   2. `<!-- WORKSPACE_SYS:START -->` 块里的 `本 workspace 属于 <name>，…`
+        #      —— 该块可能被追加在文件末尾（ops/workspace.py），所以按块找、不按偏移读。
+        # 不依赖角色表：角色表加载失败时判据仍成立，本模块也不在运行时依赖另一个仓库。
+        # 取不到证据时按旧行为注入（fail-open）：少注入一个目录是静默退化，
         # 抛异常会让 ccs start 直接失败。
         try:
-            _head = (p2 / "CLAUDE.md").read_text(encoding="utf-8", errors="ignore")[:600]
+            _txt = (p2 / "CLAUDE.md").read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            _head = ""
-        if not (f"你是 {p2.name}" in _head or f"属于 {p2.name}，" in _head):
+            _txt = ""
+        _sys = re.search(r"<!-- WORKSPACE_SYS:START -->(.*?)<!-- WORKSPACE_SYS:END -->", _txt, re.S)
+        _owned = f"你是 {p2.name}，" in _txt[:400] or bool(
+            _sys and f"属于 {p2.name}，" in _sys.group(1))
+        if not _owned:
             paths.append(p2 / "CLAUDE.md")
     return paths
+
+_PROTECTED_BLOCK_RE = re.compile(
+    # 与下方 _bl 去重里 re.split 的 pattern 保持一致：这两类块是用户/运维的地盘，一律保留原件。
+    r"<!-- (?:WORKSPACE_SYS|BH_KNOWLEDGE)[^>]*-->.*?<!-- /?(?:WORKSPACE_SYS|BH_KNOWLEDGE)[^>]*-->",
+    re.S,
+)
+
+
+def _strip_stale_prompt_prefix(prefix: str) -> str:
+    """删掉 KNOWLEDGE 块之前的旧版手写 prompt 残留，受保护标记块保留原样。
+
+    WHY: 注入只替换 KNOWLEDGE 块之间的内容，块外的旧 prompt 永远留着，并和新契约
+    一起进 system prompt（实测 22/37 个 workspace 残留 :20128、幽灵角色 architect、
+    无口径判据）。判据取旧 prompt 独有的两个标记同时出现，缺一不动文件：
+    只有 <agent_loop> 或只有 </knowledge_reference> 都可能是角色自己写的正文。
+    幂等：删完前缀不再含 <agent_loop>；若残留保护块自身含该标记，第二次也只会
+    重复抽出同样的块，结果字节不变。
+    """
+    if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
+        return prefix
+    kept = [m.group(0) for m in _PROTECTED_BLOCK_RE.finditer(prefix)]
+    return ("\n\n".join(kept) + "\n\n") if kept else ""
+
 
 def inject_role_knowledge_into_workspace(role: dict) -> str:
     """将角色契约 + base.md 通用红线写入 workspace 级 CLAUDE.md（KNOWLEDGE 块）。
@@ -392,6 +419,11 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     base.md 内容通过 role_assembler 编译注入（含角色职责红线、Git 规范、自审查指令等）。
     原有硬编码的 sec_redlines/git_rules/review_rules 已由 base.md 覆盖，移除冗余。
     """
+    # 生产 prompt 只认主仓：worktree 里的 base.md 会整块覆盖 CLAUDE.md（实测 35611B 脏版本），
+    # 角色 prompt 被静默换成过期内容且无从察觉，所以非主仓一律拒绝，除非显式豁免。
+    _canonical = (Path.home() / "hermes-session-roles").resolve()
+    if SESSION_ROLES_ROOT.resolve() != _canonical and not os.environ.get("ALLOW_ROLES_WORKTREE_INJECT"):
+        return f"refused (SESSION_ROLES_ROOT={SESSION_ROLES_ROOT} != {_canonical}; 设 ALLOW_ROLES_WORKTREE_INJECT=1 才放行)"
     name = role.get("name", "")
 
     # 读取 role TASKS.md 的 negative 教训，注入 KNOWLEDGE 块（评分信号回写闭环补全）
@@ -468,6 +500,12 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         start_marker = "<!-- KNOWLEDGE:START -->"
         end_marker = "<!-- KNOWLEDGE:END -->"
         start_idx = content.find(start_marker)
+        # 块外的旧版 prompt 残留先清掉（含 WORKSPACE_SYS 在内的标记块原样保留），
+        # 再走下面的「旧块替换」逻辑，_bl 去重那套不动。
+        if start_idx > 0:
+            _head = _strip_stale_prompt_prefix(content[:start_idx])
+            if _head != content[:start_idx]:
+                content, start_idx = _head + content[start_idx:], len(_head)
         if start_idx >= 0:
             end_idx = content.find(end_marker, start_idx)
             if end_idx >= 0:

@@ -651,6 +651,25 @@ class TestResolveWsPaths:
             result = _roles._resolve_ws_paths("product_architect")
         assert [p.parent.name for p in result] == ["product_architect"]
 
+    def test_owner_marker_far_from_head_is_still_found(self, tmp_path):
+        """P11g: WORKSPACE_SYS 块被追加在文件末尾（3KB 之后）也要认出来。
+
+        ops/workspace.py 对已存在的 CLAUDE.md 会把 WORKSPACE_SYS 块追加到 EOF；
+        上一版只读前 600 字符，会漏判并重新覆盖别人的工作区。
+        """
+        import routing.roles as _roles
+        ws = tmp_path / "ccs-workspaces"
+        (ws / "coordinator").mkdir(parents=True)
+        (ws / "coordinator" / "CLAUDE.md").write_text("你是 coordinator，CCS 角色")
+        (ws / "ccs-coordinator").mkdir(parents=True)
+        (ws / "ccs-coordinator" / "CLAUDE.md").write_text(
+            "x" * 3000 + "\n<!-- WORKSPACE_SYS:START -->\n"
+            "> 本 workspace 属于 ccs-coordinator，由 CCS Launcher 自动管理。\n"
+            "<!-- WORKSPACE_SYS:END -->\n")
+        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+            result = _roles._resolve_ws_paths("coordinator")
+        assert [p.parent.name for p in result] == ["coordinator"]
+
 
 # ===================================================================
 # P12
@@ -708,6 +727,29 @@ class TestInjectRoleKnowledge:
         assert "just some text" in content
         assert "产出分类:" in content
 
+    def test_non_canonical_roles_root_refused(self, tmp_path):
+        """P12h: SESSION_ROLES_ROOT 非主仓 → 拒绝注入，文件不动"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text("keep me")
+        with patch.object(_roles, "SESSION_ROLES_ROOT", tmp_path), \
+             patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]):
+            result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+        assert result.startswith("refused"), result
+        assert md_path.read_text() == "keep me"
+
+    def test_worktree_inject_opt_in(self, tmp_path, monkeypatch):
+        """P12i: 显式 ALLOW_ROLES_WORKTREE_INJECT=1 → 放行"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text("content")
+        monkeypatch.setenv("ALLOW_ROLES_WORKTREE_INJECT", "1")
+        with patch.object(_roles, "SESSION_ROLES_ROOT", tmp_path), \
+             patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value=""):
+            result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+        assert result.startswith("injected"), result
+
     def test_injects_security_redlines(self, tmp_path):
         """P12e: 注入内容包含通用红线（base.md 回退路径）"""
         import routing.roles as _roles
@@ -743,6 +785,59 @@ class TestInjectRoleKnowledge:
             _roles.inject_role_knowledge_into_workspace(_sample_role("pm", "PM"))
         content = md_path.read_text()
         assert content.count("动作模板") == 1
+
+    def test_stale_prompt_prefix_before_knowledge_block_is_removed(self, tmp_path):
+        """P12h: KNOWLEDGE 块之前的旧版手写 prompt 残留整段删除，标记块保留，二次注入字节不变
+
+        线上 22/37 个 workspace 在 KNOWLEDGE 块前残留旧 prompt（:20128、幽灵角色
+        architect、无口径判据），与下方新契约自相矛盾且一起进 system prompt。
+        """
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        stale = (
+            "<identity>\n你是 engineer，CCS 角色。\n</identity>\n\n"
+            "<agent_loop>\n1. 分析事件 → 2. 选工具\n</agent_loop>\n\n"
+            "<role_rules>\n- 测试覆盖率≥80%，drift=0\n</role_rules>\n\n"
+            "<tools>\n- lr / bus\n</tools>\n\n"
+            "<knowledge_reference>\n- 9Router :20128\n- 幽灵角色 architect\n"
+            "</knowledge_reference>\n\n"
+        )
+        ws_sys = ("<!-- WORKSPACE_SYS:START -->\n> 本 workspace 属于 engineer，由 CCS Launcher "
+                  "自动管理。\n<!-- WORKSPACE_SYS:END -->\n")
+        bh = "<!-- BH_KNOWLEDGE:START -->\n人工写的备注\n<!-- BH_KNOWLEDGE:END -->\n"
+        md_path.write_text(
+            stale + ws_sys + bh
+            + "<!-- KNOWLEDGE:START -->\n旧契约\n<!-- KNOWLEDGE:END -->\n"
+            + "尾巴：KNOWLEDGE 块之后的自写内容\n")
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 定位\nengineer 契约"):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+            first = md_path.read_text()
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+            second = md_path.read_text()
+
+        assert "<agent_loop>" not in second, "残留 <agent_loop> 未被删除"
+        assert "覆盖率≥80%" not in second, "残留 role_rules 未被删除"
+        assert ":20128" not in second, "残留 knowledge_reference 未被删除"
+        assert "本 workspace 属于 engineer" in second, "WORKSPACE_SYS 块被误删"
+        assert "WORKSPACE_SYS:END" in second
+        assert "人工写的备注" in second, "BH_KNOWLEDGE 块被误删"
+        assert "尾巴：KNOWLEDGE 块之后的自写内容" in second
+        assert "engineer 契约" in second
+        assert first == second, "连续两次注入结果不同（非幂等）"
+
+    def test_prefix_without_both_stale_markers_untouched(self, tmp_path):
+        """P12i: 前缀里只有 <agent_loop>（缺 </knowledge_reference>）→ 可能是角色自写正文，不删"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        md_path.write_text(
+            "## 我的笔记\n<agent_loop> 是本角色自己的循环说明\n\n"
+            "<!-- KNOWLEDGE:START -->\n旧契约\n<!-- KNOWLEDGE:END -->\n")
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 定位\nengineer 契约"):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+        content = md_path.read_text()
+        assert "<agent_loop> 是本角色自己的循环说明" in content
 
 
 # ===================================================================
