@@ -2,7 +2,6 @@
 import asyncio
 import json
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -184,54 +183,6 @@ class TestCCSClient:
         assert ok is False
         # 1 try + 1 retry = 2 calls
         assert mock_open.call_count == 2
-
-
-class TestCCSStreamer:
-    """CCSStreamer 流式内容捕获测试。"""
-
-    @patch("ccs_socket.subprocess.run")
-    def test_start_captures_delta(self, mock_run):
-        from ccs_socket import CCSStreamer
-
-        # 第一次 poll: 全部内容
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "line1\nline2\n"
-
-        streamer = CCSStreamer("test")
-        received = []
-        streamer.start(cb=lambda s: received.append(s))
-        time.sleep(0.7)  # wait for one poll cycle
-        streamer.stop()
-
-        assert len(received) >= 1
-
-    @patch("ccs_socket.subprocess.run")
-    def test_start_sends_delta_only(self, mock_run):
-        from ccs_socket import CCSStreamer
-
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "base content\n"
-        streamer = CCSStreamer("delta")
-        received = []
-        streamer.start(cb=lambda s: received.append(s))
-        time.sleep(0.1)
-        # 第二次: 新内容追加
-        mock_run.return_value.stdout = "base content\nnew line\n"
-        time.sleep(0.7)
-        streamer.stop()
-
-        assert any("new line" in s for s in received)
-
-    @patch("ccs_socket.subprocess.run")
-    def test_stop_ends_poll(self, mock_run):
-        from ccs_socket import CCSStreamer
-
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "data\n"
-        streamer = CCSStreamer("stop")
-        streamer.start(cb=lambda s: None)
-        streamer.stop()
-        assert streamer._running is False
 
 
 if __name__ == "__main__":

@@ -7,13 +7,11 @@ SUBSCRIBE 注册为 "ccs-{role}"，PUBLISH 按目标路由。
 
 用法:
     ccs.py send-direct alice bob hi     # 直连 <1ms
-    ccs.py stream bob                   # 流式输出
 """
 
 import asyncio
 import json
 import logging
-import subprocess
 import threading
 import time
 from typing import Callable, Optional
@@ -145,43 +143,5 @@ class CCSClient:
                     self._pools.pop(self.role, None)
                 self.reader = self.writer = None
 
-
-# ── 流式输出（tmux capture-pane）────
-
-class CCSStreamer:
-    """CCS 流式输出 — 实时捕获 tmux pane 增量"""
-
-    def __init__(self, role: str):
-        self.role = role
-        self.tmux = f"ccs-{role}"
-        self._running = False
-        self._last = ""
-
-    def start(self, cb: Callable[[str], None]):
-        self._running = True
-        def _poll():
-            while self._running:
-                try:
-                    r = subprocess.run(
-                        ["tmux", "capture-pane", "-p", "-t", f"{self.tmux}:0.0", "-S", "-500"],
-                        capture_output=True, text=True, timeout=3)
-                    if r.returncode == 0:
-                        cur = r.stdout
-                        if cur != self._last:
-                            if self._last and cur.startswith(self._last):
-                                cb(cur[len(self._last):])
-                            else:
-                                cb(cur)
-                            self._last = cur
-                except subprocess.TimeoutExpired:
-                    pass
-                except Exception as e:
-                    log.warning("stream poll error: %s", e)
-                time.sleep(0.5)
-        t = threading.Thread(target=_poll, daemon=True)
-        t.start()
-
-    def stop(self):
-        self._running = False
 
 

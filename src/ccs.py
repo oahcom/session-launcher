@@ -149,13 +149,6 @@ def main():
     p_out.add_argument("--dry-run", action="store_true",
                         help="只打印将执行的操作，不实际执行")
 
-    # ── stream ──
-    p_stream = sub.add_parser("stream", help="流式输出 CCS 输出")
-    p_stream.add_argument("role", help="角色名")
-    p_stream.add_argument("--follow", action="store_true", default=True,
-                          help="持续跟踪输出")
-    p_stream.add_argument("--tail", type=int, default=50, help="显示最后N行")
-
     # ── dashboard ──
     sub.add_parser("dashboard", help="聚合健康仪表板 + 路由拓扑")
 
@@ -350,15 +343,6 @@ def main():
             print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             print(output(args.role, tail=args.tail, instance_id=args.instance_id))
-
-    elif args.command == "stream":
-        from ccs_socket import CCSStreamer
-
-        client = CCSStreamer(args.role)
-        # ponytail: CCSStreamer.start() returns None; the if/while/True/sleep
-        # block was dead code.  The daemon (sister_agent_daemon.py) is the
-        # real runtime; stream is only used for on-demand tailing.
-        client.start(lambda chunk: print(chunk, end="", flush=True))
 
     elif args.command == "health":
         if args.dry_run:
