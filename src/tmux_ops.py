@@ -254,6 +254,9 @@ def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
     """
     if not _is_alive(tmux_name) or _role_is_busy(tmux_name):
         return False
+    # 采集失败按忙处理：宁可漏一次重启，也不能把生成中的进程杀到一半
+    if not _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL):
+        return False
     pid = _find_claude_pid(tmux_name)
     try:
         ok = bool(pid) and Path(f"/proc/{pid}/comm").read_text().strip() == "claude"
