@@ -39,9 +39,10 @@ def _detail(tmp_path, action):
 
 
 def test_redact_covers_all_label_variants():
-    """生产实测 5 种标签形态都要抹；只补一种等于留 4/5 的泄漏面。"""
+    """按泄漏面枚举标签形态，不按实现枚举（#429388：旧用例 5 过但 3 式仍漏）。"""
     for label in ("密钥: ", "密钥：", "审批密钥: ", "approval_token: ",
-                  "approval_token=", "token="):
+                  "approval_token=", "token=", "**密钥**: ", "`密钥`: ",
+                  '{"approval_token": "', "--token ", "token: ", "Token: "):
         out = gk._redact_secrets(f"{label}{_TOKEN}")
         assert _TOKEN not in out, f"{label!r} 未脱敏: {out!r}"
         assert "***" in out, f"{label!r} 抹除后丢了占位符: {out!r}"

@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 # 反向依赖会成环。core 侧只用于 bus 降级通知，落库通道以本函数为准。
 # 不盲抹「不跟标签的 40+ 长串」：message_preview 里还有 wf_id/路径/sha，
 # 抹了排障记录就废了（#427435 已有一批不可读的抹除行）。
+# 标签形态容忍 `**`/反引号/引号包裹与 : ：= 及空格分隔：审批请求实际有
+# 密钥: / approval_token: / {"approval_token": " 三种拼接（#429388 抽样 12 式，
+# 旧正则漏 3 式；#427316/#427364 两种明文体都曾绕过 core 的脱敏）。
 _TOKEN_LABEL_RE = re.compile(
-    r"((?:审批密钥|approval_token|token|密钥)\s*[:：=]\s*)([A-Za-z0-9_-]{20,})",
-    re.IGNORECASE)
+    r"(?i)((?:\*{0,2}`?)?(?:审批密钥|密钥|approval[_ \-]?token|token)[`'\"]{0,2}\*{0,2}\s*"
+    r"(?:[:：=]|(?<=\btoken) )\s*[\"'`*]{0,2})"
+    r"([A-Za-z0-9_-]{20,})")
 
 
 def _redact_secrets(text: str) -> str:

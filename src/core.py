@@ -1035,7 +1035,12 @@ def send(role: str, message: str, source: str = "",
                     [str(BUS_CLIENT), "write", "code_fix",
                      f"[user_intent_reminder] 已注入意图提醒 → {role}",
                      "--evidence",
-                     f"source={source} role={role}"
+                     # req_ts 必须落在 evidence 里：痕迹标题按角色固定，bus 对同文本
+                     # UPSERT **保留首次 ts**（防旧消息越过 created_after 屏障），于是
+                     # facts.ts 永远停在第一次注入的时刻。守护进程读 ts 判 TTL →
+                     # 首个请求 30 分钟后永久零提醒（实测 6 角色痕迹 ts 停在 22~100h）。
+                     # 也不能读 ut：search 每次命中都会把它刷成当前时刻。
+                     f"source={source} role={role} req_ts={time.time():.0f}"
                      + (f" intent={_intent.value}" if _intent else ""),
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
@@ -1063,17 +1068,27 @@ def send(role: str, message: str, source: str = "",
     return {"success": True, "sent_chars": len(send_message)}
 
 
-_APPROVAL_TOKEN_RE = re.compile(r"(?<=密钥: )\S+|(?<=密钥：)\S+|(?<=\btoken=)[\w-]{20,}")
+_APPROVAL_TOKEN_RE = re.compile(
+    r"(?i)((?:\*{0,2}`?)?(?:审批密钥|密钥|approval[_ \-]?token|token)[`'\"]{0,2}\*{0,2}\s*"
+    r"(?:[:：=]|(?<=\btoken) )\s*[\"'`*]{0,2})"
+    r"([A-Za-z0-9_-]{20,})")
+
+
+def _redact_token(m: re.Match) -> str:
+    return m.group(1) + "***"
 
 
 def _redact_secrets(message: str) -> str:
     """抹掉消息体里的审批凭证（bus #427435/R03）。
 
     approval_token = secrets.token_urlsafe(32)，43 字符 [A-Za-z0-9_-]。
-    这里只抹「密钥: xxx」与 `token=xxx` 两种已知拼接形式，不按长度盲抹 ——
-    盲抹会把 wf_id、路径、sha 一起干掉，排障记录就废了。
+    抹「标签 + 分隔符 + 20 位以上值」，标签含 密钥/审批密钥/approval_token/token
+    （大小写不敏感），分隔符容忍 : ：= 与 `**`/引号/反引号包裹及任意空白 —— 实测
+    审批请求有 密钥: / approval_token: / {"approval_token": " 等多种拼接（#427316
+    /#427364 两种明文体都漏过）。不按长度盲抹：盲抹会把 wf_id、路径、sha 一起
+    干掉，排障记录就废了（#427435）。
     """
-    return _APPROVAL_TOKEN_RE.sub("***", message or "")
+    return _APPROVAL_TOKEN_RE.sub(_redact_token, message or "")
 
 
 def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None:
