@@ -220,6 +220,11 @@ python3 src/ecosystem_health.py --json
 python3 src/ccs.py health
 ```
 
+## 提示词生效方式
+
+`ccs reload-knowledge [role]` 只重写 `ccs-workspaces/*/CLAUDE.md`；Claude Code 只在会话开始/清空时读它。
+改完 prompt 必须对角色 `/clear`（或 `ccs stop`+`ccs start`）才真正生效，否则进程里仍是旧 prompt。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
