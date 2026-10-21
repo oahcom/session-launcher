@@ -39,9 +39,9 @@ engine 那 21 次是 TTL 60min + grace 30min 到点后的超时兜底放行—�
 | 确认校验（密钥分支、`allow_expired`） | pipeline `2a8a016` | 只凭「该步派单方」身份 |
 
 驳回语义改由评审文本承担（`CHANGES_REQUESTED` / `rejected` 关键词，由
-`wf_lifecycle` 的 `review_gate` 消费）。代价留在案上：那 21 次引擎超时兜底放行没有替身，
-评审人若什么都不写，链条现在靠 `review_gate` 的 fail-open 判定（UNKNOWN 当通过）放行——
-这是下一处要收口的地方。
+`wf_lifecycle` 的 `review_gate` 消费）。那 21 次引擎超时兜底放行没有替身，但评审人什么都不写
+不再等于通过：`review_gate` 判 `unknown` 且 fail-closed 不推进（pipeline `3613a2e` 引擎 tick、
+`8218c1b` 角色 `wf complete` 两条路径都装了）。
 
 ## 已废弃
 
