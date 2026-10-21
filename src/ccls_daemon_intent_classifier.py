@@ -135,9 +135,11 @@ def _transcript_mtime(session: str) -> float:
 @dataclass
 class _SessionState:
     """Per-session reminder state."""
-    request_ts: float = 0.0   # 该角色最近一次用户请求时刻（bus 注入痕迹 timestamp）
+    request_ts: float = 0.0   # 最近一次用户请求时刻（取自痕迹 evidence 的 req_ts=）
     last_remind_ts: float = 0.0
-    # 上次提醒的 epoch（last_remind_ts 是 monotonic，不能跟落盘时间比）。
+    # 上次提醒的 wall-clock epoch（last_remind_ts 是 monotonic，不能跟落盘时间比）。
+    # **仅对当前 request_ts 有效**：新请求到达、或 hydrate 时发现 epoch <= request_ts
+    # （旧请求留下的）都必须清零，否则 mtime 单调递增会让守卫恒真、该 session 永久静默。
     # 与 request_ts/remind_count 一起落盘：源码热重载频繁，不落盘则每次重启
     # 都会给已回复过的角色再催一次（实测 2026-10-21 热重载 13 次）。
     last_remind_epoch: float = 0.0
@@ -160,7 +162,7 @@ def _load_states() -> dict[str, _SessionState]:
     **不读回 last_remind_ts**：它是 time.monotonic()（自开机计时），而本文件在
     持久盘上跨重启存活。重启后 monotonic 归零，旧值（上次开机时长，可达数天）
     会让冷却判据 `now - last_remind_ts < 30` 恒真 → 该 session 的提醒静默停发；
-    且新用户请求只重置 request_ts/remind_count，救不回。冷却本就是同进程内的
+    且新用户请求/热重载都会清锚点，也救不回。冷却本就是同进程内的
     节流概念，跨重启无须继承 —— 丢掉它等于允许重启后立即提醒一次，无害。
     """
     try:
@@ -197,6 +199,15 @@ def _load_states() -> dict[str, _SessionState]:
                     remind_count=max(0, min(_rc, _MAX_REMINDERS_CAP)),
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
+                # hydrate 边界也要作废跨请求锚点：锚点在推送时写，必晚于所属
+                # request_ts；epoch <= request_ts 只可能是**旧请求**留下的。
+                # 只清 _tick 的新请求分支不够 —— 盘上已存在
+                # 「request_ts=当前请求 / epoch=旧请求」的组合时，重启后
+                # req == st.request_ts → 不进该分支 → mtime 守卫恒真 →
+                # 该请求永久静默（正是本次要修的病在重载路径上复现，
+                # 对抗审查 P1）。等号也清：同时刻不可能是"提醒晚于请求"。
+                if out[k].last_remind_epoch <= out[k].request_ts:
+                    out[k].last_remind_epoch = 0.0
             except (TypeError, ValueError):
                 # 该条脏：remind_count 不可信 → 写 cap。
                 # 同时**尽量保留 request_ts**：否则 _tick 的「新一轮用户请求」分支

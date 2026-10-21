@@ -1285,3 +1285,26 @@ class TestStopRemindingAfterReply(unittest.TestCase):
         now = time.time()
         push = self._tick_with(last_remind_epoch=0.0, transcript_mtime=now)
         push.assert_called_once()
+
+    def test_stale_anchor_from_old_request_cleared_on_hydrate(self):
+        """hydrate 见 epoch <= request_ts = 旧请求留下的锚点 → 必须清零。
+
+        否则重启后 req == st.request_ts → 不进「新请求」分支 → mtime 守卫恒真，
+        该请求永久静默。即同一缺陷在热重载路径上的复现（codex 20 维审查 P1）。
+        """
+        req = time.time() - 600
+        _mod.STATE_FILE.write_text(json.dumps({"ccs-qa": {
+            "request_ts": req, "last_remind_epoch": req - 300,
+            "remind_count": 1}}), encoding="utf-8")
+        st = _mod._load_states()["ccs-qa"]
+        self.assertEqual(st.last_remind_epoch, 0.0,
+                         "旧请求的锚点必须在 hydrate 清零，否则该 session 永久静默")
+
+    def test_anchor_from_current_request_survives_hydrate(self):
+        """锚点晚于 request_ts（同一请求的正常形态）必须保留，否则重启后重复催。"""
+        req = time.time() - 600
+        _mod.STATE_FILE.write_text(json.dumps({"ccs-qa": {
+            "request_ts": req, "last_remind_epoch": req + 60,
+            "remind_count": 1}}), encoding="utf-8")
+        st = _mod._load_states()["ccs-qa"]
+        self.assertEqual(st.last_remind_epoch, req + 60, "同请求的锚点不得被误清")
