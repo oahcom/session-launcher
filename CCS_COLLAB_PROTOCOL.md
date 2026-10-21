@@ -282,10 +282,14 @@ done
 
 ### 问题背景
 
+> 本节是重构当时的记录（`2e2af8b` 删 ccs_start.py、`93a7940` 删 launcher.py 之前）。
+> 现在 `ccs_start.py`、`launcher.py`、`deploy_all.sh` 均已删除，下文「旧 API 保留」「旧用户手动调用旧脚本仍然工作」
+> 这类描述已经失效，唯一入口是 `ccs.py`。
+
 重构 `ccs_start.py` → `ccs.py` 时，已有多个用户和系统依赖旧 API：
 - bash aliases（`ccs-status`、`ccs-stop`）
 - `deploy_all.sh` 调用 `launcher.py`（两者均已删除；现直接调用 `ccs.py`）
-- `session-pipeline` 的 `auto_route.py` 调用 `launcher.send_to_ccs()`
+- `session-pipeline` 曾有 `auto_route.py` 调用 `launcher.send_to_ccs()`（该脚本与 launcher 均已不存在，pipeline 现无任何 launcher import）
 - 其他 CCS 内部使用 `ccs_start.py`
 
 ### 设计原则
