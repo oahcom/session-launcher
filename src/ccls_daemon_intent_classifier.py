@@ -450,7 +450,10 @@ class IntentReminderDaemon:
                 # 搜共用前缀：一条查询同时命中新标题「用户请求痕迹」与旧标题
                 # 「已注入意图提醒」（bus 里的旧事实不会自动改名），省掉每 tick 两次子进程。
                 [BUS_CLIENT, "search", "user_intent_reminder", "--limit", "50", "--json"],
-                capture_output=True, text=True, timeout=5,
+                # 20s（原 5s）：bus 争用时 sqlite 写锁会把这条只读查询拖到 5s 以上，
+                # 实测 2026-10-22 05:11–05:14 每 tick 都 TimeoutExpired → daemon 变瞎
+                # （读不到痕迹 = 零注入），而角色侧完全无感。宁可多等，不要空转。
+                capture_output=True, text=True, timeout=20,
             ).stdout
             import json
             data = json.loads(out)
