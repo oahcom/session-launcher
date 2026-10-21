@@ -90,8 +90,7 @@ bus_timeout / session_id / engine / health。
 ### 3.9 ecosystem_health.py
 
 `--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
-角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。2026-10-22 实测在 112/117(false) 与 116/116(true) 之间波动（失败项都在 session-pipeline 侧：
-`import:router`/`import:reliability`/`import:routing_daemon`/`router:loaded`/`wf:engine`），检查条数本身也随运行态变化。
+角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。2026-10-22 06:26 实测 116/116 全 pass、exit=0（此前 112/117 的失败项都在 session-pipeline 侧：`import:router`/`import:reliability`/`import:routing_daemon`/`router:loaded`/`wf:engine`；检查条数随运行态变化）。
 
 ## 4. 协作模式
 
