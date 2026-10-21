@@ -35,9 +35,15 @@
   置 `approval_consumed_at` + `approval_token=None`。
 - 推送不可靠：bus 会把密钥脱敏成 `***`，所以审批人必须能自己拉：
   `wf approval <wf_id> <step_id>` → `get_approval_token`（fail-closed：非 assigner 直接 `PermissionError`）。
-- 引擎不读密钥：`engine.py` 里只有一个 dataclass 字段 `approval_prompt`，
-  `step_done_ready` 直接进推进分支（engine.py:1203）。密钥只约束「角色主动 confirm」这一个入口，
-  不是推进闸门。
+- **引擎是主闸门**（session-pipeline main，`engine.py:1157-1230`）：`step_done_ready` 且
+  `approval_token` 仍在 → 不推进；到 `ttl + 1800s` 由 daemon 以 `workflow_engine` 身份调
+  `confirm_step(allow_expired=True)` 兜底放行（41 次消费里的 27 次就是它）；连续 3 次失败则清 token 放行。
+  这正是「待审步等待中位数 90 分钟」的来源，也是评审步不会永久卡死的原因。
+- 注意 checkout 差异：main 有这段门控，`session-pipeline` 工作树（分支 `temp-pr-branch`）
+  与它未提交的改动**已把门控删掉**，而生产 daemon 正跑在那个工作树上（`ps` 可见
+  `/home/administrator/session-pipeline/src/pipeflow/daemon.py`）。删门控是一次语义变更：
+  `step_done_ready` 立即推进，评审结论改由 `wf_lifecycle` 的 review_gate 判据消费。
+  它的理由（「全库 429 张密钥 0 消费」）与本节实测的 41 次消费矛盾，退役前需要先解释这 41 条。
 
 ## 已废弃
 
