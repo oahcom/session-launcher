@@ -177,6 +177,10 @@ def main():
     elif args.cmd == "logs":
         r = role or os.getenv("CCS_ROLE", "") or _require_role()
         with WorkflowClient(r) as wf:
+            # 实例不存在时 get_logs 返回空表，rc=0 会被读成"这条链没有日志"。
+            if args.wf and not wf.get(args.wf):
+                print(f"未找到: {args.wf}（wf_id）", file=sys.stderr)
+                sys.exit(1)
             logs = wf.get_logs(wf_id=args.wf or None, task_id=args.task or None)
             for l in logs:
                 print(f"[{l.get('ts','')}] {l.get('action','')} — {l.get('detail','')}")
