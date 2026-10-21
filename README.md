@@ -224,8 +224,10 @@ python3 src/ccs.py health
 
 `ccs reload-knowledge [role]`（以及 ccs-reload-knowledge.timer，每 10 分钟）只重写
 `ccs-workspaces/*/CLAUDE.md`；`core.py:_launch_tmux` 用 `--append-system-prompt-file` 在
-**claude 进程启动时**注入该文件，`/clear` 不会重新读它（实测：/clear 后角色仍背出 9 小时前的旧文案，
-重启进程后才答出新文案）。
+在 claude 进程启动时交给 claude。实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，
+重启进程后才答出新文案（n=1，未验证 claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。
+workspace 里没有 CLAUDE.md 时整段参数被省略（claude 对缺失文件直接 exit 1），
+即该角色静默地不注入任何 prompt。
 
 生效 = 让进程重新启动：外层 `while true … sleep 3` 会在 claude 退出后自动重拉，
 所以对空闲角色 `kill <claude pid>` 即可（或 `ccs stop` + `ccs start`）。

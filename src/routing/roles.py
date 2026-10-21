@@ -2,6 +2,7 @@
 """
 roles.py — 角色加载、workspace 知识注入、禁区映射、动作模板
 """
+# TODO 599 行，再增就过 600 红线：下次改动先拆分，建议把 knowledge 注入/清洗抽到 knowledge.py。
 
 __all__ = [
     'load_roles',
@@ -407,8 +408,7 @@ def _strip_stale_prompt_prefix(prefix: str) -> str:
     if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
         return prefix
     kept = [m.group(0) for m in _PROTECTED_BLOCK_RE.finditer(prefix)]
-    # 没有受保护块时整段不动：曾返回空串 = 10 分钟定时器删光手写前缀；
-    # 该改动平时不提交（~ 仓库 ccs-workspaces 长期脏 690 条），没有 .bak 就回不去。
+    # 没有受保护块时整段不动：曾返回空串 = 10 分钟定时器删光手写前缀（~ 仓库不跟踪，没有 .bak 就回不去）。
     return ("\n\n".join(kept) + "\n\n") if kept else prefix
 
 
