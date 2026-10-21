@@ -1,6 +1,7 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,50 @@ CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 # running 重试，纳入守卫会切断该恢复路径。
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed", "archived"})
 _TERMINAL_PLACEHOLDERS = ",".join("?" * len(_TERMINAL_STATUSES))
+
+# 取消只有这些日志动作算"取消"；其余动作（wf_started/step_done_ready 等）不能当原因。
+_CANCEL_FAMILY = ("cancelled", "wf_cancelled", "wf_closed", "step_cancelled")
+
+
+def _cancel_cause(detail: str | None, reason: str | None) -> str:
+    """把一次取消归到一个桶。
+
+    detail 取自最后一条 cancel-family 日志；"workflow cancelled" 是无信息的默认文案，
+    此时改用 context.reason（"连续6分钟无活跃工作流" 这类真实原因写在那里）。
+    分类规则按生产日志实际文案反推，见 tests/unit/test_wf_stats_cause.py。
+    """
+    text = (detail or "").strip()
+    generic = text == "workflow cancelled"   # 无信息的默认文案，不代表原因
+    if not text or generic:
+        text = (reason or "").strip()
+    if not text:
+        return "unspecified" if generic else "no_log"
+    if "僵尸回收" in text:
+        if "24h全局阈值" in text:
+            return "zombie_24h"
+        if "72h全局阈值" in text:
+            return "zombie_72h"
+        if "行级仍 running" in text:
+            return "zombie_row_mismatch"
+        return "zombie_stall"
+    if "无活跃工作流" in text:
+        return "starvation"
+    if "角色不响应" in text:
+        return "role_unresponsive"
+    if "delivery_blocked" in text:
+        return "delivery_blocked"
+    if text.startswith("reason="):
+        tail = text[len("reason="):]
+        if any(k in tail for k in ("重复派发", "冗余", "背压")):
+            return "dedup"
+        if any(k in tail for k in ("误路由", "误派")):
+            return "misroute"
+        if any(k in tail for k in ("孤子", "幽灵")):
+            return "orphan_subflow"
+        return "manual"
+    if text == "workflow cancelled":
+        return "unspecified"
+    return "other"
 
 
 class WorkflowClient:
@@ -548,30 +593,39 @@ class WorkflowClient:
             stats[lane] = row["c"] if row else 0
         stats["total"] = sum(stats.values())
         stats["completion_rate"] = round(stats["completed"] / max(stats["total"], 1) * 100, 1)
-        # 取消归因：只报总数时 419 个取消看起来都一样，实际 62% 是 24h 僵尸回收、
-        # 3% 是饥饿、其余是角色/人工取消。归因取每个实例最后一条 workflow_log —— 
-        # context.reason 只在少数路径写，400/419 是空的（实测 2026-10-22）。
-        try:
-            rows = self._conn.execute(
-                "SELECT i.instance_id, (SELECT l.detail FROM workflow_logs l "
-                "  WHERE l.workflow_instance_id=i.instance_id ORDER BY l.id DESC LIMIT 1) d "
-                "FROM workflow_instances i WHERE i.status='cancelled'").fetchall()
-            causes: dict[str, int] = {}
-            for r in rows:
-                d = r["d"] or ""
-                if "僵尸回收" in d:
-                    key = "zombie_24h"
-                elif "无活跃工作流" in d:
-                    key = "starvation"
-                elif not d:
-                    key = "no_log"
-                else:
-                    key = "other"
-                causes[key] = causes.get(key, 0) + 1
-            stats["cancelled_by_cause"] = dict(sorted(causes.items(), key=lambda kv: -kv[1]))
-        except Exception:
-            stats["cancelled_by_cause"] = {}
+        stats["cancelled_by_cause"] = self._cancelled_by_cause()
         return stats
+
+    def _cancelled_by_cause(self) -> dict:
+        """按原因统计取消。只报总数时 419 个取消看起来都一样，实际六成是僵步回收。
+
+        归因只认 cancel-family 日志：末条 log 不一定是取消日志（实测 6/419 的末条
+        是 wf_started/step_done_ready，把它读成原因会凭空造出"其他")。
+        detail 为空再回退 context.reason（实测 408/419 的 reason 是空的）。
+        """
+        try:
+            instances = self._conn.execute(
+                "SELECT instance_id, context FROM workflow_instances "
+                "WHERE status='cancelled'").fetchall()
+            # ponytail: 靠 SQLite「GROUP BY + MAX(id) 的裸列取自最大行」取最后一条；
+            # 单次扫描够用（measure: 419 实例 46k 日志 ~0.1s），加 (workflow_instance_id, id)
+            # 索引可进一步降，但当日志表涨到百万行才值得。
+            cancels = {wid: detail for wid, _mid, detail in self._conn.execute(
+                "SELECT workflow_instance_id, MAX(id), detail FROM workflow_logs "
+                "WHERE action IN (%s) AND workflow_instance_id IS NOT NULL "
+                "GROUP BY workflow_instance_id" % ",".join("?" * len(_CANCEL_FAMILY)),
+                _CANCEL_FAMILY)}
+        except sqlite3.Error:
+            return {}
+        causes: dict[str, int] = {}
+        for inst_id, context in instances:
+            try:
+                reason = (json.loads(context or "{}") or {}).get("reason", "") or ""
+            except (ValueError, TypeError):
+                reason = ""
+            key = _cancel_cause(cancels.get(inst_id), reason)
+            causes[key] = causes.get(key, 0) + 1
+        return dict(sorted(causes.items(), key=lambda kv: -kv[1]))
 
     def close(self):
         self._conn.close()
