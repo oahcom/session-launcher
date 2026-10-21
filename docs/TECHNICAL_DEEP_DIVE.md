@@ -12,60 +12,13 @@ roles (定义层 JSON) → launcher (执行层) → pipeline (路由层)
 
 ## 2. 架构概览
 
-```
-session-launcher/
-├── ccs.py                 # CLI 主入口（argparse 分发全部子命令）
-├── core.py                # 生命周期编排（start/stop/status/send/health）
-├── tmux_ops.py            # tmux 底层操作
-├── codex_ops.py           # Codex session 管理
-├── ccs_socket.py          # CCS 直接通信客户端（<1ms Unix Socket）
-├── routing/roles.py       # → 角色定义加载与知识注入
-├── event_log.py           # 事件日志
-├── paths.py               # 统一路径管理
-├── signal_parser.py       # 信号解析器
-├── worker_pool.py         # 并行 HTTP 调用 9Router（stdlib-only）
-├── pool_cli.py            # worker_pool CLI
-├── lesson_injector.py     # 经验教训注入
-│
-├── events/                # 信号系统
-│   ├── signals.py         # 8 种信号检查器
-│   ├── parser.py          # 信号解析
-│   └── notify.py          # 通知管理
-│
-├── lifecycle/             # 工作流状态机
-│   └── engine.py          # 生命周期引擎
-│
-├── migration/             # 数据迁移
-│   └── scripts.py         # V1.1 协作迁移
-│
-├── ops/                   # 运行时基础设施
-│   ├── sentinel.py        # 哨兵系统（tmux 实时派生）
-│   ├── watchdog.py        # 伙伴存活守护线程
-│   ├── tracker.py         # 轮次追踪 + 死锁检测
-│   ├── runner.py          # 仪表板 + feed listener
-│   └── workspace.py       # 工作空间管理
-│
-├── routing/              # 路由与协作
-│   ├── partner.py         # 跨角色协作（Layer 1-3）
-│   ├── roles.py           # 角色加载/注入/禁区
-│   ├── router.py          # 跨角色路由拦截器
-│   └── gateway.py         # 路由网关
-│
-├── workflow/              # 工作流系统
-│   ├── client.py          # CCS 角色使用的工作流客户端
-│   ├── db.py              # 工作流数据库
-│   ├── gateway.py         # 模板门禁系统
-│   └── utils.py           # 工具函数
-│
-├── ecosystem_health.py    # 三项目统一健康检查
-└── ecosystem_cli.py       # 生态 CLI
-```
+模块表以 `CLAUDE.md` 的「目录结构」为准（2026-10-22 复核：原树 17 个具名文件里 14 个已不存在，整段删除）。
 
 ## 3. 核心模块详解
 
 ### 3.1 ccs.py — CLI 主入口
 
-argparse 分发 12 个子命令：
+argparse 分发 19 个子命令（`python3 -m ccs --help` 实测，2026-10-22）：
 
 | 命令 | 功能 | 示例 |
 |------|------|------|
@@ -105,7 +58,7 @@ argparse 分发 12 个子命令：
 
 ### 3.3 sentinel.py — 哨兵系统（创新点）
 
-数据全部从 tmux sessions + 角色 JSON **实时派生**，无持久化 JSON 文件（健康状态写 `/tmp/ccs-health/{role}.json`）。
+数据从 tmux sessions + 角色 JSON **实时派生**；每个角色一行状态落 `~/.hermes/run/ccs-health/{role}.json`（2026-10-22 实测该目录有文件，原写 `/tmp/` 已过时）。
 
 **数据结构:**
 

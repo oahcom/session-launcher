@@ -156,22 +156,8 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 | 主从 | `--partner <role> --auto-restart` | 守护伙伴存活，挂了自动重启 |
 | 对等 | `--bus-track <category>` | 追踪 bus 轮次，超时发死锁提醒 |
 | 仲裁 | `--partner A --partner B --bus-track X` | 同时守护 + 追踪 |
-| 直连 | `send-direct <from> <to> <msg>` | 不走 bus，<1ms Unix Socket |
 
-### 4. 直接通信 Socket
-
-```
-ccs.py send-direct alice bob "hi"
-  └─ CCSClient("alice").connect()
-       └─ SUBSCRIBE → /tmp/sister_bus_ccs.sock
-            └─ PUBLISH → bob (<1ms)
-```
-
-**协议**：JSON-over-newline，支持 SUBSCRIBE/PUBLISH/PING/STATS
-
-**认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
-
-### 5. Bus Push 实时推送
+### 4. Bus Push 实时推送
 
 ```
 bus_client.py write debate "消息"
