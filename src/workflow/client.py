@@ -261,9 +261,32 @@ class WorkflowClient:
             "current": {"instance_id": current["instance_id"] if current else None,
                         "template_id": current["template_id"] if current else None,
                         "current_step": current["current_step_id"] if current else None,
+                        "contract": self._step_contract(current) if current else None,
                         } if current else None,
             "percent": int((completed / total) * 100) if total > 0 else 0,
         }
+
+    def _step_contract(self, inst: dict) -> Optional[dict]:
+        """当前步骤的机器验收契约（exit_condition + exit_schema）。
+
+        角色看不到它就得猜：实测 qa 的 bug_report.md 正文缺 exit_schema.mustContain
+        里的词，完成消息标题合规却不被引擎认，同一份产出被重投 4 次、白等约 30 分钟。
+        模板不存在/JSON 坏/步骤找不到一律返回 None（契约是旁路信息，不能让它挡路）。
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT steps_json FROM workflow_templates WHERE template_id=?",
+                (inst.get("template_id"),)).fetchone()
+            steps = json.loads((row["steps_json"] if row else "") or "[]")
+            sid = inst.get("current_step_id")
+            for s in steps:
+                if (s.get("step_id") or s.get("id")) == sid:
+                    return {"step": sid,
+                            "exit_condition": s.get("exit_condition") or {},
+                            "exit_schema": s.get("exit_schema") or {}}
+        except (json.JSONDecodeError, TypeError, KeyError, IndexError):
+            return None
+        return None
 
     def list_tasks(self, status: str = None, assignee: str = None) -> list[dict]:
         query = "SELECT * FROM tasks WHERE 1=1"
@@ -308,8 +331,9 @@ class WorkflowClient:
         # 自己写 ttl、硬编码审批人 reviewer，而写入位置是 step_results **顶层**，
         # 引擎只读 step_results[step_id] 的 token（engine.py 审批门控段）——引擎
         # 永远看不见它，于是审批被静默跳过，同时把顶层污染成非 dict 键（实测 413
-        # 个）。全库 429 张密钥 approval_consumed_at 全为 null，两条签发路径没有
-        # 一条被消费过。评审结论改由 review_gate 判据在推进路径上消费。
+        # 个）。顶层这一路实测 117 签发 / 0 消费（bus #438436 复核：step 级另有
+        # 429 签发 / 41 消费，最近一次 10-22 00:35，那一路仍有效，未删）。
+        # 删的只是引擎永远读不到的顶层通道。
         files_str = ", ".join(files) if files else ""
         import json as _json
         _cur = self._conn.execute(
