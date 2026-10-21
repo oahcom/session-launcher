@@ -22,22 +22,23 @@
 （「全库 429 张 approval_consumed_at 全为 null」就是这么来的）。
 统计凭证消费率只能用 `approval_consumed_at`，不能用「凭证是否还在」。
 
-41 次消费里有 27 次发生在最近 48h（最新 10-22 00:35），且 **27 次是
-`confirmed_by=workflow_engine`** —— 即 TTL 60min + grace 30min 到点后的超时兜底放行，
-其余由 pm / engineer / pg 等角色主动 confirm。这条兜底就是「待审步等待中位数 90 分钟」的来源：
-密钥通道不只是给角色的便利入口，它同时是**系统把卡住的评审步放行**的通道。
+41 次的 actor 分布：`workflow_engine` 21，角色 20（pm 5 / engineer 5 / closer 3 /
+maintainer 2 / product_architect 1 / security_auditor 1 / qa 1 / coordinator 1 / pg 1）。
+最近 48h 有 27 次（最新 10-22 00:35），其中 engine 16、角色 11。
+engine 那 21 次是 TTL 60min + grace 30min 到点后的超时兜底放行——「待审步等待中位数
+90 分钟」就是它。所以密钥通道不只是给角色的便利入口，它同时是**系统把卡住的评审步放行**的通道。
 
 ## 仍然成立的设计
 
 - 每步一张一次性密钥，TTL 3600s；无审批人（系统发起 / 自审 / 首步）不签发。
-- `confirm_step` 校验顺序：状态必须 `step_done_ready` → 已消费拒 → 过期拒
-  （`allow_expired` 只给引擎/系统）→ 比对 → 二次身份校验（只有该步 assigner 能确认）→
-  置 `approval_consumed_at` + `approval_token=None`。
+- `confirm_step` 校验顺序：状态必须 `step_done_ready` → 有钥未提供则拒 → 已消费拒 →
+  过期拒（`allow_expired=True` 时跳过；全库唯一传它的调用方是引擎的超时兜底，代码层无强制）→
+  比对 → 二次身份校验（只有该步 assigner 能确认）→ 置 `approval_consumed_at` + `approval_token=None`。
 - 推送不可靠：bus 会把密钥脱敏成 `***`，所以审批人必须能自己拉：
   `wf approval <wf_id> <step_id>` → `get_approval_token`（fail-closed：非 assigner 直接 `PermissionError`）。
 - **引擎是主闸门**（session-pipeline main，`engine.py:1157-1230`）：`step_done_ready` 且
   `approval_token` 仍在 → 不推进；到 `ttl + 1800s` 由 daemon 以 `workflow_engine` 身份调
-  `confirm_step(allow_expired=True)` 兜底放行（41 次消费里的 27 次就是它）；连续 3 次失败则清 token 放行。
+  `confirm_step(allow_expired=True)` 兜底放行（41 次消费里 21 次是它）；连续 3 次失败则清 token 放行。
   这正是「待审步等待中位数 90 分钟」的来源，也是评审步不会永久卡死的原因。
 - 注意 checkout 差异：main 有这段门控，`session-pipeline` 工作树（分支 `temp-pr-branch`）
   与它未提交的改动**已把门控删掉**，而生产 daemon 正跑在那个工作树上（`ps` 可见
