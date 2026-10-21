@@ -286,6 +286,19 @@ class TestRequestDrivenTrigger(_HermeticStateFile):
         self.assertIn(_CORE_QUESTIONS[0], body)
         self.assertIn(_CORE_QUESTIONS[1], body)
 
+    def test_watch_list_covers_imported_sibling(self):
+        """改 user_intent_reminder（提醒正文所在模块）也必须触发重启。
+
+        只盯本文件时，措辞改了却要等别人碰 daemon 文件才生效：实测 22:18 改的
+        提醒正文到 22:25 还没上线，运行实例仍在发旧文案。
+        """
+        import os as _os
+        import user_intent_reminder as uir
+        watched = IntentReminderDaemon._WATCHED
+        self.assertIn(_os.path.abspath(uir.__file__), watched)
+        self.assertIn(_os.path.abspath(
+            sys.modules["tmux_ops"].__file__), watched)
+
     def test_reminder_demands_evidence_not_a_bare_ack(self):
         """結尾不得再授權「回一句結論即可」：那句話直接產出零工具回覆。
 

@@ -249,6 +249,17 @@ def _save_states(states: dict[str, _SessionState]) -> None:
         print(f"[ccls_daemon] 预算状态写入失败: {e}", file=sys.stderr, flush=True)
 
 
+def _watched_sources(*modules: str) -> tuple[str, ...]:
+    """需要盯 mtime 的源文件：自身 + 已导入的依赖模块。
+
+    写成模块级函数而非类体内生成式：类体里的名字在生成式作用域里不可见
+    （实测 NameError: _SRC_FILE）。
+    """
+    me = os.path.abspath(__file__)
+    return tuple(os.path.abspath(getattr(sys.modules.get(m), "__file__", "") or me)
+                 for m in modules)
+
+
 class IntentReminderDaemon:
     """后台轮询：用户向 ccs 提出请求后，重复提醒其自检是否真解决了用户问题。
 
@@ -283,9 +294,10 @@ class IntentReminderDaemon:
     _SRC_FILE = os.path.abspath(__file__)
     # 依赖模块也必须一起盯：只盯自身时，tmux_ops 的修复（如"卡死 CLI 不再算生成中"）
     # 要等本文件下次改动才被加载 —— 实测 2026-10-21 19:24 的 tmux_ops 修复因此
-    # 一直没生效，qa 仍被旧判据挡住。
-    _WATCHED = _SRC_FILE, os.path.abspath(
-        getattr(sys.modules.get("tmux_ops"), "__file__", "") or _SRC_FILE)
+    # 一直没生效，qa 仍被旧判据挡住。同理 user_intent_reminder 里就是注入给角色的
+    # 提醒正文、core 里是痕迹签名格式：改了措辞却要等别人碰本文件才生效（实测
+    # 22:18 改的提醒措辞到 22:25 仍未上线，运行实例还是旧文案）。故按名字全量盯。
+    _WATCHED = _watched_sources("tmux_ops", "user_intent_reminder")
     # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
     # systemd Restart=always 以新代码拉起。线程模式下无人重拉，故不退出。
     _supervised = False
