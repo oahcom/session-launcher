@@ -1231,6 +1231,13 @@ class TestStopRemindingAfterReply(unittest.TestCase):
             d._tick()
         return push
 
+    def test_sane_epoch_rejects_dirty_values(self):
+        """nan/inf/bool/未来值/非数 一律 0.0，否则抑制判据恒真或恒假。"""
+        now = time.time()
+        for bad in (float("nan"), float("inf"), -1.0, now + 86400, "abc", None, True):
+            self.assertEqual(_mod._sane_epoch(bad), 0.0, f"脏值应回落 0.0: {bad!r}")
+        self.assertGreater(_mod._sane_epoch(now - 60), 0)
+
     def test_underscore_role_reads_dash_directory(self):
         """下划线角色必须读到 dashed 转录目录，否则抑制分支恒不生效。"""
         root = Path(tempfile.mkdtemp())

@@ -135,7 +135,8 @@ class _SessionState:
     request_ts: float = 0.0   # 该角色最近一次用户请求时刻（bus 注入痕迹 timestamp）
     last_remind_ts: float = 0.0
     # 上次提醒的 epoch（last_remind_ts 是 monotonic，不能跟落盘时间比）。
-    # 不持久化：重启后归零 → 允许立即提醒一次，无害。
+    # 与 request_ts/remind_count 一起落盘：源码热重载频繁，不落盘则每次重启
+    # 都会给已回复过的角色再催一次（实测 2026-10-21 热重载 13 次）。
     last_remind_epoch: float = 0.0
     remind_count: int = 0
     # 该请求的意图（evidence intent= 字段）。取不到时调用方降级 TASK。
@@ -187,7 +188,9 @@ def _load_states() -> dict[str, _SessionState]:
                     last_remind_ts=0.0,  # 见 docstring：monotonic 不可跨重启继承
                     # 墙钟时刻，可跨重启继承：今日源码热重载 13 次，每次重启丢掉
                     # epoch 都会让已回复的角色被再催一次（I1）。
-                    last_remind_epoch=float(v.get("last_remind_epoch", 0.0) or 0.0),
+                    # 非有限值/负数/未来值一律回落 0.0：nan 让判据恒假（抑制失效），
+                    # inf 或遥测错乱的未来值让判据恒真（角色永久静默）。
+                    last_remind_epoch=_sane_epoch(v.get("last_remind_epoch")),
                     remind_count=max(0, min(_rc, _MAX_REMINDERS_CAP)),
                     intent=None,  # 意图每轮从痕迹刷新，无需持久化
                 )
@@ -216,6 +219,18 @@ def _load_states() -> dict[str, _SessionState]:
             print(f"[ccls_daemon] 预算状态读取失败（降级为内存态）: {e}",
                   file=sys.stderr, flush=True)
         return {}
+
+
+def _sane_epoch(raw: object) -> float:
+    """脏 epoch → 0.0。消费判据是 transcript mtime > epoch：非正常值会让它
+    恒真（未来值/true → 永不再提醒）或恒假（nan → 永不抑制）。"""
+    if isinstance(raw, bool):  # True→1.0 会被当成"很久以前提醒过"→ 永久抑制
+        return 0.0
+    try:
+        val = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return val if 0.0 < val <= time.time() else 0.0
 
 
 def _save_states(states: dict[str, _SessionState]) -> None:
