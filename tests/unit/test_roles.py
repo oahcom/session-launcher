@@ -764,6 +764,25 @@ class TestInjectRoleKnowledge:
             result = _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
         assert result.startswith("injected"), result
 
+    def test_strip_writes_backup_before_deleting(self, tmp_path):
+        """P12n: 真的删块外内容前留 .bak（首次），内容没变则不写备份"""
+        import routing.roles as _roles
+        md_path = tmp_path / "CLAUDE.md"
+        original = ("<agent_loop>旧</agent_loop>\n<!-- WORKSPACE_SYS:START -->\n> 本 workspace 属于 engineer。\n"
+                    "<!-- WORKSPACE_SYS:END -->\n</knowledge_reference>\n<!-- KNOWLEDGE:START -->\nold\n<!-- KNOWLEDGE:END -->\n")
+        md_path.write_text(original)
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 定位\nx"):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+        bak = tmp_path / "CLAUDE.md.bak"
+        assert bak.exists() and "<agent_loop>" in bak.read_text()
+        # 稳态再注入一次：不再改写 .bak
+        mtime = bak.stat().st_mtime
+        with patch.object(_roles, "_resolve_ws_paths", return_value=[md_path]), \
+             patch.object(_roles, "_role_assembler_output", return_value="## 定位\nx"):
+            _roles.inject_role_knowledge_into_workspace(_sample_role("engineer", "Engineer"))
+        assert bak.stat().st_mtime == mtime
+
     def test_strip_keeps_prefix_without_protected_block(self):
         """P12m: 前缀含两个旧标记但没有受保护块 → 整段原样保留（不得删空）"""
         import routing.roles as _roles

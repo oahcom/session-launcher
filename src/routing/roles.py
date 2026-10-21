@@ -43,6 +43,10 @@ _ensure_paths()
 # hermes-session-roles/src/shared_loader.py 是角色加载和 produce/consume
 # 解析的单一权威来源。直接 import 复用 registry.load_all 的加载管线
 # （含 prompt_refs 渲染、旧格式兼容），避免两套解析逻辑不同步。
+# shared_loader 的子进程与导入方都直接读 SESSION_ROLES_ROOT：先归一化成绝对路径，
+# 否则 env 写成 ~/... 时它们各自展开失败 → 加载 0 个角色（注入却"放行"，静默退化）。
+if os.environ.get("SESSION_ROLES_ROOT"):
+    os.environ["SESSION_ROLES_ROOT"] = str(Path(os.environ["SESSION_ROLES_ROOT"]).expanduser())
 _shared_src = str(Path.home() / "hermes-session-roles" / "src")
 if _shared_src not in sys.path:
     sys.path.insert(0, _shared_src)
@@ -398,10 +402,7 @@ _PROTECTED_BLOCK_RE = re.compile(
 
 
 def _strip_stale_prompt_prefix(prefix: str) -> str:
-    """删旧版手写 prompt 残留，受保护标记块原样保留；两个独有标记缺一就不动文件。
-
-    幂等：删完前缀不再含 <agent_loop>，第二次结果字节不变。
-    """
+    """删旧版手写 prompt 残留（受保护标记块保留）；两个独有标记缺一就不动文件，幂等。"""
     if "<agent_loop>" not in prefix or "</knowledge_reference>" not in prefix:
         return prefix
     kept = [m.group(0) for m in _PROTECTED_BLOCK_RE.finditer(prefix)]
@@ -493,6 +494,7 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     injected = 0
     for claude_md in ws_paths:
         content = claude_md.read_text(encoding="utf-8")
+        _orig = content  # 判定是否删过块外内容（.bak 只在真的删且真要写盘时留一份）
 
         # 移除旧 KNOWLEDGE 块（如有），总是注入最新的
         start_marker = "<!-- KNOWLEDGE:START -->"
@@ -503,9 +505,6 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         if start_idx > 0:
             _head = _strip_stale_prompt_prefix(content[:start_idx])
             if _head != content[:start_idx]:
-                # 删块外内容不可逆且 workspace 不在 git 里：删前留一份 .bak（同一文件只留首次）
-                if not claude_md.with_name(claude_md.name + ".bak").exists():
-                    claude_md.with_name(claude_md.name + ".bak").write_text(content, encoding="utf-8")
                 content, start_idx = _head + content[start_idx:], len(_head)
         if start_idx >= 0:
             end_idx = content.find(end_marker, start_idx)
@@ -522,8 +521,6 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
                         if not all(ln.strip() in _bl for ln in s.splitlines() if ln.strip()))
                     for i, part in enumerate(_parts)).rstrip()
 
-
-
                 after = content[end_idx:].lstrip()
                 new_content = before + knowledge_block + after
             else:
@@ -539,6 +536,10 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         # 跑一次，无条件 write_text 会把所有 workspace 的 mtime 刷成"刚刚"，
         # 让 code-checksum-* 与新鲜度判据全部失去意义。
         if new_content != content:
+            # 真删过块外内容且真要写盘才留 .bak（首次），避免"不写盘却留了备份"
+            _bak = claude_md.with_name(claude_md.name + ".bak")
+            if content != _orig and not _bak.exists():
+                _bak.write_text(_orig, encoding="utf-8")
             claude_md.write_text(new_content, encoding="utf-8")
             injected += 1
 
