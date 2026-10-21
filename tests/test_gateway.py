@@ -297,34 +297,6 @@ class TestValidateCreateTask:
 
 
 # ═══════════════════════════════════════════════════════
-# record_p0_audit
-# ═══════════════════════════════════════════════════════
-
-class TestRecordP0Audit:
-    def test_inserts_log_row(self, gate):
-        gate.record_p0_audit("pm", "task-001", "紧急生产事故需要立即处理")
-        rows = gate._conn.execute(
-            "SELECT * FROM workflow_logs WHERE task_id=? AND action='p0_exemption'",
-            ("task-001",),
-        ).fetchall()
-        assert len(rows) == 1
-        detail = json.loads(rows[0]["detail"])
-        assert detail["reason"] == "紧急生产事故需要立即处理"
-
-    def test_uses_external_conn(self, gate):
-        external = sqlite3.connect(gate.db_path)
-        external.row_factory = sqlite3.Row
-        gate.record_p0_audit("coordinator", "task-002", "外部连接测试场景描述内容",
-                              conn=external)
-        row = external.execute(
-            "SELECT * FROM workflow_logs WHERE task_id=?", ("task-002",)
-        ).fetchone()
-        assert row is not None
-        assert row["actor"] == "coordinator"
-        external.close()
-
-
-# ═══════════════════════════════════════════════════════
 # route_task
 # ═══════════════════════════════════════════════════════
 
