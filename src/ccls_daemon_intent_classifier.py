@@ -103,8 +103,11 @@ def _tmux_sessions() -> list[str] | None:
     的执行器，失明即当轮零提醒，故放到 10s（与 _INTERVAL 同数量级）。
     """
     try:
+        # 30s（原 10s）：2026-10-22 05:20 实测 `tmux ls` 在本机负载下要 **17.6s**，
+        # 10s 预算让 daemon 每 tick 都判失明（journal 16/62 行是这条超时），
+        # 而 _sessions=None 的唯一后果就是本轮零提醒、且不回收预算。
         out = subprocess.check_output(["tmux", "ls", "-F", "#{session_name}"],
-                                      text=True, timeout=10)
+                                      text=True, timeout=30)
         return [s for s in out.splitlines() if s.startswith("ccs-")]
     except Exception as e:
         print(f"[ccls_daemon] tmux ls 失败 → 无法判定（不累计 _empty_polls）: {e!r}",
@@ -320,7 +323,10 @@ class IntentReminderDaemon:
     # 一直没生效，qa 仍被旧判据挡住。同理 user_intent_reminder 里就是注入给角色的
     # 提醒正文、core 里是痕迹签名格式：改了措辞却要等别人碰本文件才生效（实测
     # 22:18 改的提醒措辞到 22:25 仍未上线，运行实例还是旧文案）。故按名字全量盯。
-    _WATCHED = _watched_sources("tmux_ops", "user_intent_reminder")
+    # 必须把自己也列进去：只盯依赖时，改本文件的修复永远不会触发重拉
+    # （2026-10-22 实测：04:31/05:14 两次改本文件，journal「源码已更新」= 0 次，
+    #  NRestarts 停在 1 → 两份修复都只在磁盘上，运行实例一直跑旧逻辑）。
+    _WATCHED = _watched_sources("tmux_ops", "user_intent_reminder", "ccls_daemon_intent_classifier")
     # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
     # systemd Restart=always 以新代码拉起。线程模式下无人重拉，故不退出。
     _supervised = False
