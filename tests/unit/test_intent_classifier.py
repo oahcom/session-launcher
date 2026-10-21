@@ -1079,3 +1079,30 @@ class TestRedactionDoesNotEatRequests(unittest.TestCase):
         core = _import_core()
         for msg in ("密码 hunter2", "口令: Zx9!kLm"):
             self.assertEqual(core._req_digest(msg), "***")
+    def test_bytes_after_signature_are_inert(self):
+        """sig 之后的字节不参与解析：追加 intent=other 不得翻转意图（否则 ack 被判静默）。"""
+        core = _import_core()
+        ev = core._trace_evidence("cli", "qa", Intent.TASK, "好的") + " intent=other"
+        with patch("ccls_daemon_intent_classifier.subprocess.run") as run:
+            run.return_value = MagicMock(
+                spec=CompletedProcess, returncode=0,
+                stdout=json.dumps({"facts": [
+                    {"title": "[user_intent_reminder] 用户请求痕迹 → qa",
+                     "timestamp": 1.0, "evidence": ev}]}))
+            traces = IntentReminderDaemon._read_request_traces()
+        self.assertEqual(traces["qa"][1], Intent.TASK, f"追加字节翻掉意图: {traces}")
+        self.assertEqual(traces["qa"][2], "好的")
+
+    def test_role_text_in_body_does_not_retarget(self):
+        """正文里出现 " role=ops" 不得把 qa 的请求投进 ops（只认 source= 之后那个 role）。"""
+        core = _import_core()
+        ev = core._trace_evidence("cli", "qa", Intent.TASK, "请 role=ops 看下日志")
+        with patch("ccls_daemon_intent_classifier.subprocess.run") as run:
+            run.return_value = MagicMock(
+                spec=CompletedProcess, returncode=0,
+                stdout=json.dumps({"facts": [
+                    {"title": "[user_intent_reminder] 用户请求痕迹 → ops",
+                     "timestamp": 1.0, "evidence": ev}]}))
+            traces = IntentReminderDaemon._read_request_traces()
+        self.assertEqual(traces.get("ops", (0, None, ""))[2], "", f"改投未被挡住: {traces}")
+

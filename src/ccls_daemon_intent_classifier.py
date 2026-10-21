@@ -416,12 +416,20 @@ class IntentReminderDaemon:
                     continue
                 role = title[len(_hit):].strip()
                 ev = f.get("evidence") or ""
+                # 边界是**最后一个** " sig="：正文自身可能带 " sig=" 字样（用户贴签名/日志），
+                # 按首处切会把正文截断 → 真 sig 验不过 → 该请求静默零提醒
+                # （独立审查 BLOCKER，已复现：msg 含 " sig=deadbeef"）。
+                # 先切边界再解析：sig 之后的字节不在签名范围内，任何字段都只能取自 _body
+                # （未签名的 intent=other 能把 ack 正文判成静默，实测 pushes 1→0）。
+                _body, _sep, _tail = ev.rpartition(" sig=")
+                if not _sep:
+                    _body, _tail = ev, ""       # 旧痕迹无签名
                 # 请求时刻取 evidence 的 req_ts：痕迹标题按角色固定，bus UPSERT 保留
                 # 首次 ts，故 timestamp 只反映**第一次**注入；ut 又会被 search 命中
                 # 刷成当前时刻。两者都不能判「最近一次请求」，读它们会让 request_ts
                 # 冻结在首条痕迹 → TTL 过后该角色永久零提醒。
                 # 旧痕迹无 req_ts（字段上线前写入）→ 退回 timestamp，行为同修复前。
-                _rt = re.search(r"req_ts=([\d.]+)", ev)
+                _rt = re.search(r"req_ts=([\d.]+)", _body)
                 try:
                     ts = float(_rt.group(1)) if _rt else float(f.get("timestamp") or 0.0)
                     # 未签名的未来 req_ts 会赢下 max-ts 竞争并让该角色永久静默
@@ -437,12 +445,8 @@ class IntentReminderDaemon:
                         continue
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
-                # 边界是**最后一个** " sig="：正文自身可能带 " sig=" 字样（用户贴签名/日志），
-                # 按首处切会把正文截断 → 真 sig 验不过 → 该请求静默零提醒
-                # （独立审查 BLOCKER，已复现：msg 含 " sig=deadbeef"）。
-                _body, _sep, _tail = ev.rpartition(" sig=")
-                if not _sep:
-                    _body, _tail = ev, ""       # 旧痕迹无签名
+                # 前缀匹配足够：所有字段都取自 _body，sig 之后的字节不参与解析。
+                # 改成 fullmatch 会让尾随换行（旧痕迹带夹注）把正文整条丢掉（实测回归）。
                 _sg = re.match(r"([0-9a-f]{32})", _tail)
                 _rq = re.search(r"\breq=(.*)$", _body)
                 _req = (_rq.group(1).strip() if _rq else "")
@@ -460,12 +464,14 @@ class IntentReminderDaemon:
                 # 标题角色必须与**签名正文里的** role= 一致：否则任何 bus 写入方都能
                 # 把一条合法签名痕迹"改投"到另一个角色的 pane（审查 P2-1，实测可把
                 # qa 的请求重放到 ops/pm）。签名只绑内容，不绑投递目标，需在此校验。
-                if _req and re.search(r"(?:^|\s)role=" + re.escape(role) + r"(?:\s|$)", _body) is None:
+                # 必须是紧跟在 source= 之后的 role=：正文任意位置出现 " role=ops"
+                # 也会命中，实测可把 qa 的请求投进 ops pane。
+                if _req and re.match(r"source=[^ ]* role=" + re.escape(role) + r"(?: |$)", _body) is None:
                     _req = ""
                 # 边界再洗一遍：签名证明"谁写的"，不证明"内容是单行" —— 同 uid 的
                 # 签名者能塞多行，把伪造的「第N次重复自检：…」写进 pane（审查 P2-4）。
                 _req = sanitize_request(_req) if _req else ""
-                _m = re.search(r"intent=(\w+)", ev)
+                _m = re.search(r"intent=(\w+)", _body)
                 try:
                     intent = Intent(_m.group(1)) if _m else None
                 except ValueError:
