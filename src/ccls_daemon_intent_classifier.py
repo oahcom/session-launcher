@@ -263,11 +263,16 @@ class IntentReminderDaemon:
     _EMPTY_POLL_THRESHOLD = 3
     # 本文件路径，供 run() 检测源码更新（见 run 内注释）。
     _SRC_FILE = os.path.abspath(__file__)
+    # 依赖模块也必须一起盯：只盯自身时，tmux_ops 的修复（如"卡死 CLI 不再算生成中"）
+    # 要等本文件下次改动才被加载 —— 实测 2026-10-21 19:24 的 tmux_ops 修复因此
+    # 一直没生效，qa 仍被旧判据挡住。
+    _WATCHED = _SRC_FILE, os.path.abspath(
+        getattr(sys.modules.get("tmux_ops"), "__file__", "") or _SRC_FILE)
     # 由 supervisor 托管（--daemon）时置 True：源码更新后退出，交由
     # systemd Restart=always 以新代码拉起。线程模式下无人重拉，故不退出。
     _supervised = False
     # 待确认的源码 mtime：非 0 表示上一轮见到过变化，本轮再相同才认定稳定（防抖）。
-    _pending_mtime = 0.0
+    _pending_mtime: tuple | float = 0.0
 
     def __init__(self, interval: float = _INTERVAL):
         self._interval = interval
@@ -546,13 +551,22 @@ class IntentReminderDaemon:
         随后 ccs-intent-guardian 停摆。故 mtime 需连续两轮相同才算稳定，
         只有稳定后才退出，避免边写边拉的自激循环。
         """
-        src_mtime = os.path.getmtime(self._SRC_FILE)
+        def _mtimes():
+            out = []
+            for _p in self._WATCHED:
+                try:
+                    out.append(os.path.getmtime(_p))
+                except OSError:
+                    out.append(0.0)
+            return tuple(out)
+
+        src_mtime = _mtimes()
         while not self._stop.is_set():
             t0 = time.monotonic()
             self._tick()
             if self._supervised:
                 try:
-                    cur = os.path.getmtime(self._SRC_FILE)
+                    cur = _mtimes()
                     if cur != src_mtime:
                         if cur == self._pending_mtime:
                             # 连续两轮 mtime 一致 → 编辑已停止，可安全退出重拉
