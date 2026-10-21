@@ -310,6 +310,29 @@ class TestRestartIfStale:
             assert tmux_ops._restart_if_stale("ccs-probe", md) is False
         kill.assert_not_called()
 
+    def test_busy_but_stuck_is_restarted(self, tmp_path):
+        """忙不等于不杀：_looks_stuck 判卡死时仍要重启。
+
+        2026-10-21 实测 consumer / product_architect / maintainer 挂着
+        esc-to-interrupt 90+ 分钟不动 → 忙判据把卡死的 CLI 永久当成「在生成」。
+        没有这条，忙分支可能被改成永不杀，自愈路径就断了。
+        """
+        import tmux_ops
+        from unittest.mock import patch
+        tmux_ops._stuck_cache.clear()
+        md = tmp_path / "CLAUDE.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._role_is_busy", return_value=True), \
+             patch("tmux_ops._looks_stuck", return_value=True), \
+             patch("tmux_ops._tmux_output", return_value="❯ "), \
+             patch("tmux_ops._find_claude_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=0.0), \
+             patch("pathlib.Path.read_text", return_value="claude\n"), \
+             patch("tmux_ops.os.kill") as kill:
+            assert tmux_ops._restart_if_stale("ccs-probe", md) is True
+        kill.assert_called_once_with(4242, 9)
+
     def test_fresh_process_is_not_killed(self, tmp_path):
         import tmux_ops
         from unittest.mock import patch

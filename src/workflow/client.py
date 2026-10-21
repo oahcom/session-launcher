@@ -239,10 +239,17 @@ class WorkflowClient:
 
     def get_task(self, task_id: str) -> Optional[dict]:
         row = self._conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not row and task_id.startswith("wf_"):
+            # 角色手里只有 [实例] wf_id（base.md:76），本方法只查 tasks →
+            # 「未找到」→ progress.current.contract 整块消失，角色只能猜验收标准。
+            # 同一张库里 workflow_instances.task_id 指向 tasks.task_id，直接回查。
+            row = self._conn.execute(
+                "SELECT t.* FROM tasks t JOIN workflow_instances w ON w.task_id=t.task_id "
+                "WHERE w.instance_id=?", (task_id,)).fetchone()
         if not row:
             return None
         task = dict(row)
-        task["progress"] = self._compute_progress(task_id)
+        task["progress"] = self._compute_progress(task["task_id"])
         return task
 
     def _compute_progress(self, task_id: str) -> dict:
