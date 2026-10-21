@@ -41,7 +41,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 
 ## 测试
 ```bash
-python3 -m pytest tests/ -q   # 实测 460 passed (2026-10-22)
+python3 -m pytest tests/ -q   # 全 passed 即基线（数量不写死）
 PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops; print('OK')"
 ```
 

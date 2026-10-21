@@ -40,6 +40,9 @@ HERMES_SCRIPTS = Path(_HOME / ".hermes" / "scripts")
 SESSION_LAUNCHER_SRC = Path(__file__).resolve().parent
 # 公开别名：launcher 侧需要直接 import pipeline 模块时复用，避免调用点硬编码路径。
 SESSION_PIPELINE_SRC = Path(_SESSION_PIPELINE_SRC)
+# 跨仓库读者：ccs@.service 的 ExecStart（~/.hermes/scripts/ccs_monitor.py:37）
+# 从本模块 import；死代码扫描只看仓库内，删它会打崩所有 ccs@ 实例（2026-10-22 实测）。
+CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"
 
 
 # ── 角色目录 ──
