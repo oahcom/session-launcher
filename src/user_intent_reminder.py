@@ -19,34 +19,69 @@ import os
 import sys
 from enum import Enum
 
-# 本地签名密钥：痕迹会跨 bus 落到无认证的共享通道，而 daemon 把 req= 原样贴进
-# 角色 pane。0600 本地文件，只有本机 core.send 能造合法痕迹。
+# 本地签名密钥：痕迹经 bus（无认证、写入方任意）进入角色 pane，故 evidence 带 MAC。
+# **天花板（2026-10-21 对抗审查 P1-1，实测）**：所有 ccs 角色、daemon 与 core.send
+# 同属一个 uid，任何角色 shell 都能读这把 0600 密钥并签出合法痕迹。所以 MAC 是
+# "防误写 / 防跨用户 / 防手滑改字段"的完整性证据，**不是对同 uid 内部的认证**。
+# 真认证要把密钥移出该 uid（systemd LoadCredential + 守护方 socket + SO_PEERCRED）。
 _SIG_KEY = os.path.join(
     os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
     "run", "reminder.sig.key")
 
 
-def sign_trace(payload: str) -> str:
-    """HMAC-SHA256(payload) 截 32 位十六进制。密钥缺失即生成（O_EXCL 防并发重写）。"""
+def _load_key(create: bool = True) -> bytes:
+    """读密钥；缺失/非完整（<16 字节）且允许创建时原子落盘（临时文件 + os.replace）。
+
+    必须校验长度：0 字节或半截密钥会让"空密钥 HMAC"通过验签（审查 P2-3 实测），
+    且 create→write 之间崩溃会留下这种文件。读路径（create=False）绝不重建 ——
+    否则密钥被删后 daemon 会自造新键，把所有既有痕迹判成伪造。
+    """
     try:
         with open(_SIG_KEY, "rb") as fh:
             key = fh.read()
+        if len(key) >= 16:
+            return key
     except OSError:
-        key = __import__("secrets").token_bytes(32)
-        try:
-            os.makedirs(os.path.dirname(_SIG_KEY), exist_ok=True)
-            fd = os.open(_SIG_KEY, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(key)
-        except FileExistsError:
-            with open(_SIG_KEY, "rb") as fh:
-                key = fh.read()
-    return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+        pass
+    if not create:
+        raise OSError(f"签名密钥不可用: {_SIG_KEY}")
+    key = __import__("secrets").token_bytes(32)
+    try:
+        os.makedirs(os.path.dirname(_SIG_KEY), exist_ok=True)
+        tmp = f"{_SIG_KEY}.{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fh:
+            fh.write(key)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, _SIG_KEY)  # 原子：读者看到旧键或完整新键，永不是半截
+    except OSError:
+        with open(_SIG_KEY, "rb") as fh:  # 并发创建/只读 HOME：回读一次
+            key = fh.read()
+    return key
+
+
+def sign_trace(payload: str) -> str:
+    """HMAC-SHA256(整条 evidence 正文) 截 32 位十六进制。"""
+    key = _load_key()
+    return hmac.new(key, payload.encode("utf-8", "replace"),
+                    hashlib.sha256).hexdigest()[:32]
 
 
 def verify_trace(payload: str, sig: str) -> bool:
-    """痕迹签名是否有效。sig 缺失一律 False（伪造者不会顺手签名）。"""
-    return bool(sig) and hmac.compare_digest(sign_trace(payload), sig)
+    """验签。任何异常一律 False：读不到密钥时宁可不注入，也不放行未验证正文。
+
+    **不重建密钥**（create=False）：密钥被删时既有痕迹应被判无效，而不是换新键
+    把所有旧痕迹当伪造。
+    """
+    try:
+        if not sig:
+            return False
+        key = _load_key(create=False)
+        want = hmac.new(key, payload.encode("utf-8", "replace"),
+                        hashlib.sha256).hexdigest()[:32]
+        return hmac.compare_digest(want, sig)
+    except Exception:  # noqa: BLE001 - 验签失败必须是"不注入"，不是"崩整轮"
+        return False
 
 # 复用 integrity.py 的标准提问主干，确保与 workflow /goal 步骤措辞一致。
 # 跨项目依赖不可靠时回退到同源硬编码文本（realpath 规范化防路径遍历）。
@@ -90,15 +125,22 @@ _QUESTION_WORDS = ("吗", "呢", "怎么", "如何", "为什么", "为何", "是
                    "可以", "能不能", "能否", "可否", "什么", "哪个", "谁", "哪里")
 _TASK_CN = ("请", "帮我", "做", "写", "修", "修复", "生成", "实现",
             "创建", "添加", "加", "改", "更新", "检查", "分析", "整理",
-            "翻译", "总结", "设计", "构建", "部署", "运行", "执行", "对比", "输出")
+            "翻译", "总结", "设计", "构建", "部署", "运行", "执行", "对比", "输出",
+            # 2026-10-21 对抗审查 D4 实测漏判：「回滚到上一个版本」「再跑一遍测试」
+            # 「看一下日志」都被判 OTHER → 重复提醒静默。补常见动作词。
+            "回滚", "回退", "删除", "重跑", "再跑", "跑一遍", "看一下", "看看",
+            "提交", "恢复", "排查", "日志", "删")
 _TASK_EN = ("please", "fix", "write", "implement", "create", "add", "update",
             "deploy", "run", "generate", "build", "refactor", "analyze",
-            "review", "test", "debug", "help me")
+            "review", "test", "debug", "help me",
+            "can you", "could you", "would you", "let's")  # 审查 D4：「can you fix…」曾判 other
 # 延续指令：无动作词、无问号，但明确要求继续推进既有工作。
 # 实测本项目用户两次只回「继续」，被判 OTHER → core.send 不写意图痕迹 →
 # daemon 失去触发源 → 整个「你有真的解决用户问题吗」提醒链对该输入完全静默。
 # 这类输入恰恰最需要提醒：角色容易把「继续」理解成「随便再做点事」。
 _CONTINUATION = ("继续", "接着", "往下", "go on", "continue", "carry on")
+# 否定式：「不要继续」「别继续」语义相反，不能被"短消息含继续即 TASK"吞掉。
+_NEGATED_CONTINUE = ("不要继续", "别继续", "不用继续", "停止", "先停")
 
 
 def classify_intent(message: str) -> Intent:
@@ -131,12 +173,11 @@ def classify_intent(message: str) -> Intent:
             return Intent.TASK
     if any(v in text for v in _TASK_CN) or text.lower().startswith(_TASK_EN):
         return Intent.TASK
-    # 短延续指令：整条消息就是「继续」/「接着来」，不含其他内容才算。
-    # 用 equal/startswith 而非 in ——「继续分析一下架构」的目标是分析，
-    # 措辞应走 TASK；「不要继续」更不该被当成延续。
-    _low = text.lower()
-    if len(text) <= 12 and (_low in _CONTINUATION
-                            or any(_low.startswith(c) for c in _CONTINUATION)):
+    # 短延续指令：短消息里**出现**即算（不必整条就是）。
+    # 「好的，继续」此前因不以「继续」开头被判 OTHER → 提醒静默，而它恰恰是最该
+    # 提醒的输入（审查 D4 实测）。长消息仍交给上面的动词判据，避免误伤正文。
+    if (len(text) <= 12 and any(c in text.lower() for c in _CONTINUATION)
+            and not any(n in text for n in _NEGATED_CONTINUE)):
         return Intent.TASK
     return Intent.OTHER
 
@@ -170,6 +211,22 @@ def repeat_reminder(intent: Intent, round_no: int = 1, request: str = "") -> str
         f"1. {q}\n2. {t}\n{focus}\n"
         "若该请求已完成，回一句结论即可；不要为了自检新建任务、子代理或工具调用。"
     ).rstrip()
+
+
+# 纯确认语：对它们重复提醒是噪音，对「看一下日志」不是。
+_ACK_ONLY = ("好的", "好", "收到", "嗯", "行", "可以", "明白", "知道了", "谢谢",
+             "ok", "okay", "thanks", "thx", "sure", "roger")
+
+
+def is_ack(message: str) -> bool:
+    """是否纯确认语（无新任务）。
+
+    WHY 不用 Intent.OTHER 当判据：classify_intent 是关键词启发式，实测把
+    「回滚到上一个版本」「再跑一遍测试」「看一下日志」判成 OTHER —— 按 OTHER
+    跳过提醒会让真请求彻底静默（审查 D4）。这里只认"整条就是一句确认"。
+    """
+    text = (message or "").strip().strip("。.!！~～,， ")
+    return len(text) <= 6 and text.lower() in _ACK_ONLY
 
 
 def is_user_source(source: str) -> bool:

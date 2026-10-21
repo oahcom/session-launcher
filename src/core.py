@@ -990,8 +990,7 @@ def send(role: str, message: str, source: str = "",
     # 用户意图提醒：仅人类来源(user/cli)注入，pipeline/daemon 自动化排除防递归
     # 包裹 try/except：提醒注入失败绝不可吞掉原始消息（P1a 回归防护）
     send_message = message
-    injected = False
-    _intent = None  # 仅在注入成功时有值；与 injected 同步初始化，避免未定义引用
+    _intent = None  # 注入成功后由 inject_reminder 的函数属性带出，缺失时降级
     if source in ("user", "cli"):
         try:
             # record_intent 曾在此 import 但全库无定义（连 WIP 也没有），且
@@ -1001,7 +1000,6 @@ def send(role: str, message: str, source: str = "",
             # 整个意图注入路径静默降级（异常被下方 except 吞掉，消息仍投递）。
             from user_intent_reminder import inject_reminder
             send_message = inject_reminder(message, source)
-            injected = send_message != message
             # 复用 inject_reminder 内部的同一份判定（函数属性），不重算：
             # 重算会拿已被提醒头包裹的 send_message，尾部不再是原始问句。
             _intent = getattr(inject_reminder, "intent", None)
@@ -1011,13 +1009,17 @@ def send(role: str, message: str, source: str = "",
         # 可观测痕迹：**所有人类来源都写**，不再只在注入成功时写（审查 P1#5）。
         # 只写注入过的 → "好的/收到" 这类 OTHER 输入不刷新痕迹，上一条已完成的请求
         # 会在 TTL 内被反复贴回去，角色可能重做。
-        # 独立 guard：bus I/O 故障不得影响消息投递或被注入失败混淆（resilience P1）
-        if message:
+        # 但摘要为空（纯空白/控制字符）时不写：那会把该角色最新痕迹变成无正文，
+        # 反而掐掉在飞的提醒（审查 P2-6）。
+        _digest = _req_digest(message) if message else ""
+        if _digest:
             try:
                 subprocess.run(
                     [str(BUS_CLIENT), "write", "code_fix",
-                     f"[user_intent_reminder] 已注入意图提醒 → {role}",
-                     "--evidence", _trace_evidence(source, role, _intent, message),
+                     # 标题只陈述事实：本条是"用户请求痕迹"，是否注入提醒由 daemon 决定。
+                     # 旧标题「已注入意图提醒」在只写注入时成立，现在会虚增计数（审查 P2-5）。
+                     f"[user_intent_reminder] 用户请求痕迹 → {role}",
+                     "--evidence", _trace_evidence(source, role, _intent, _digest),
                      "--src", "core.send"],
                     capture_output=True, timeout=5)
             except Exception as _be:  # noqa: BLE001
@@ -1070,27 +1072,31 @@ def _redact_secrets(message: str) -> str:
 _SECRET_SHAPES = (
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "***"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
-    # 分隔符容忍冒号/等号/单空格：中文里 "密码 hunter2" 不带冒号也很常见。
-    (re.compile(r"(?i)(?:密码|口令|password|passwd|secret|api[_-]?key)(?:\s*[:=：]|\s)\s*\S+"),
-     "***"),
+    # 英文标签必须带显式分隔符：否则 "password is required" 会被抹成 "*** required"，
+    # 把提示语义一起毁掉（审查 P3-2 实测）。
+    (re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=：]\s*\S+"), "***"),
+    # 中文口令容忍单空格：'密码 hunter2' 不带冒号也很常见（但 '密码是什么' 无分隔符，不命中）。
+    (re.compile(r"(?:密码|口令)(?:\s*[:=：]|\s)\s*\S+"), "***"),
 )
 
 
-def _trace_evidence(source: str, role: str, intent, message: str) -> str:
+def _trace_evidence(source: str, role: str, intent, req: str) -> str:
     """用户请求痕迹 evidence 的唯一构造点（产出侧曾零覆盖，审查 P1#6）。
 
     req_ts 取毫秒：daemon 按 `req != st.request_ts` 判"新请求"，整秒精度会让同秒
     第二条请求继承已耗尽的预算（审查 P2#11）。
-    sig 是 bus 通道的准入条件：bus 无认证、写入方任意，daemon 又把 req= 贴进角色
-    pane —— 不签名等于给所有写入方一条"向任意角色注入任意文本"的通道（P1#1）。
+
+    sig 覆盖**整条正文**（不只是 role|req_ts|req）：否则截获一条合法痕迹后单独
+    改写 intent= / source= 仍能通过验签 —— 把 task 翻成 other 就能让该角色彻底
+    静默，且无需密钥（审查 P2-2）。天花板：同 uid 的 agent 能读到密钥，MAC 是
+    "防误写/防跨用户/防手滑"，不是同 uid 内部认证（P1-1，已写进 verify_trace）。
     """
     req_ts = f"{time.time():.3f}"
-    req = _req_digest(message)
     body = (f"source={source} role={role} req_ts={req_ts}"
             + (f" intent={intent.value}" if intent else "")
             + (f" req={req}" if req else ""))
     from user_intent_reminder import sign_trace
-    return f"{body} sig={sign_trace(f'{role}|{req_ts}|{req}')}"
+    return f"{body} sig={sign_trace(body)}"
 
 
 def _req_digest(message: str) -> str:
@@ -1106,6 +1112,9 @@ def _req_digest(message: str) -> str:
     text = _redact_secrets(message or "")
     for _pat, _rep in _SECRET_SHAPES:  # 未带标签的凭证形状也要抹（P1#2）
         text = _pat.sub(_rep, text)
+    # 孤立代理项（\ud800 等）会让 encode("utf-8") 抛 UnicodeEncodeError，整条痕迹
+    # 随 except 静默丢失 → 该请求零提醒（审查 P2-1）。errors="replace" 一并兜住。
+    text = text.encode("utf-8", "replace").decode("utf-8")
     text = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", text).split())
     # 截断必须显形：尾部被切掉的请求不能假装是完整原始请求（P2#10）。
     return text[:139].rstrip() + "…" if len(text) > 140 else text

@@ -45,7 +45,7 @@ _MAX_REMINDERS_CAP = 3
 # repeat_reminder，不再各自维护副本（v3 收敛：消除重复定义与符号覆盖冲突）。
 try:
     from user_intent_reminder import (  # type: ignore
-        classify_intent, Intent, repeat_reminder, verify_trace)
+        classify_intent, Intent, repeat_reminder, verify_trace, is_ack)
 except Exception:  # pragma: no cover - 同目录兜底
     from pathlib import Path as _P
     import importlib.util as _ilu
@@ -58,6 +58,7 @@ except Exception:  # pragma: no cover - 同目录兜底
     Intent = _mod.Intent
     repeat_reminder = _mod.repeat_reminder
     verify_trace = _mod.verify_trace
+    is_ack = _mod.is_ack
 
 # 同目录复用 tmux 投递（脚本以本目录为 sys.path[0] 启动，直接 import 即可）
 try:
@@ -74,6 +75,9 @@ except Exception:  # pragma: no cover - 加载失败时降级为不可注入
 
     def verify_trace(payload: str, sig: str) -> bool:  # type: ignore
         return False  # 降级：签不了名就不认正文（挡伪造优先于发提醒）
+
+    def is_ack(message: str) -> bool:  # type: ignore
+        return False  # 降级：判不出确认语 → 照常提醒（宁可多发一句，也不吞掉真请求）
 
 
 def _inject_text(session: str, text: str) -> bool | None:
@@ -317,11 +321,15 @@ class IntentReminderDaemon:
         # 避免虚假前提而设的妥协，现已有 bus 痕迹作为确证。
         # 意图取自痕迹（疑问/任务措辞不同：疑问强调"先回答用户问题"）；取不到
         # （旧痕迹/字段缺失）降级 TASK，即本 daemon 修复前的行为。
+        if request:
+            st.no_digest_logged = False  # 有正文了：下次缺失时重新报一次
         reminder = repeat_reminder(intent or Intent.TASK, round_no, request)
         if not reminder:
-            # 旧痕迹无 req= 字段（本字段上线前写入）→ 宁可静默也不发无正文提醒。
-            if not st.deferred_logged:
-                st.deferred_logged = True
+            # 旧痕迹无 req= / 验签不过 → 宁可静默也不发无正文提醒。
+            # 用独立的一次性位：与"角色忙"共用会被忙/闲切换每 10s 清回 False，
+            # 旧痕迹角色就变成每 tick 一行（审查 P1-3 实测 3 tick → 3 行）。
+            if not st.no_digest_logged:
+                st.no_digest_logged = True
                 print(f"[ccls_daemon] {session} 痕迹无请求正文 → 不注入无正文提醒",
                       file=sys.stderr, flush=True)
             return False
@@ -389,19 +397,26 @@ class IntentReminderDaemon:
         """
         try:
             out = subprocess.run(
-                [BUS_CLIENT, "search", "已注入意图提醒", "--limit", "50", "--json"],
+                # 搜共用前缀：一条查询同时命中新标题「用户请求痕迹」与旧标题
+                # 「已注入意图提醒」（bus 里的旧事实不会自动改名），省掉每 tick 两次子进程。
+                [BUS_CLIENT, "search", "user_intent_reminder", "--limit", "50", "--json"],
                 capture_output=True, text=True, timeout=5,
             ).stdout
             import json
             data = json.loads(out)
             facts = data.get("facts", data) if isinstance(data, dict) else data
-            prefix = "[user_intent_reminder] 已注入意图提醒 → "
+            # 新标题诚实陈述"这是用户请求痕迹"，是否注入由本 daemon 决定（旧标题
+            # 「已注入意图提醒」只在"只写注入"时代成立，会虚增注入计数）。
+            prefixes = ("[user_intent_reminder] 用户请求痕迹 → ",
+                        "[user_intent_reminder] 已注入意图提醒 → ")
             traces: dict[str, tuple[float, "Intent | None", str]] = {}
             for f in facts:
+              try:  # 单条坏事实只丢一条：整体 try 会让一条脏数据清空所有角色的提醒
                 title = f.get("title") or ""
-                if not title.startswith(prefix):
+                _hit = next((p for p in prefixes if title.startswith(p)), "")
+                if not _hit:
                     continue
-                role = title[len(prefix):].strip()
+                role = title[len(_hit):].strip()
                 ev = f.get("evidence") or ""
                 # 请求时刻取 evidence 的 req_ts：痕迹标题按角色固定，bus UPSERT 保留
                 # 首次 ts，故 timestamp 只反映**第一次**注入；ut 又会被 search 命中
@@ -429,10 +444,12 @@ class IntentReminderDaemon:
                 # （不注入），既挡住伪造注入，也不误杀没有正文的旧痕迹。
                 if _req:
                     _sg = re.search(r"sig=([0-9a-f]{32})", ev)
-                    # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行。
-                    # 丢弃后的"无正文"由 _push_reminder 每 session 只报一次。
-                    if not (_sg and verify_trace(f"{role}|{_rt.group(1) if _rt else ''}|{_req}",
-                                                 _sg.group(1))):
+                    # 验签对象是**整条正文**（" sig=" 之前），不只是 role|req_ts|req：
+                    # 否则截获合法痕迹后单改 intent= 就能让该角色静默（审查 P2-2）。
+                    # 不在此处打日志：解析每 tick 跑一次，旧痕迹会每 10s 刷一行；
+                    # "无正文"由 _push_reminder 每 session 只报一次。
+                    _body = ev.split(" sig=", 1)[0]
+                    if not (_sg and verify_trace(_body, _sg.group(1))):
                         _req = ""
                 _m = re.search(r"intent=(\w+)", ev)
                 try:
@@ -441,6 +458,9 @@ class IntentReminderDaemon:
                     intent = None  # 未知取值：降级 TASK，不让脏数据中断整轮
                 if role and ts > traces.get(role, (0.0, None, ""))[0]:
                     traces[role] = (ts, intent, _req)
+              except Exception as _e:  # noqa: BLE001 - 单条脏数据不得清空整张表
+                print(f"[ccls_daemon] 单条痕迹解析失败（已跳过）: {_e!r}",
+                      file=sys.stderr, flush=True)
             return traces
         except Exception as e:
             # 不静默：读不到痕迹 = 所有角色的提醒静默停发，必须留下痕迹。
@@ -491,9 +511,10 @@ class IntentReminderDaemon:
             if not trace:
                 continue
             req, req_intent, req_text = trace
-            if req_intent is Intent.OTHER:
-                # 人类只回了一句"好的/收到"（OTHER）：痕迹已刷新为最新输入，
-                # 但它不是待对齐的请求——继续提醒等于把上一条已完成的请求重新派活。
+            if req_intent is Intent.OTHER and is_ack(req_text):
+                # 只跳"整条就是一句确认"（好的/收到/ok）。不能按 OTHER 整个枚举跳过：
+                # 分类器是关键词启发式，实测把「回滚到上一个版本」「看一下日志」
+                # 判成 OTHER —— 那会让真请求彻底静默（审查 D4）。
                 continue
             if time.time() - req > self._REQUEST_TTL:
                 continue  # 请求已过期，不再重复提醒

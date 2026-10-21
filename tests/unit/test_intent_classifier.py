@@ -572,22 +572,153 @@ class TestTraceSignature(unittest.TestCase):
         self.assertEqual(traces["qa"][1], Intent.TASK)
         self.assertEqual(traces["qa"][2], "请修 workflow 回收", f"evidence={ev}")
 
-    @patch("ccls_daemon_intent_classifier.subprocess.run")
-    def test_other_intent_is_not_reminded(self, mock_run):
-        """"好的/收到"（OTHER）不是待对齐请求 → 零注入（P1#5 配套）。"""
-        import json
-        mock_run.return_value = MagicMock(
-            spec=CompletedProcess, returncode=0,
-            stdout=json.dumps({"facts": [
-                {"title": "[user_intent_reminder] 已注入意图提醒 → engineer",
-                 "timestamp": 5.0,
-                 "evidence": "source=cli role=engineer req_ts=9 intent=other req=好的"}]}))
+    def _tick_with_trace(self, role, intent, text, fresh=True):
+        """构造**已签名**的活痕迹并跑一次 _tick，返回注入列表。
+
+        旧版本此处的夹具没有 sig=、req_ts=9（1970）→ 正文被验签丢弃、痕迹又过期，
+        于是"删掉 OTHER 跳过逻辑"仍全绿（审查 D5 实测：空转用例）。
+        """
+        core = _import_core()
+        ev = core._trace_evidence("cli", role, intent, text)
+        trace = (time.time() if fresh else 9.0, intent, text)
         d = IntentReminderDaemon(interval=0.01)
+        d._read_request_traces = staticmethod(lambda: {role: trace})
+        injects = []
+        with patch("ccls_daemon_intent_classifier._tmux_sessions",
+                   return_value=[f"ccs-{role}"]), \
+             patch("ccls_daemon_intent_classifier._inject_text",
+                   side_effect=lambda s, t: (injects.append(t), True)[1]), \
+             patch("ccls_daemon_intent_classifier._role_is_busy", return_value=False), \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   side_effect=range(0, 10 ** 6, 100)):
+            for _ in range(5):  # 冷却 30s 起步：单 tick 恒被 cooldown 挡住（空转）
+                d._tick()
+        return ev, injects
+
+    def test_pure_ack_is_not_reminded(self):
+        """整条就是"好的" → 不再提醒（把已完成的请求反复贴回去是噪音）。"""
+        _, injects = self._tick_with_trace("engineer", Intent.OTHER, "好的")
+        self.assertEqual(injects, [], "纯确认语不应触发提醒")
+
+    def test_misclassified_other_request_still_reminded(self):
+        """反向：被分类器误判成 OTHER 的真请求（「看一下日志」）必须照常提醒。
+
+        缺陷实证（审查 D4）：按 Intent.OTHER 整个枚举跳过时，「回滚到上一个版本」
+        「再跑一遍测试」「看一下日志」全部静默。故只跳"整条就是确认语"。
+        """
+        _, injects = self._tick_with_trace("engineer", Intent.OTHER, "看一下日志")
+        self.assertTrue(injects, "真请求被误判为 OTHER 时不得静默")
+        self.assertIn("看一下日志", injects[0])
+
+
+class TestTraceContract(unittest.TestCase):
+    """痕迹契约的边界：密钥异常、字段篡改、标题诚实、摘要脱敏边界（审查 P1-2/P2-1/2/3/5/P3-2）。"""
+
+    def setUp(self):
+        import user_intent_reminder as _uir
+        self._uir = _uir
+        self._tmp = tempfile.mkdtemp()
+        self._old_key = _uir._SIG_KEY
+        _uir._SIG_KEY = os.path.join(self._tmp, "k")
+
+    def tearDown(self):
+        self._uir._SIG_KEY = self._old_key
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_unreadable_key_drops_body_but_keeps_trace_table(self):
+        """密钥不可读 → 正文丢弃，但**不能**清空整张痕迹表（P1-2：一个 I/O 错误
+        让所有角色永久零提醒）。"""
+        core = _import_core()
+        ev = core._trace_evidence("cli", "qa", Intent.TASK, "修队列")
+        self._uir._SIG_KEY = os.path.join(self._tmp, "no-such-dir", "k")  # 读不到
+        with patch("ccls_daemon_intent_classifier.subprocess.run") as run:
+            run.return_value = MagicMock(
+                spec=CompletedProcess, returncode=0,
+                stdout=json.dumps({"facts": [
+                    {"title": "[user_intent_reminder] 用户请求痕迹 → qa",
+                     "timestamp": 1.0, "evidence": ev}]}))
+            traces = IntentReminderDaemon._read_request_traces()
+        self.assertIn("qa", traces, "密钥不可读不得清空整表")
+        self.assertEqual(traces["qa"][2], "", "正文必须按无正文处理（fail-closed）")
+
+    def test_zero_length_key_is_rejected(self):
+        """0 字节密钥会让"空密钥 HMAC"通过验签 → 必须重建，且旧空签不被接受（P2-3）。"""
+        open(self._uir._SIG_KEY, "wb").close()
+        sig = hmac_empty = __import__("hmac").new(
+            b"", b"qa|1|hi", __import__("hashlib").sha256).hexdigest()[:32]
+        self.assertFalse(self._uir.verify_trace("qa|1|hi", hmac_empty),
+                         "空密钥签名不得通过")
+        self._uir.sign_trace("x")  # 写路径应重建为完整长度密钥
+        with open(self._uir._SIG_KEY, "rb") as fh:
+            self.assertGreaterEqual(len(fh.read()), 16, "0 字节密钥应被重建")
+
+    def test_missing_key_fails_closed_without_creating(self):
+        """读路径不得自造新密钥：否则密钥一删，所有既有痕迹都被判伪造（P1-2）。"""
+        self.assertFalse(self._uir.verify_trace("qa|1|hi", "0" * 32))
+        self.assertFalse(os.path.exists(self._uir._SIG_KEY), "验签路径不得创建密钥")
+
+    def test_flipping_intent_invalidates_signature(self):
+        """签名覆盖整条正文：改 intent= 也应验签失败（P2-2，否则可无密钥让角色静默）。"""
+        core = _import_core()
+        ev = core._trace_evidence("cli", "qa", Intent.TASK, "修队列")
+        tampered = ev.replace("intent=task", "intent=other")
+        self.assertNotEqual(tampered, ev)
+        with patch("ccls_daemon_intent_classifier.subprocess.run") as run:
+            run.return_value = MagicMock(
+                spec=CompletedProcess, returncode=0,
+                stdout=json.dumps({"facts": [
+                    {"title": "[user_intent_reminder] 用户请求痕迹 → qa",
+                     "timestamp": 1.0, "evidence": tampered}]}))
+            traces = IntentReminderDaemon._read_request_traces()
+        self.assertEqual(traces["qa"][2], "", "篡改 intent 后正文必须被丢弃")
+
+    def test_password_phrase_is_not_over_redacted(self):
+        """形状脱敏不得把普通提示语抹掉：“password is required” 要原样保留（P3-2）。"""
+        d = _import_core()._req_digest("password is required 才能部署")
+        self.assertIn("password", d)
+        self.assertNotIn("***", d)
+
+    def test_digest_survives_lone_surrogate(self):
+        """孤立代理项不得让 encode 抛错（抛错=整条痕迹静默丢失，P2-1）。"""
+        d = _import_core()._req_digest("修复 x" + chr(0xD800) + "y 的问题")
+        self.assertIn("修复", d)
+
+    def test_send_writes_honest_title_only_with_digest(self):
+        """标题必须诚实（用户请求痕迹），且空白消息不覆盖痕迹（P2-5 / P2-6）。"""
+        core = _import_core()
+        calls = []
+        with patch.object(core, "_is_alive", return_value=True), \
+             patch.object(core, "_tmux_send", return_value=True), \
+             patch.object(core.subprocess, "run",
+                          side_effect=lambda argv, **kw: calls.append(argv)):
+            core.send("qa", "看一下日志", source="cli")
+            core.send("qa", "   ", source="cli")
+        # argv = [bus_client, write, cat, title, --evidence, evidence, --src, src]
+        titles = [c[3] for c in calls if len(c) > 4 and str(c[2]) == "code_fix"]
+        self.assertEqual(len(titles), 1, f"空白消息不得写痕迹: {titles}")
+        self.assertIn("用户请求痕迹", titles[0])
+        self.assertNotIn("已注入", titles[0], "标题不得谎报已注入")
+
+
+class TestNoBodyLogIsOncePerSession(unittest.TestCase):
+    """无正文日志必须每 session 只报一次（审查 P1-3 实测 3 tick → 3 行）。"""
+
+    def test_repeated_ticks_log_once(self):
+        import contextlib, io
+        d = IntentReminderDaemon(interval=0.01)
+        d._read_request_traces = staticmethod(lambda: {"engineer": (time.time(), None, "")})
+        buf = io.StringIO()
         with patch("ccls_daemon_intent_classifier._tmux_sessions",
                    return_value=["ccs-engineer"]), \
-             patch("ccls_daemon_intent_classifier._inject_text") as inject:
-            d._tick()
-        inject.assert_not_called()
+             patch("ccls_daemon_intent_classifier._role_is_busy", return_value=False), \
+             patch("ccls_daemon_intent_classifier.time.monotonic",
+                   side_effect=range(0, 10 ** 6, 100)), \
+             contextlib.redirect_stderr(buf):
+            for _ in range(5):
+                d._tick()
+        self.assertEqual(buf.getvalue().count("无请求正文"), 1,
+                         f"应在 5 个 tick 内只报 1 行，实际: {buf.getvalue()!r}")
 
 
 class TestSingleBusReadPerTick(unittest.TestCase):
