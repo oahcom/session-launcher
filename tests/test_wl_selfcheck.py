@@ -84,10 +84,19 @@ cs = mg[mg.find("def confirm_step"):mg.find("def confirm_step")+800]
 if "step_done_ready" not in cs[:600]:
     errors.append("WL-P0-01: confirm_step missing step_done_ready guard")
 
-if errors:
-    print(f"FAIL ({len(errors)}):")
-    for e in errors:
-        print(f"  [ ] {e}")
-    raise SystemExit(1)
-else:
+def test_wl_user_stories():
+    """15 条 WL 检查必须是一条真用例。
+
+    留在模块级副作用里时 pytest 收集到 0 条：检查不进任何 gate，失败只会
+    变成 collection error（不是 failed），在 -x 下甚至整轮零执行。
+    """
+    assert not errors, "\n".join(errors)
+
+
+if __name__ == "__main__":
+    if errors:
+        print(f"FAIL ({len(errors)}):")
+        for e in errors:
+            print(f"  [ ] {e}")
+        raise SystemExit(1)
     print("PASS: All 4 WL user stories validated in code.")
