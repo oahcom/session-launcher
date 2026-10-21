@@ -34,3 +34,22 @@ def _no_production_bus(monkeypatch, tmp_path):
     except ImportError:
         return
     monkeypatch.setattr(_daemon, "BUS_CLIENT", str(stub), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_production_side_effects(monkeypatch, tmp_path):
+    """测试不得杀生产进程、不得改生产计数。
+
+    2026-10-22 审计实测：core.stop("qa") 走 _kill_feed_listener_by_pidfile —— 读生产
+    ~/.hermes/run/feed_listeners/ccs-qa.pid 后 os.kill(SIGTERM) 掉活着的
+    feed_listener（pid 330050）并 unlink 该 pid 文件；core._save_send_fail_streak
+    写生产 send_fail_streak.json（红线 3「三连败」的计数）。
+    """
+    try:
+        import core
+    except ImportError:
+        return
+    monkeypatch.setattr(core, "_kill_feed_listener_by_pidfile", lambda *a, **k: None,
+                        raising=False)
+    monkeypatch.setattr(core, "_SEND_FAIL_STREAK_FILE", tmp_path / "send_fail_streak.json",
+                        raising=False)
