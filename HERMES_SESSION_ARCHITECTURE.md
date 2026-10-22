@@ -1,6 +1,6 @@
 # Hermes Session 协作架构设计 V2
 
-> 版本: 2.0 | 日期: 2026-07-07 | 状态: 部分实施（2026-10-22 按代码复核：Phase 2-3 已落地；Phase 1 未实现、Phase 4 部分——见文末清单勾选状态；数字类指标为当时实测，不可复验）
+> 版本: 2.0 | 日期: 2026-07-07 | 状态: 部分实施（2026-10-22 按代码复核：Phase 2 完成、Phase 3 完成但协作参数已退场、Phase 1 差 feed push、Phase 4 部分——见文末清单勾选状态；数字类指标为当时实测，不可复验）
 
 ---
 
@@ -260,7 +260,7 @@ persona_*.json  → 专业领域 + prompt
 
 ## 九、实施路径
 
-### Phase 1：架构落地（当前）
+### Phase 1：架构落地（部分：feed push 未实现）
 - [ ] bus_protocol.py feed push（**未实现**：写入只落 SQLite，`grep -rn _notify_feed ~/.hermes/scripts` 零命中，见 §4.3）
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
@@ -272,11 +272,12 @@ persona_*.json  → 专业领域 + prompt
 ### Phase 2：CLAUDE.md 独立化（完成）
 - [x] 工作空间目录 `~/ccs-workspaces/`（`ccs workspace create/list`）
 - [x] ccs-monitor CLAUDE.md 存在：`~/ccs-workspaces/ccs-monitor/CLAUDE.md`
-- [x] `--workspace` 参数（`src/ccs.py:70`）；`ccs_start.py` 已删（`2e2af8b`），入口是 `ccs.py`
+- [x] `--workspace` 参数（`src/ccs.py` 的 p_start.add_argument，行号随改动漂，按 grep 定位）；`ccs_start.py` 已删（`2e2af8b`），入口是 `ccs.py`
 - [x] 启动时注入角色知识块（`routing/roles.py`）
 
-### Phase 3：三驱动统一封装（完成）
-- [x] 统一 API：`ccs.py start --drive … --partner …`
+### Phase 3：三驱动统一封装（完成，但协作参数已退场）
+- [x] 统一 API：`ccs.py start --drive …`（`--partner/--bus-track/--auto-restart` 仍在 argparse
+  里，但守护线程随 CLI 进程退出，协作已收编到 pipeline 模板——见 `src/ccs.py` 的 --help）
 - [x] pipeline 侧 `session-pipeline/src/routing/router.py:get_consumers` 自动路由
 - [x] feed listener 随 `start` 自动拉起（`core.py:_start_feed_subprocess`）
 

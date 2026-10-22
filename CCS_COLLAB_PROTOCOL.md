@@ -1,6 +1,10 @@
 # CCS 协作协议 (CCS Collaboration Protocol)
 
 > 规范 CCS 之间的跨 session 协作模式，避免死锁、无人推进、存活失联。
+>
+> **状态（2026-10-22）：已退场，本文仅作历史设计记录。** `--partner/--bus-track/--auto-restart`
+> 的守护线程随 CLI 进程退出，协作能力（存活守护/轮次追踪/返工门禁/循环审计）已收编到
+> session-pipeline 的 workflow 模板，见 `session-pipeline/docs/collab-modes-implementation.md`。
 
 ---
 
