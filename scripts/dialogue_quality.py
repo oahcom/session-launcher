@@ -101,6 +101,9 @@ def measure(cut: float, pattern=None):
                         # "正常→错误"算错误，且与错误块/正常块是否拆在两条记录无关
                         # （按记录累积或按任意块匹配都会让结果随记录边界翻转）。
                         blocks = [t for t in texts if t.strip()]
+                        # 元数据标记优先：实测 3093 条 isApiErrorMessage 记录里 0 条含多块，
+                        # 该形态在生产数据里不出现；这里把它定成"整条记录算错误"的显式规则，
+                        # 由 self-check 的混合用例钉住，避免以后被当成随机行为改来改去。
                         tail = txt
                         tail_err = bool(r.get("isApiErrorMessage")) or bool(
                             blocks and _ERR.match(blocks[-1]))
@@ -154,6 +157,12 @@ def self_check():
             _rec("assistant", "2030-01-01T00:01:41Z",
                  [{"type": "text", "text": "正常交付：见 bus #439998"},
                   {"type": "text", "text": "API Error: upstream connection lost"}]),
+            _rec("user", "2030-01-01T00:01:50Z", "再来4"),
+            # 元数据 + 正常块混排：按规则整条算错误（生产 3093 条里 0 条这种形态）
+            _rec("assistant", "2030-01-01T00:01:51Z",
+                 [{"type": "text", "text": "API Error: upstream connection lost"},
+                  {"type": "text", "text": "正常交付：见 bus #439997"}],
+                 isApiErrorMessage=True),
             _rec("user", "2030-01-01T00:02:00Z", "最后一问"),
             _rec("assistant", "2030-01-01T00:02:01Z", [{"type": "text", "text": "已完成，无新动作。"}]),
             _rec("user", "2030-01-01T00:03:00Z", "This session is being continued from a previous…"),
@@ -163,9 +172,9 @@ def self_check():
             fh.write("\n".join(json.dumps(r) for r in rows))
         t = measure(0.0, os.path.join(td, "-*ccs-workspaces-*"))[0]["probe"]
     assert t["system"] == 1, t           # 会话续接单列
-    assert t["k:task/other"] == 5, t     # tool_result 没有开新回合（错口径会变 6）
-    assert t["zero"] == 4, t             # 3 个无工具轮 + 1 个交付轮
-    assert t["api_error"] == 2, t        # 元数据 1 + "正常→错误" 1；"错误→交付"算交付
+    assert t["k:task/other"] == 6, t     # tool_result 没有开新回合（错口径会变 7）
+    assert t["zero"] == 5, t             # 4 个无工具轮 + 1 个交付轮
+    assert t["api_error"] == 3, t        # 元数据 2（含混排）+ "正常→错误" 1
     assert t["final"] == 2, t            # "错误→正常交付" 与 "已完成" 各一
     assert t["no_evidence"] == 1, t      # 只有"已完成，无新动作"
     print("self-check PASS", dict(t))
