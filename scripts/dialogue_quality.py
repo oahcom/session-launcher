@@ -82,11 +82,10 @@ def measure(cut: float, pattern=None):
                 t0 = _ts(recs[0])
                 if t0 is None or t0 < cut:
                     continue
-                r0, tools, tail, api_err = s[role], 0, None, False
+                r0, tools, tail, tail_err = s[role], 0, None, False
                 for r in recs:
                     if r.get("type") != "assistant":
                         continue
-                    api_err = api_err or bool(r.get("isApiErrorMessage"))
                     c = (r.get("message") or {}).get("content")
                     if not isinstance(c, list):
                         continue
@@ -94,7 +93,12 @@ def measure(cut: float, pattern=None):
                     txt = " ".join(b.get("text") or "" for b in c
                                    if isinstance(b, dict) and b.get("type") == "text").strip()
                     tools += has
-                    tail = None if has else (txt or tail)
+                    if has:
+                        tail, tail_err = None, False
+                    elif txt:
+                        # 错误标记只跟随产出这一条收尾的记录：整回合累积会把
+                        # "先报 API 错误、再正常交付"的回合误判成网关错误。
+                        tail, tail_err = txt, bool(r.get("isApiErrorMessage"))
                 k = _kind(head)
                 r0["k:" + k] += 1
                 r0["tools"] += tools
@@ -106,7 +110,7 @@ def measure(cut: float, pattern=None):
                     r0["k:" + k + ":zero"] += 1
                 if tail is None:
                     continue
-                if api_err or _ERR.search(tail):
+                if tail_err or _ERR.search(tail):
                     r0["api_error"] += 1
                 else:
                     r0["final"] += 1
@@ -168,7 +172,8 @@ if __name__ == "__main__":
     tot = Counter()
     for r in s.values():
         tot.update(r)
-    rt = sum(v for k, v in tot.items() if k.startswith("k:") and not k.endswith(":zero"))
+    rt = sum(v for k, v in tot.items()
+             if k.startswith("k:") and not k.endswith(":zero") and k != "k:system")
     print("cut={} 目录={} 回合={} 系统语料={} 零工具={}({:.1f}%) 收尾={} 无证据={} 网关错误={}".format(
         datetime.fromtimestamp(cut).isoformat(timespec="seconds"), ndirs, rt, tot["system"],
         tot["zero"], 100 * tot["zero"] / max(1, rt), tot["final"],
@@ -181,5 +186,6 @@ if __name__ == "__main__":
         for k in kinds))
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
         print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
-            role, sum(v for k, v in r.items() if k.startswith("k:") and not k.endswith(":zero")),
+            role, sum(v for k, v in r.items() if k.startswith("k:") and not k.endswith(":zero")
+                      and k != "k:system"),
             r["zero"], r["final"], r["no_evidence"]))
