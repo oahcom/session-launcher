@@ -33,7 +33,7 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 1. 协作逻辑在代码层，不在 prompt 文本中
 2. 创建方必须守护被创建方
 3. 轮次追踪必须内置
-4. 死锁超时 > 15 分钟 → 写入 bus 升级给人
+4. 轮次死锁判据 = 300s（`tracker.py` 的 `timeout_sec`）；超时写 bus 升级给人。**没有** 15 分钟档，也没有自动升级器——别按 15 分钟等
 5. 实时推送必须可用
 6. **stdlib only** — 禁止 `import requests` 等第三方库
 7. **禁止 eval()** — 使用安全的 regex 模式匹配替代
