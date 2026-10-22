@@ -268,6 +268,10 @@ python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合
 
 判据只有两个入口：`make quality`（角色对话质量）与 `python3 src/ecosystem_health.py --json`（系统可达性）。
 
+**已排除的三个猜测**（24h 实测，别再往这三个方向查）：
+网关错误**不是**单轮输出过大（错误收尾的工具结果 median 17.4KB vs 正常 14.1KB，>50KB 占比 23% vs 23%）、
+**不是**回合太长（366s vs 341s）、**不是**并发太高（按并发分带的错误率 0.5%（8+ 角色）vs 0.9%（5-7 角色），高并发反而更低）。
+
 `tests/test_wl_selfcheck.py` 断言的是本仓 `src/workflow/client.py` 里的 `kanban_board` /
 `_validate_create_task`（2026-10-22 修：原断言去已不存在的 `pipeline_workflow/client.py` 找，
 4 条全假失败；Gate 已内联为 `_validate_create_task`）。
