@@ -104,6 +104,16 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 `--json` 输出 `summary` 与逐项 `checks`（现取：`python3 src/ecosystem_health.py --json`）；`--ci` 任一检查失败即 exit 1。覆盖三项目目录、模块导入、语法、
 角色校验、路由表、硬编码路径、CCS 会话数、工作空间数（条数随运行态变化，别引用具体数）。
 
+### 3.10 探测成本与 tmux 客户端风暴（2026-10-22 实测）
+
+- `status-role` 走 `routing/partner.py:resolve()`：`is_ccs_running`（`tmux has-session`）+ `_find_pid` + `_output`（`capture-pane`）三次 tmux 往返。tmux 正常时 <0.1s；服务器卡死时每次顶到 5s 超时，`status-role` 实测 20~25s。
+- pipeline `route_all_to_ccs` 对每个角色起一个 `ccs.py status-role` 子进程（10s 超时）→ 19 个角色 ≈ 190s/轮，journal 里成批 `status-role ... timed out after 10 seconds`。
+- 12:45 起 `[ccls_daemon] tmux ls` 连续 30s 超时；12:46 起 `workflow.engine` 每角色 `has-session` 5s 超时；12:52 单次 `has-session` 实测 **101.8s**，随后服务器重启、`tmux ls` 归零，19 个 pane 全消失。
+- 自愈：12:53:47–12:54:26 按需重建 11 个会话并刷新哨兵，中断约 1.5 分钟。`systemctl --user is-active` 全程无感 —— 只查 systemd 抓不到这类事故。
+- 巡检一行：`time tmux list-sessions >/dev/null; tmux ls | wc -l`（>1s 或会话数骤降 = 风暴/重启）。
+- 结论：`status-role` 超时是 tmux 卡死的症状，不是 launcher 的 bug；调大探测超时只会拉长停滞。要减的是「每角色一次 tmux 往返」的调用量（批量化/缓存），不是超时值。
+- 已删：`resolve()` 的 `last_active_sec` —— 它恒为 `0.0`/`-1.0`、全仓无消费者，却每次探测多花一次 `capture-pane`（tmux 卡死时就是 5s）。字段与 `_output` 包装一并删除，`status-role` 少一次 tmux 往返。
+
 ## 4. 协作模式（参数保留，能力已退场）
 
 | 模式 | CLI | 说明 |
