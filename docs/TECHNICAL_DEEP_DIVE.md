@@ -120,11 +120,12 @@ bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（
 ### 3.11 对话质量口径（`scripts/dialogue_quality.py`）
 
 - 唯一真相是**按回合**统计：一条 user 字符串消息 → 下一条 user 字符串之前；`tool_result` 是 list，不算开局。块级统计已被证伪：2026-10-21 把 1,900 条「只带文本」的 assistant 块当低质量，复测 81.5% 是同回合紧接着调工具的过渡句，53% 的回合末块其实是网关错误。
-- 跑：`python3 scripts/dialogue_quality.py --hours 6`（默认 6h/24h 两档）；`--self-check` 只验口径不读转录；`--cut <ISO>` 指定起点。
+- 跑：`python3 scripts/dialogue_quality.py --hours 6`（默认 6h/24h 两档）；`--self-check` 只验口径不读转录；`--cut <ISO>` 指定起点；`--bus` 额外写一条 `performance` fact。
+- 自触发：systemd user `dialogue-quality.timer` 每天 09:10 跑 24h 档，产物落 `~/.hermes/reports/dialogue_quality/<日期>.txt`（journal 里也有）。只有 print 的报告没人看，等于量了没用。
 - 三个分母分开看：零工具回合率（该回合没有任何 `tool_use`）、回合末文本的「无证据」数、网关错误按端点分布。混算会把网关问题记成角色问题 —— 这是上一版判据犯的错。
-- 另一种口径（不是分母）是**产物行**：`~/ccs-workspaces/<role>` 里**窗口内被改过的文件的全文行数**（按内容 md5 去重，跳过 `CLAUDE.md`/`TASKS.md`、`tmp`/`.tmp` 草稿、`.bak` 备份、日志/缓存后缀，二进制整文件不计）。回合率只回答「说了什么」，回答不了「留下什么」。
+- 另一种口径（不是分母）是**产物行**：`~/ccs-workspaces/<role>` 里**窗口内被改过的文件的全文行数**（按内容 md5 去重，按 `\n` 计数所以无尾换行的文件少 1 行；跳过 `CLAUDE.md`/`TASKS.md`、`tmp*`/`.tmp`/`.archive` 草稿、`.bak` 备份、日志/缓存后缀，含 NUL 的二进制整文件不计）。回合率只回答「说了什么」，回答不了「留下什么」。
 - 产物行对**行动型角色**会误判：2026-10-22 实测 24h `devops` 0 行产物、却写了 12 条 bus —— 它的产出是重启/路由/裁决这类动作。所以每角色行同时给 `bus=` 计数。读法：0 行 + 有 bus = 产出在 bus 没有文件；**0 行 + 0 bus 只说明没有可核对的落盘产出** —— 活可能干在代码仓里（`codex-dev` 24h 就是 0 行 0 bus）。
-- 已知偏差（写在代码注释里）：窗口按文件 mtime 切，`cp -p`/解包保留旧 mtime 会漏计（实测 writer 少 46%），老文件在窗口内改一次则整篇计入（`qa/test_cases.md` 只因一次写入就整篇入账）；跳过 `.out/.log` 会让巡检型角色被低估（`maintainer` 的 3,904 行 `.out` 报告不可见）。
+- 已知偏差（写在代码注释里）：窗口按文件 mtime 切，`cp -p`/解包保留旧 mtime 会漏计（实测 writer 少 46%），老文件在窗口内改一次则整篇计入（`qa/test_cases.md` 只因一次写入就整篇入账）；巡检型角色爱把报告写成 `.out`（`maintainer` 24h 有 47 个、3,627 行），其中 3,604 行在 `tmp/` 下 —— 挡住它们的是 `tmp*` 规则，不是 `.out` 规则。
 - 读法边界（2026-10-22 实测）：同 cut 40 分钟内容量摆动 ±7%，所以**只比同一角色、同长度窗口、幅度 >15% 的差异**；不同角色之间不可横比（跳过清单对不同角色影响差 70%）。表只列零工具回合最多的 8 个角色，未列角色约占产物行 43%，别把「没出现在表里」读成没产出。
 - 数字随运行态变化，引用必须带 `--hours`/`--cut`，不要抄本节或别处的具体值。
 

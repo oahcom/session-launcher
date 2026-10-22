@@ -18,6 +18,7 @@ import glob
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 from collections import Counter, defaultdict
@@ -82,7 +83,8 @@ _WS = os.path.expanduser("~/ccs-workspaces")
 _SKIP_NAME = ("CLAUDE.md", "TASKS.md")
 # tmp/.tmp 是草稿区、.bak 是备份：把仓库源码或日志复制进来就能刷高产物行
 # （实测 consumer 里 .tmp/head_guard/step_handler_head.py 1696 行、maintainer tmp/j.txt 2687 行）。
-_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules", "tmp", ".tmp")
+_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules", "tmp", ".tmp",
+             ".archive", ".venv")
 _SKIP_EXT = (".out", ".log", ".jsonl", ".pyc", ".bak")
 
 
@@ -95,7 +97,9 @@ def _artifact_lines(cut: float, root: str = _WS) -> dict:
             continue
         seen, lines = set(), 0
         for dirpath, dirnames, filenames in os.walk(role_dir):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR]
+            # 前缀匹配：tempfile.mkdtemp(prefix="tmp") 造出的 tmpXxx 用精确匹配会漏
+            dirnames[:] = [d for d in dirnames
+                           if d not in _SKIP_DIR and not d.startswith("tmp")]
             for fn in filenames:
                 if fn in _SKIP_NAME or fn.endswith(_SKIP_EXT):
                     continue
@@ -123,9 +127,16 @@ def _bus_writes(cut: float) -> dict:
     import sqlite3
     p = os.path.expanduser("~/.hermes/sister_bus/blackboard.db")
     try:
-        return dict(sqlite3.connect("file:" + p + "?mode=ro", uri=True).execute(
-            "SELECT src, COUNT(*) FROM facts WHERE ts >= ? GROUP BY src", (cut,)))
-    except sqlite3.Error:      # bus 不可读不该把整份报告拖死
+        conn = sqlite3.connect("file:" + p + "?mode=ro", uri=True)
+        try:
+            return dict(conn.execute(
+                "SELECT src, COUNT(*) FROM facts WHERE ts >= ? GROUP BY src", (cut,)))
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        # 不可读不该拖死报告，但静默成 0 会和「真 0 条」混成一个数（并发 BEGIN EXCLUSIVE
+        # 持锁时会阻塞 5s 再抛 database is locked）。所以要留痕。
+        print("bus 读数失败（bus= 不可用）：", e)
         return {}
 
 
@@ -263,7 +274,9 @@ def self_check():
     for name, body, old in (("a.md", "l1\nl2\n", False), ("b.md", "l1\nl2\n", False),
                             ("CLAUDE.md", "x\ny\n", False), ("old.md", "l9\n", True),
                             ("tmp/scratch.md", "s1\ns2\ns3\n", False),
-                            ("c.md.bak", "b1\nb2\n", False)):
+                            ("tmpXxy9/draft.md", "d1\nd2\n", False),
+                            ("c.md.bak", "b1\nb2\n", False),
+                            ("blob.bin", "a\x00b\n", False)):
         p = os.path.join(ws, name)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as fh:
@@ -271,13 +284,13 @@ def self_check():
         if old:
             os.utime(p, (0, 0))
     art = _artifact_lines(1.0, os.path.join(td, "ws"))
-    # 去重后 1 份 2 行；跳过 CLAUDE.md、旧 mtime、tmp/ 草稿、.bak 备份
+    # 去重后 1 份 2 行；跳过 CLAUDE.md、旧 mtime、tmp*/ 草稿、.bak 备份、含 NUL 的二进制
     assert art["role_x"] == 2, art
     assert _lookup({"product_architect": 5}, "product-architect") == 5   # 名字归一（真实一对）
     print("self-check PASS", dict(t), "artifacts=2")
 
 
-def _report(hours, cut: float, s, art=None, bus=None) -> None:
+def _report(hours, cut: float, s, art=None, bus=None) -> dict:
     art, bus = art or {}, bus or {}
     tot = Counter()
     for r in s.values():
@@ -301,15 +314,37 @@ def _report(hours, cut: float, s, art=None, bus=None) -> None:
     errs = sorted(((k, v) for k, v in tot.items() if k.startswith("err:")), key=lambda kv: -kv[1])
     if errs:
         print("网关错误按端点: " + "  ".join("{}={}".format(k[4:], v) for k, v in errs[:6]))
-    _art_tot = sum(art.values())
+    # 只累加有转录的角色：~/ccs-workspaces 下有 24 个无转录的历史/临时目录（3,673 行），
+    # 算进分子而分母没有对应回合，比率就是假的。
+    _art_tot = sum(_lookup(art, role) for role in s)
     print("产物行（落盘、按内容去重）= {}  行/千回合={:.0f}".format(
         _art_tot, 1000.0 * _art_tot / max(1, rt)))
 
-    for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
-        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f} bus={:4d}".format(
-            role, _n_turns(r), r["zero"], r["final"], r["no_evidence"],
-            _lookup(art, role), 1000.0 * _lookup(art, role) / max(1, _n_turns(r)),
-            _lookup(bus, role)))
+    lines = ["{:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f} bus={:4d}".format(
+        role, _n_turns(r), r["zero"], r["final"], r["no_evidence"],
+        _lookup(art, role), 1000.0 * _lookup(art, role) / max(1, _n_turns(r)),
+        _lookup(bus, role))
+        for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]]
+    for line in lines:
+        print("  " + line)
+    return {"hours": hours, "turns": rt, "zero": tot["zero"], "final": tot["final"],
+            "no_evidence": tot["no_evidence"], "api_error": tot["api_error"],
+            "art_lines": _art_tot, "lines": lines}
+
+def _bus_report(rep: dict) -> None:
+    """把结论写一条 bus fact：报告本身只 print，没有消费者就等于自我感动。
+    分类用 performance —— 订阅它的是优化/知识类角色，正是这些数字的使用者。"""
+    import subprocess
+    title = "对话质量 {hours}：回合={t} 零工具={z}({p:.0f}%) 网关错误={e} 产物行={a}".format(
+        t=rep["turns"], z=rep["zero"], p=100.0 * rep["zero"] / max(1, rep["turns"]),
+        e=rep["api_error"], a=rep["art_lines"], hours=rep["hours"])
+    try:
+        subprocess.run([sys.executable, os.path.expanduser("~/.hermes/scripts/bus_client.py"),
+                        "write", "performance", title, "--evidence", "\n".join(rep["lines"]),
+                        "--src", "dialogue_quality"], timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as e:   # 定时任务不该因总线故障掉队
+        print("bus 写入失败：", e)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -317,6 +352,8 @@ if __name__ == "__main__":
                     help="可给多个窗口；默认 6h+24h（24h 会把已结束的事故算成现状）")
     ap.add_argument("--cut", help="ISO 起点(UTC)，给定时忽略 --hours")
     ap.add_argument("--self-check", action="store_true")
+    ap.add_argument("--bus", action="store_true",
+                    help="把结论写一条 bus fact（performance），供优化/知识类角色消费")
     a = ap.parse_args()
     if a.self_check:
         self_check()
@@ -328,4 +365,6 @@ if __name__ == "__main__":
         s, ndirs = measure(c)
         if not ndirs:
             raise SystemExit("找不到角色转录目录 —— 判据基准错了，不看 0 结果")
-        _report("{}h".format(h) if h else "custom", c, s, _artifact_lines(c), _bus_writes(c))
+        rep = _report("{}h".format(h) if h else "custom", c, s, _artifact_lines(c), _bus_writes(c))
+        if a.bus:
+            _bus_report(rep)
