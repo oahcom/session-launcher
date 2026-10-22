@@ -73,7 +73,7 @@
 
 | 层次 | 负责 | 改动频率 | 存储位置 |
 |------|------|---------|---------|
-| 角色定义 | "我是谁" | 角色增删 | `hermes-session-roles/persona_*.json` |
+| 角色定义 | "我是谁" | 角色增删 | `hermes-session-roles/personas/session-roles/persona_*.json` |
 | 工作空间 | "我能做什么、禁止做什么" | 架构变更 | `~/ccs-workspaces/<role>/CLAUDE.md` |
 | 驱动机制 | "怎么执行、何时触发" | 系统优化 | session-launcher + session-pipeline |
 

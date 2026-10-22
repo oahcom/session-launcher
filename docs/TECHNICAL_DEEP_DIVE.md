@@ -56,7 +56,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 只有宿主机判据：`MemAvailable < 1000MB`，或 `swap_free < 128MB 且 avail < 1024MB`。连续启动间隔 8s。
 
 > cgroup 闸门（`memory.current/memory.high ≥ 95%`）已于 2026-10-22 **删除**：它读的
-> `system.slice/session-pipeline.service` 从来不存在（引擎在 `hermes.slice/workflow-engine.service`），
+> `system.slice/session-pipeline.service` 存在但 disabled/inactive，其 cgroup 路径从不出现（引擎在 `hermes.slice/workflow-engine.service`），
 > OSError 被静默吞掉，从未生效；而把路径修对后 hermes.slice 长期 ≥95%（实测 6.13/6.44GB），
 > 会拒掉每一次启动。`Dl+` 卡死的判据是 pane/进程状态（liveness + 对话监控），不是水位百分比。
 
