@@ -10,7 +10,7 @@ bus_client.py write debate "终局"
 
 hermes_bus/client.py:43 publish(to_agent, ...)
   └─ PUBLISH → /tmp/sister_bus_feed.sock
-       └─ socket_server._dispatch（hermes_bus/socket_server.py:144-152）
+       └─ socket_server._dispatch（`~/.hermes/scripts/hermes_bus/socket_server.py:144-152`）
             └─ _push_to("feed") → 所有订阅者
                  └─ feed_listener.py → 检测终局关键词 → 写 bus notice
 ```
@@ -21,7 +21,7 @@ hermes_bus/client.py:43 publish(to_agent, ...)
 |---|---|
 | `Blackboard.write()` 末尾调 `_notify_feed()` 自动推送 | **不存在**：`grep -rn _notify_feed ~/.hermes/scripts` 无命中；`bus_client.py` 无 `PUBLISH` |
 | 服务端在 `hermes_core/sister_bus/socket_server.py` | 实际监听进程是 `~/.hermes/scripts/sister_socket_server.py` → `hermes_bus` 包；`hermes_core/sister_bus/socket_server.py` 只是 5 行兼容 shim |
-| `AGENT_NAMES = (dkk, ssk, cron, feed)` | 属实，见 `hermes_bus/socket_server.py:44` |
+| `AGENT_NAMES = (dkk, ssk, cron, feed)` | 属实，见 `~/.hermes/scripts/hermes_bus/socket_server.py:44` |
 
 结论：**写入不会自动推送**。要推送必须有人显式 `publish('feed', …)`，当前没有调用方
 （`ss -xp | grep feed` 能看到多条 ESTAB 订阅者连接，说明订阅端活着，但不证明有消息；条数随进程重启变化，别写死）。

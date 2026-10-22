@@ -177,7 +177,7 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 bus_client.py write debate "消息"
   └─ INSERT INTO facts (SQLite)        ← 唯一路径
 
-显式 PUBLISH 才推 socket（hermes_bus/socket_server.py:144-152）
+显式 PUBLISH 才推 socket（`~/.hermes/scripts/hermes_bus/socket_server.py:144-152`）
   └─ /tmp/sister_bus_feed.sock → 订阅者（feed_listener.py）
 ```
 
