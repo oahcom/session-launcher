@@ -4,7 +4,7 @@
 
 ## 项目职责
 
-CCS 创建/停止/检测/注入，worktree 管理，哨兵系统，跨角色协作基础设施。
+CCS 创建/停止/检测/注入，哨兵系统，跨角色协作基础设施。（worktree 管理不在本仓：全仓只有 `ecosystem_health.py` 一行排除注释）
 
 ## 核心架构
 
@@ -37,7 +37,7 @@ SESSION_ROLE marker 与 ~/CLAUDE.md 运行时注入已退场：`routing/roles.py
 ```bash
 python3 src/ccs.py start <role>               # 交互式
 python3 src/ccs.py start <role> --no-attach   # 后台（无 --detach 参数）
-python3 src/ccs.py start <role> --partner x   # 带伙伴
+# --partner / --bus-track / --auto-restart 已退场：参数仍在 argparse，守护线程随 CLI 进程退出
 ```
 
 ### 服务检查

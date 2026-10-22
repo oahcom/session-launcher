@@ -124,8 +124,7 @@ src/                                   （ls src 实测）
 ```bash
 # 创建并启动 CCS
 python3 src/ccs.py start <role> [title] [--no-attach] [--prompt "msg"]
-python3 src/ccs.py start <role> --partner <p> --auto-restart --bus-track <cat>
-python3 src/ccs.py start <role> --drive cron|ondemand|goal|infinite
+python3 src/ccs.py start <role> --drive cron|ondemand|goal|infinite   # 仅 ondemand 改变行为
 
 # 控制
 python3 src/ccs.py stop <role>

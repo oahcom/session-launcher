@@ -124,4 +124,5 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 1. 上下文隔离：每角色独占独立 CLAUDE.md（L0 通用→L1 红线→L2 专业→L3 经验）。
 2. 协作逻辑在代码层，不写进 prompt。
 3. 轮次死锁判据 300s（`tracker.py` 的 `timeout_sec`，另有 1800s 节流）：伙伴还活着就向它的 bus cat 写「请继续」，伙伴已死只写 `monitor_audit`；**面向人**的升级在 `partner.py`（300s 存活但不接单 → 「需要人工介入」）。没有 15 分钟档。
+   前提：tracker 只在 `--partner` 下启动（`core.py` 的 `if bus_track and partners:`），该参数已退场 → 现网这条链不跑。
 4. 连续启动间隔 8s；启动前只有宿主机内存判据，见 §3.3。

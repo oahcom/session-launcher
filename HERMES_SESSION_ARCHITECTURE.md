@@ -173,7 +173,7 @@ CCS 启动（session-launcher）
 |------|-----------|-----------|
 | tmux 进程死 | ✅ 立即重启 | — |
 | 超时无响应 | ✅ 重启 | — |
-| bus 死锁 >5min | — | ✅ 判断是思考中还是真死锁 |
+| bus 死锁 >300s | — | ⚠️ 判据在 `tracker.py`，但 tracker 只在 `--partner` 下启动（已退场）→ 现网不触发 |
 | 重复同样输出 | — | ✅ 检测到循环，发新指令打破 |
 | 错误/幻觉 | — | ✅ 检测到异常模式，纠正或重启 |
 | 跨 CCS 死锁 | — | ✅ 双方都在等，仲裁介入 |
@@ -210,7 +210,7 @@ CCS 启动（session-launcher）
 | ccs-send 消息路由 | — | 发送 | ✅ 路由决策 |
 | feed push 推送源 | — | 订阅 | —（只写 SQLite，无推送源） |
 | watchdog 线程 | — | ✅ 负责 | — |
-| turn_tracker 线程 | — | ✅ 负责 | — |
+| turn_tracker 线程 | — | ⚠️ 仅 `--partner` 下启动（`core.py` 的 `if bus_track and partners:`），现网零实例 | — |
 | sentinel 系统 | — | ✅ 负责 | — |
 | 哨兵文件管理 | — | ✅ 负责 | 读取 |
 | CCS 启动/停止 | — | ✅ 负责 | — |
@@ -223,31 +223,9 @@ CCS 启动（session-launcher）
 
 ### ccs-monitor 工作空间
 
-```
-~/ccs-workspaces/ccs-monitor/
-  CLAUDE.md
-    # ccs-monitor
-    ## 身份
-    你是 ccs-monitor，CCS 监控者。
-
-    ## 职责
-    - 检查所有 CCS tmux session 是否存活
-    - 检测 bus 死锁/终局/异常
-    - 发写通知/升级给人
-
-    ## 禁令
-    - 不调 LLM / 不执行业务逻辑
-    - 不退出 / 不休眠超过 60s
-    - 不直接操作 tmux（通过 bus action 指令）
-
-    ## 工作方式（三种驱动）
-    ① 包装循环起 claude，tmux pane 每约 30s 巡检状态
-    ② ccs-send 接收其他 CCS 发来的指令
-    ③ feed push 实时触发
-
-    ## 工作空间
-    ~/ccs-workspaces/ccs-monitor/
-```
+`~/ccs-workspaces/ccs-monitor/CLAUDE.md`（现约 29KB，由 launcher 的 WORKSPACE_SYS 段 + 角色注入生成）——
+内容现取，别抄：`head -40 ~/ccs-workspaces/ccs-monitor/CLAUDE.md`。它由 claude 进程驱动（监控角色本身就是 LLM 会话），
+旧版本这里抄过一份「不调 LLM」的正文，与实现相反。
 
 ### 普通级 CCS
 
@@ -265,7 +243,7 @@ persona_*.json  → 专业领域 + prompt
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
 - [x] watchdog 线程（`daemon=True`，`ops/watchdog.py` 的 `start_watchdog`）
-- [x] turn_tracker 线程（daemon=True，tracker.py 的 `start_tracker`）
+- [x] turn_tracker 线程（daemon=True，`tracker.py` 的 `start_tracker`；**只在 `--partner` 下启动**，`--partner` 退场后现网不跑）
 - [x] sentinel 健康字段
 - [ ] 三方三轮审查（src/ 无承载代码，只有流程约定，不可勾）
 

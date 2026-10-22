@@ -32,9 +32,9 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
 ## 协作红线
 1. 协作逻辑在代码层，不在 prompt 文本中
 2. 创建方必须守护被创建方
-3. 轮次追踪必须内置
-4. 轮次死锁判据 = 300s（`tracker.py` 的 `timeout_sec`，1800s 节流）：伙伴活 → 向它的 bus cat 写「请继续」；伙伴死 → 只写 `monitor_audit`。面向人的升级在 `partner.py`（300s 存活不接单 → 「需要人工介入」）。**没有** 15 分钟档，别按 15 分钟等
-5. 实时推送必须可用
+3. 轮次追踪只在 `--partner` 下启动（`core.py` 的 `if bus_track and partners:`）；`--partner` 已退场 → **现网零 tracker**，别把 300s 提醒当在跑的能力
+4. 若将来恢复：死锁判据 = 300s（`tracker.py` 的 `timeout_sec`，1800s 节流），伙伴活 → 向它的 bus cat 写「请继续」，伙伴死 → 只写 `monitor_audit`。**没有** 15 分钟档，别按 15 分钟等
+5. 实时推送：**未实现**（见 HERMES_SESSION_ARCHITECTURE 的「推送源」一行），写入只落 SQLite
 6. **stdlib only** — 禁止 `import requests` 等第三方库
 7. **禁止 eval()** — 使用安全的 regex 模式匹配替代
 8. 路径使用 `Path.home()` 或环境变量，禁止 `/home/administrator` 硬编码
