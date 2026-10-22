@@ -40,9 +40,8 @@ def _core() -> ModuleType:
     import core as _m
     return _m
 
-def _output(role: str, tail: int = 20, instance_id: int = 0,
-            dry_run: bool = False) -> str:
-    return _core().output(role, tail=tail, instance_id=instance_id, dry_run=dry_run)
+def _output(role: str, tail: int = 20, instance_id: int = 0) -> str:
+    return _core().output(role, tail=tail, instance_id=instance_id)
 
 def _check_wake(role: str, target: str) -> bool:
     return _core().check_wake_permission(role, target)
