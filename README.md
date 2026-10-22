@@ -202,7 +202,7 @@ session-pipeline/src/routing/routes.py:send_to_role → subprocess run([sys.exec
 
 **注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
 
-`CCS_CLI` 定义在 `src/paths.py:46`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
+`CCS_CLI` 定义在 `src/paths.py:45`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
 
 **`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：抽查过大量 completed 步骤，其中相当一部分连 `exit_messages` 都没有（要引用就现查，别抄比例），`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
