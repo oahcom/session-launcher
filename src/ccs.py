@@ -144,8 +144,6 @@ def main():
     p_out.add_argument("--tail", type=int, default=20, help="行数")
     p_out.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
-    p_out.add_argument("--dry-run", action="store_true",
-                        help="只打印将执行的操作，不实际执行")
 
     # ── dashboard ──
     sub.add_parser("dashboard", help="聚合健康仪表板 + 路由拓扑")
@@ -154,8 +152,6 @@ def main():
     p_health = sub.add_parser("health", help="健康检查")
     p_health.add_argument("role", nargs="?", default="",
                           help="角色名（空=全部）")
-    p_health.add_argument("--dry-run", action="store_true",
-                          help="只打印将执行的操作，不实际执行")
 
     # ── register ──
     p_reg = sub.add_parser("register", help="注册手动 tmux 为 CCS")
@@ -341,19 +337,11 @@ def main():
                 sys.exit(1)
 
     elif args.command == "output":
-        if args.dry_run:
-            result = output(args.role, tail=args.tail, instance_id=args.instance_id, dry_run=True)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            print(output(args.role, tail=args.tail, instance_id=args.instance_id))
+        print(output(args.role, tail=args.tail, instance_id=args.instance_id))
 
     elif args.command == "health":
-        if args.dry_run:
-            result = health_check(args.role, dry_run=True)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            result = health_check(args.role)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+        result = health_check(args.role)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif args.command == "dashboard":
         from core import dashboard

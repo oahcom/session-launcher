@@ -1140,14 +1140,12 @@ def _write_bus_notice(role: str, message: str, source: str, reason: str) -> None
     except (OSError, subprocess.TimeoutExpired):
         pass  # 写 bus 失败不阻塞
 
-def output(role: str, tail: int = 20, instance_id: int = 0,
-            dry_run: bool = False) -> str:
+def output(role: str, tail: int = 20, instance_id: int = 0) -> str:
     """截取 CCS tmux pane 的最新输出。"""
     from tmux_ops import make_tmux_name
     return _tmux_output(make_tmux_name(role, instance_id), tail=tail)
 
-def health_check(role: str = "", instance_id: int = 0,
-                 dry_run: bool = False) -> dict:
+def health_check(role: str = "", instance_id: int = 0) -> dict:
     """健康检查：返回所有（或指定）CCS 的存活状态。"""
     if role and instance_id:
         sentinels = [s] if (s := read_sentinel(role, instance_id)) else []
