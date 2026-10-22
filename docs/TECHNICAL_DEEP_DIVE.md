@@ -14,7 +14,7 @@ Session 生态的执行层：起 CCS（Claude Code Session）进程、管生命�
 
 ```
 src/
-├── ccs.py                    # CLI（19 个子命令）
+├── ccs.py                    # CLI（子命令见 --help）
 ├── core.py                   # 生命周期编排（1332 行）
 ├── tmux_ops.py               # tmux 底层 + 内存闸门 + 忙判据
 ├── ccs_socket.py             # CCSClient（Unix Socket 直连）
@@ -35,7 +35,7 @@ src/
 
 ### 3.1 ccs.py — CLI
 
-19 个顶层子命令（`python3 src/ccs.py --help` 实测）：
+顶层子命令（现取：`python3 src/ccs.py --help`）：
 start, config, auto-send, roles, stop, status, send, output, dashboard, health, register,
 p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-knowledge。
 
@@ -51,7 +51,7 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 **send()**：跨角色路由门禁 → 红线 1 拦截 gateway 重启 → 忙判据 → `_tmux_send`；
 tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]`。
 
-### 3.3 内存闸门（tmux_ops.py:111-160）
+### 3.3 内存闸门（tmux_ops.py 的 `_memory_shortage`）
 
 主判据是 pipeline cgroup 的 `memory.current / memory.high ≥ 95%`（撞限时内核同步回收，
 表现为 `Dl+` 卡死，宿主机 MemAvailable 看不出来）；兜底才是 `MemAvailable < 1000MB`，
@@ -85,7 +85,7 @@ bus_timeout / session_id / engine / health。
 - `roles.py`：persona 加载 + workspace KNOWLEDGE 注入 + 禁区校验。
 - `gatekeeper.py`：工作群组矩阵（`setdefault` 保留内置 `"*"`）→ 每小时 5 条红消息限流 → 三源验证。
 - `partner.py`：伙伴客户端（confirm/status/wake 三层）。
-- 禁区与唤醒权限表的唯一出处是 `core.py` 的 `_FORBIDDEN_MAP` / `_WAKE_PERMISSION_MAP`，本文件不复制。
+- 禁区与唤醒权限表的唯一出处是 `routing/roles.py` 的 `_FORBIDDEN_MAP`（:59）/ `_WAKE_PERMISSION_MAP`（:96），`core.py` 只是从 roles 导入，本文件不复制。
 
 ### 3.9 ecosystem_health.py
 
