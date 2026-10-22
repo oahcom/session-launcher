@@ -71,8 +71,6 @@ def main():
                          help="工作空间名（默认同 role），设置后 tmux 在对应 ~/ccs-workspaces/<name>/ 启动")
     p_start.add_argument("--drive", default="",
                          help="驱动方式: loop / feed / ondemand（默认从 persona JSON 读取）")
-    p_start.add_argument("--feed-cat", default="",
-                         help="feed push 监听的 bus 分类（如 debate），实时接收新消息")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
     p_start.add_argument("--instance-id", type=int, default=0,
@@ -249,7 +247,6 @@ def main():
                 bus_track=args.bus_track,
                 bus_timeout=args.bus_timeout,
                 drive=args.drive,
-                feed_cat=args.feed_cat,
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,
@@ -270,8 +267,7 @@ def main():
                     bus_track=args.bus_track,
                     bus_timeout=args.bus_timeout,
                     drive=args.drive,
-                    feed_cat=args.feed_cat,
-                    workspace=args.workspace,
+                        workspace=args.workspace,
                     no_auto_send=args.no_auto_send,
                     instance_id=i,
                 ))
@@ -292,7 +288,6 @@ def main():
                 bus_track=args.bus_track,
                 bus_timeout=args.bus_timeout,
                 drive=args.drive,
-                feed_cat=args.feed_cat,
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,

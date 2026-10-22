@@ -150,7 +150,6 @@ class StartOptions:
     bus_track: str = ""
     bus_timeout: int = 300
     drive: str = ""
-    feed_cat: str = ""
     workspace: str = ""
     no_auto_send: bool = False
     instance_id: int = 0
@@ -310,7 +309,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
           auto_restart: bool = False, bus_track: str = "",
           bus_timeout: int = 300,
-          drive: str = "", feed_cat: str = "",
+          drive: str = "",
           workspace: str = "",
           no_auto_send: bool = False,
           instance_id: int = 0,
@@ -337,7 +336,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         o = StartOptions(
             role=role, title=title, detach=detach, init_prompt=init_prompt,
             partners=partners, auto_restart=auto_restart, bus_track=bus_track,
-            bus_timeout=bus_timeout, drive=drive, feed_cat=feed_cat,
+            bus_timeout=bus_timeout, drive=drive,
             workspace=workspace, no_auto_send=no_auto_send,
             instance_id=instance_id, dry_run=dry_run,
         )
@@ -458,7 +457,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
 
     # 9-10 守护线程编排：watchdog/tracker/feed listener/feed 子进程
     _start_monitoring_threads(o.role, tmux_name, o.partners, o.instance_id,
-                              o.detach, o.auto_restart, o.feed_cat, drive,
+                              o.detach, o.auto_restart, drive,
                               bus_track, o.bus_timeout)
 
     result = {
@@ -795,7 +794,7 @@ def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None
 
 def _start_monitoring_threads(role: str, tmux_name: str, partners: list[str],
                               instance_id: int, detach: bool, auto_restart: bool,
-                              feed_cat: str, drive: str, bus_track: str,
+                              drive: str, bus_track: str,
                               bus_timeout: int) -> None:
     """步骤 9-10：watchdog/tracker/feed 子进程编排。"""
     # 9. 启动守护线程（仅 detach 模式）
