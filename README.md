@@ -187,6 +187,8 @@ ccs.py send-direct alice bob "hi"
 
 **认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
 
+**现状（2026-10-22 实测）**：`ls /tmp/sister_bus_*` 只有 `cron/dkk/feed/ssk` 四条，没有 `_ccs.sock`，也没有进程监听它 —— `send-direct` 目前不可用；pipeline 侧口径一致（`session-pipeline/docs/SYSTEM_LANDSCAPE.md`「无单一 `_ccs.sock`」）。上面的链路是设计形态，不是现役。
+
 ### 6. Bus Push 实时推送
 
 ```
@@ -218,7 +220,7 @@ session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消�
 subprocess.run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
 ```
 
-**注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
+**注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；现查子命令：`start` / `stop` / `send` / `status-role`（`python3 src/ccs.py --help` 为准；`partner`、`check-wake` 已不存在）。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
 
 `CCS_CLI` 定义在 `src/paths.py:46`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
 
