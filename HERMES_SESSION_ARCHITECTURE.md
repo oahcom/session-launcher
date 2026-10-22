@@ -127,7 +127,7 @@ bus_client.py write → INSERT (SQLite facts)　← 唯一写入路径，不推�
 |------|------|
 | 角色定义 | persona **无** `watch_cats` 字段（全库 grep 0 命中）；分类来自启动参数 `--feed-cat` |
 | 推送源 | **不存在**：`grep -rn _notify_feed ~/.hermes/scripts` 无命中，写入只落 SQLite |
-| 广播 | `hermes_bus/socket_server.py:44` 有 `feed` agent，但只在显式 `PUBLISH` 时 `_push_to`（:144-152） |
+| 广播 | `~/.hermes/scripts/hermes_bus/socket_server.py:44` 有 `feed` agent，但只在显式 `PUBLISH` 时 `_push_to`（:144-152） |
 | 接收 | `session-launcher/feed_listener.py` → 检测关键词 → 写 notice |
 
 ### 三驱动统一流程
@@ -277,7 +277,7 @@ persona_*.json  → 专业领域 + prompt
 
 ### Phase 3：三驱动统一封装（完成）
 - [x] 统一 API：`ccs.py start --drive … --feed-cat … --partner …`
-- [x] pipeline 侧 `routing/router.py:get_consumers` 自动路由
+- [x] pipeline 侧 `session-pipeline/src/routing/router.py:get_consumers` 自动路由
 - [x] feed listener 随 `start` 自动拉起（`core.py:_start_feed_subprocess`）
 
 ### Phase 4：LLM 驾驭工程（部分）
