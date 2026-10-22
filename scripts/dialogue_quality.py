@@ -97,12 +97,13 @@ def measure(cut: float, pattern=None):
                     if has:
                         tail, tail_err = None, False
                     elif txt:
-                        # 错误标记只跟随产出收尾的那条记录，且逐块判：整回合累积会把
-                        # "先报错误后正常交付"误判；只看拼接串行首会漏掉"正常块在前、
-                        # 错误块在后"的同记录多块形态。
+                        # 判据只认**最后一块非空文本**：同回合里"错误→正常交付"最终算交付、
+                        # "正常→错误"算错误，且与错误块/正常块是否拆在两条记录无关
+                        # （按记录累积或按任意块匹配都会让结果随记录边界翻转）。
+                        blocks = [t for t in texts if t.strip()]
                         tail = txt
-                        tail_err = bool(r.get("isApiErrorMessage")) or any(
-                            _ERR.match(t) for t in texts if t.strip())
+                        tail_err = bool(r.get("isApiErrorMessage")) or bool(
+                            blocks and _ERR.match(blocks[-1]))
                 k = _kind(head)
                 r0["k:" + k] += 1
                 r0["tools"] += tools
@@ -114,7 +115,7 @@ def measure(cut: float, pattern=None):
                     r0["k:" + k + ":zero"] += 1
                 if tail is None:
                     continue
-                if tail_err or _ERR.search(tail):
+                if tail_err:      # 判据在上面按"最后一块"算好了，这里不再看整串行首
                     r0["api_error"] += 1
                 else:
                     r0["final"] += 1
@@ -144,10 +145,15 @@ def self_check():
                  [{"type": "text", "text": "Prompt is too long · compaction failed"}],
                  isApiErrorMessage=True),
             _rec("user", "2030-01-01T00:01:30Z", "再来2"),
-            # 同一条记录里"错误块在前、正常块在后"：只看拼接串行首会误判
+            # 同记录"错误→正常交付"：最终算交付（结果不随记录边界翻转）
             _rec("assistant", "2030-01-01T00:01:31Z",
                  [{"type": "text", "text": "API Error: upstream connection lost"},
                   {"type": "text", "text": "正常交付：见 bus #439999"}]),
+            _rec("user", "2030-01-01T00:01:40Z", "再来3"),
+            # 反向：同记录"正常→错误" 最终算网关错误
+            _rec("assistant", "2030-01-01T00:01:41Z",
+                 [{"type": "text", "text": "正常交付：见 bus #439998"},
+                  {"type": "text", "text": "API Error: upstream connection lost"}]),
             _rec("user", "2030-01-01T00:02:00Z", "最后一问"),
             _rec("assistant", "2030-01-01T00:02:01Z", [{"type": "text", "text": "已完成，无新动作。"}]),
             _rec("user", "2030-01-01T00:03:00Z", "This session is being continued from a previous…"),
@@ -157,9 +163,10 @@ def self_check():
             fh.write("\n".join(json.dumps(r) for r in rows))
         t = measure(0.0, os.path.join(td, "-*ccs-workspaces-*"))[0]["probe"]
     assert t["system"] == 1, t           # 会话续接单列
-    assert t["k:task/other"] == 4, t     # tool_result 没有开新回合（错口径会变 5）
-    assert t["zero"] == 3, t             # 两个网关错误轮 + "已完成"轮；续接轮不算
-    assert t["api_error"] == 2, t        # 元数据 1 + 同记录错误块 1（都不算正文）
+    assert t["k:task/other"] == 5, t     # tool_result 没有开新回合（错口径会变 6）
+    assert t["zero"] == 4, t             # 3 个无工具轮 + 1 个交付轮
+    assert t["api_error"] == 2, t        # 元数据 1 + "正常→错误" 1；"错误→交付"算交付
+    assert t["final"] == 2, t            # "错误→正常交付" 与 "已完成" 各一
     assert t["no_evidence"] == 1, t      # 只有"已完成，无新动作"
     print("self-check PASS", dict(t))
 
