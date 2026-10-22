@@ -201,7 +201,7 @@ cat ~/.hermes/run/ccs-sentinels/<对方角色>.json | python3 -c "import sys,jso
 ### 6.0 Bus Push 架构
 
 数据流与证据见 `BUS_PUSH_ARCH.md`（唯一出处）。此处只留一条现状：写入路径无推送调用，
-feed socket 仅在显式 `PUBLISH` 时广播；`feed_listener` 断线 5s 自动重连（`feed_listener.py:171-198`），
+feed socket 仅在显式 `PUBLISH` 时广播；`feed_listener` 断线 5s 自动重连（`feed_listener.py:179-217`），
 socket 不可用不影响 SQLite 写入。
 
 **feed_listener.py 用法：**

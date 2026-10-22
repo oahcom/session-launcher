@@ -37,7 +37,7 @@ hermes_bus/client.py:43 publish(to_agent, ...)
 
 ## feed_listener 行为（可验证）
 
-- 连接失败/断线 → 5s 重试（`feed_listener.py:171-198`）。
+- 连接失败/断线 → 5s 重试（`feed_listener.py:179-217`）。
 - `--tmux-target <ccs-role>` 时按 `~/.hermes/run/feed_listeners/<tmux>.pid` 做单实例锁（`:140-174`）。
 - 注入用两次 `tmux send-keys`：`-l` 发正文，再单独发 `Enter`（`:120-127`）。
 - 角色忙（`_role_is_busy`）时跳过注入，事实本身仍在 bus 里。

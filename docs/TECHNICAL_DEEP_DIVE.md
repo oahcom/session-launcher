@@ -45,7 +45,7 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 
 **start()**：校验角色 → 查重（已在跑则不重复创建）→ `tmux_ops._memory_shortage` 闸门 →
 建 `~/ccs-workspaces/<role>` → 读 persona → 注入 KNOWLEDGE 块 → 起 tmux + claude →
-等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
+等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker 线程与 feed_listener 子进程。
 
 **stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
 `--dry-run` 只返回计划（`core.py` 的 `if dry_run:` 预检块，行号随改动漂，按 grep 定位）。`output`/`health` **没有** `--dry-run`：那两个参数
@@ -63,7 +63,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 只有宿主机判据：`MemAvailable < 1000MB`，或 `swap_free < 128MB 且 avail < 1024MB`。连续启动间隔 8s。
 
 > cgroup 闸门（`memory.current/memory.high ≥ 95%`）已于 2026-10-22 **删除**：它读的
-> `system.slice/session-pipeline.service` 从来不存在（引擎在 `hermes.slice/workflow-engine.service`），
+> `system.slice/session-pipeline.service` 存在但 disabled/inactive，其 cgroup 路径从不出现（引擎在 `hermes.slice/workflow-engine.service`），
 > OSError 被静默吞掉，从未生效；把路径修对也不成立 —— 同一个 slice 一天内采到
 > 84% / 93~94% / 95.2%，负载一动就跨过阈值，命中与否取决于采样时刻。`Dl+` 卡死没有水位判据能抓，
 > 抓它的是 pane 空白 + 无对话增量（`conversation_monitor` / `_looks_stuck`）。
@@ -71,7 +71,8 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 ### 3.4 ops/sentinel.py — 哨兵
 
 **会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，现算 `ls ~/.hermes/run/ccs-sentinels | wc -l`），
-健康字段另落 `~/.hermes/run/ccs-health/<role>.json`。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
+健康字段写在**同一个**哨兵文件的 `health` 对象里（`ops/sentinel.py:97`），不是另落一处；
+`~/.hermes/run/ccs-health/<role>.json` 是 pipeline `survival_monitor` 写的存活探针（键只有 `survival_*`）。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
 bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 tmux + 角色 JSON 派生，不读这两个目录。
 
@@ -88,7 +89,7 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 
 ### 3.7 ccs_socket.py — 直连
 
-`CCSClient`（`:34`）：SUBSCRIBE/PUBLISH，JSON-over-newline，走 `/tmp/sister_bus_ccs.sock`。
+`CCSClient`（`:34`）：SUBSCRIBE/PUBLISH，JSON-over-newline，走 `/tmp/sister_bus_ccs.sock`（该文件当前不存在、无监听，见 §4 直连行）。
 无认证——同机进程可任意 PUBLISH。
 
 ### 3.8 routing/ — 角色、门禁、伙伴
@@ -100,8 +101,8 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 
 ### 3.9 ecosystem_health.py
 
-`--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
-角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。实测全 pass、exit=0（条数随运行态变化，别引用具体数）。
+`--json` 输出 `summary` 与逐项 `checks`（现取：`python3 src/ecosystem_health.py --json`）；`--ci` 任一检查失败即 exit 1。覆盖三项目目录、模块导入、语法、
+角色校验、路由表、硬编码路径、CCS 会话数、工作空间数（条数随运行态变化，别引用具体数）。
 
 ## 4. 协作模式（参数保留，能力已退场）
 
@@ -110,7 +111,7 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 | 主从 | `--partner role --auto-restart` | 参数仍被接受，但 watchdog 是 CLI 进程内的 daemon 线程：`start()` 返回即消失 |
 | 对等 | `--bus-track category` | 同上（tracker 线程），轮次追踪实际由 pipeline 模板的 exit_condition 承担 |
 | 仲裁 | `--partner A --partner B --bus-track X` | 同上 |
-| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`，当前无监听（见 §5） |
+| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`；该文件不存在、无监听（`ls /tmp/sister_bus_*` 只有 cron/dkk/feed/ssk） |
 
 ## 5. 工作流
 

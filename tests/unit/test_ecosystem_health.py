@@ -128,6 +128,31 @@ class TestCheckHardcodedPaths:
             assert "hard.py" in item.detail
 
 
+class TestSentinelsTmuxGate:
+    """tmux 无应答时健康检查必须报红，且不得逐会话空转（每个 3s）。"""
+
+    @patch("ecosystem_health._pane_has_claude")
+    @patch("ecosystem_health._tmux_alive", return_value=False)
+    @patch("ops.sentinel.list_sentinels")
+    def test_tmux_unreachable_fails_fast(self, mock_list, mock_alive, mock_pane):
+        from ecosystem_health import _check_sentinels
+        mock_list.return_value = [type("S", (), {"tmux_session": "ccs-qa"})(),
+                                  type("S", (), {"tmux_session": "ccs-pm"})()]
+        item = _check_sentinels()
+        assert item.passed is False, "全部探测失败时不得报绿（假绿是老问题）"
+        assert "无应答" in item.detail and "不可判定" in item.detail
+        mock_pane.assert_not_called()   # 不逐会话空转
+
+    @patch("ecosystem_health._pane_has_claude", return_value=True)
+    @patch("ecosystem_health._tmux_alive", return_value=True)
+    @patch("ops.sentinel.list_sentinels")
+    def test_tmux_alive_probes_each_session(self, mock_list, mock_alive, mock_pane):
+        from ecosystem_health import _check_sentinels
+        mock_list.return_value = [type("S", (), {"tmux_session": "ccs-qa"})()]
+        assert _check_sentinels().passed is True
+        mock_pane.assert_called_once_with("ccs-qa")
+
+
 class TestCheckAll:
     @patch("ecosystem_health.subprocess.run")
     def test_check_all_returns_report(self, mock_run):
