@@ -212,9 +212,10 @@ SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
+发消息的是 `session-pipeline/src/routing/routes.py:route_to_ccs` 里那个内嵌的 `_send()`（第 444 行）：
+
 ```
-session-pipeline/src/routing/routes.py:444 的 _send → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
-（send_to_role 已迁到 src/pipeflow/role_lifecycle.py:911，不在 routes.py）
+subprocess.run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
 ```
 
 **注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
