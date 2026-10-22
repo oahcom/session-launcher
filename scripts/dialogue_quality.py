@@ -22,7 +22,16 @@ import os
 import re
 from collections import Counter, defaultdict
 
-_ERR = re.compile(r"^\s*(API Error|upstream connection lost)")
+# 错误收尾：只按 "API Error" 开头会漏掉 Claude Code 另外几种致命文本 ——
+# 实测 7d 里 "Prompt is too long"、"Please run /login · API Error: 403" 都被当成
+# "角色没给证据"，把 coordinator 的干净收尾证据率压到 61%（假的，是判据的锅）。
+_ERR = re.compile(r"^\s*(API Error|upstream connection lost|Prompt is too long"
+                  r"|Please run /login|Fatal error)")
+# 正当待机 vs 空洞完成：都没证据，但性质相反 —— 待机是事实陈述（当前确实无任务），
+# "已完成，无新动作。" 是**声称完成**却拿不出东西（qa 提醒风暴那批就是它）。
+_IDLE = re.compile(r"(待命|待机|无待处理任务|无新任务|无新证据|Standing by|no task content"
+                   r"|非 ?\w+ 职责|不越界)")
+_HOLLOW = re.compile(r"(已完成|完成|done)[^\n]{0,12}(无新动作|没有新动作)")
 # 注入类别（回合质量必须按「喂了什么」分层看：2026-10-22 实测类别间差距 2.9%~91.9%）
 _KINDS = (("api_nudge", "API 错误中断"), ("reminder", "【用户意图提醒"),
           ("notice", "[notice"), ("workflow", "[workflow]"),
@@ -66,6 +75,46 @@ def _turns(path):
     if cur:
         out.append((head, cur))
     return out
+
+# ── 产物行（落盘口径） ───────────────────────────────────────────────
+# WHY 单列：回合指标回答「说了什么」，回答不了「留下什么」。2026-10-22 实测 24h：
+# devops 591 回合 / 0 行产物、coordinator 1938 回合 / 77 行、optimizer 657 回合 / 119 行 ——
+# 只看回合率它们都"正常"，只有落盘口径能看出空转。窗口与 transcripts 同源。
+_WS = os.path.expanduser("~/ccs-workspaces")
+_SKIP_NAME = ("CLAUDE.md", "TASKS.md")
+_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules")
+_SKIP_EXT = (".out", ".log", ".jsonl", ".pyc")
+
+
+def _artifact_lines(cut: float, root: str = _WS) -> dict:
+    """{role: 去重后的产物行数}。按内容 md5 去重：同一份文件改个名不算两份产出。"""
+    import hashlib
+    out = {}
+    for role_dir in sorted(glob.glob(root + "/*")):
+        if not os.path.isdir(role_dir):
+            continue
+        role = os.path.basename(role_dir)
+        seen, lines = set(), 0
+        for dirpath, dirnames, filenames in os.walk(role_dir):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR]
+            for fn in filenames:
+                if fn in _SKIP_NAME or fn.endswith(_SKIP_EXT):
+                    continue
+                p = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getmtime(p) < cut:
+                        continue
+                    data = open(p, "rb").read()
+                except OSError:
+                    continue
+                h = hashlib.md5(data).hexdigest()
+                if h in seen:
+                    continue
+                seen.add(h)
+                lines += data.count(b"\n")
+        out[role] = lines
+    return out
+
 
 
 def measure(cut, pattern=PAT):
@@ -121,6 +170,9 @@ def measure(cut, pattern=PAT):
                     r0["err:%s:%s" % (_ek, _who)] += 1
                     continue
                 r0["final_text"] += 1
+                if _IDLE.search(tail) and not _HOLLOW.search(tail):
+                    r0["final_idle"] += 1     # 正当待机：没证据但不是"声称完成"
+                    continue
                 if not _EVID.search(tail):
                     r0["final_no_evidence"] += 1
     return s
@@ -156,17 +208,31 @@ def self_check():
     assert t["zero_tool_turns"] == 2, t
     assert t["final_api_error"] == 1, t           # 网关错误单列
     assert t["final_no_evidence"] == 1, t         # 只有"已完成，无新动作"算无证据收尾
-    print("self-check PASS", dict(t))
+    # 产物行口径自证：改名副本按内容去重、CLAUDE.md 不计、旧 mtime 不计。
+    ws = "/tmp/_dq_selfcheck/ws/role_x"
+    os.makedirs(ws, exist_ok=True)
+    for name, body, old in (("a.md", "l1\nl2\n", False), ("b.md", "l1\nl2\n", False),
+                            ("CLAUDE.md", "x\ny\n", False), ("old.md", "l9\n", True)):
+        p = os.path.join(ws, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        if old:
+            os.utime(p, (0, 0))
+    got = _artifact_lines(1.0, "/tmp/_dq_selfcheck/ws").get("role_x")
+    assert got == 2, f"产物行口径错：期望 2（副本去重+CLAUDE.md 跳过+旧文件跳过），实得 {got}"
+    print("self-check PASS", dict(t), "artifacts=2")
 
 
-def _report(hours, cut: str, s) -> None:
+def _report(hours, cut: str, s, art=None) -> None:
+    art = art or {}
     tot = Counter()
     for r in s.values():
         tot.update(r)
-    print("[{}h] cut={} 回合={} 零工具回合={} ({:.1f}%) 收尾文本={} 无证据={} 网关错误={}".format(
+    print("[{}h] cut={} 回合={} 零工具回合={} ({:.1f}%) 收尾文本={} 无证据={} 待机={} 网关错误={}".format(
         hours, cut, tot["turns"], tot["zero_tool_turns"],
         100 * tot["zero_tool_turns"] / max(1, tot["turns"]),
-        tot["final_text"], tot["final_no_evidence"], tot["final_api_error"]))
+        tot["final_text"], tot["final_no_evidence"], tot["final_idle"],
+        tot["final_api_error"]))
     kinds = sorted({kk[5:] for r in s.values() for kk in r
                     if kk.startswith("kind:") and not kk.endswith(":zero")},
                    key=lambda kk: -tot["kind:" + kk])
@@ -182,9 +248,26 @@ def _report(hours, cut: str, s) -> None:
     if errs:
         print("网关错误按端点: " + "  ".join("{}={}".format(k, v)
                                           for k, v in errs.most_common(6)))
-    for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero_tool_turns"])[:8]:
-        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
-            role, r["turns"], r["zero_tool_turns"], r["final_text"], r["final_no_evidence"]))
+    _tot_art = sum(art.values())
+    print("产物行（落盘、按内容去重）= {}  行/千回合={:.0f}".format(
+        _tot_art, 1000.0 * _tot_art / max(1, tot["turns"])))
+
+    # 角色名两套写法：转录目录用连字符（product-architect），工作区目录用下划线
+    # （product_architect）。不互相兜底时整列全是 0 —— 第一版就这么错过一次。
+    def _art_for(role):
+        for k in (role, role.replace("-", "_"), role.replace("_", "-")):
+            if k in art:
+                return art[k]
+        return 0
+
+    def _rate(kv):
+        role, r = kv
+        return 1000.0 * _art_for(role) / max(1, r["turns"])
+    # 按「每千回合产物行」升序：空转的角色排最前，这是这份报告唯一按产出排序的榜。
+    for role, r in sorted(s.items(), key=_rate)[:8]:
+        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f}".format(
+            role, r["turns"], r["zero_tool_turns"], r["final_text"],
+            r["final_no_evidence"], _art_for(role), _rate((role, r))))
 
 
 if __name__ == "__main__":
@@ -202,4 +285,6 @@ if __name__ == "__main__":
                  [(h, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - h * 3600)))
                   for h in a.hours])
         for h, cut in pairs:
-            _report(h or "custom", cut, measure(cut))
+            import calendar
+            _ts = calendar.timegm(time.strptime(cut, "%Y-%m-%dT%H:%M:%S"))
+            _report(h or "custom", cut, measure(cut), _artifact_lines(_ts))
