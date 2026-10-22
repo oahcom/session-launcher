@@ -81,7 +81,7 @@
 
 `core.py:490-508` 每次 start 都 `workspace_create` + `inject_role_knowledge_into_workspace`，
 `ops/workspace.py:57-78` 写 WORKSPACE_SYS 块 —— 每个角色都有一份独立的
-`~/ccs-workspaces/<role>/CLAUDE.md`（实测 45 个 ws 目录）。所谓"系统级/普通级"在代码里
+`~/ccs-workspaces/<role>/CLAUDE.md`（目录数现算 `ls ~/ccs-workspaces | wc -l`；2026-10-22 为 47）。所谓"系统级/普通级"在代码里
 **没有分支**：区别只是角色卡内容不同，注入路径完全相同。
 
 全局 `~/.claude/CLAUDE.md` 会被 claude 当作 cwd 上层继承，属于底稿；角色身份以
@@ -267,7 +267,7 @@ persona_*.json  → 专业领域 + prompt
 - [x] watchdog 线程（`daemon=True`，`ops/watchdog.py` 的 `start_watchdog`）
 - [x] turn_tracker 线程（daemon=True，tracker.py 的 `start_tracker`）
 - [x] sentinel 健康字段
-- [x] 三方三轮审查
+- [ ] 三方三轮审查（src/ 无承载代码，只有流程约定，不可勾）
 
 ### Phase 2：CLAUDE.md 独立化（完成）
 - [x] 工作空间目录 `~/ccs-workspaces/`（`ccs workspace create/list`）
@@ -279,9 +279,10 @@ persona_*.json  → 专业领域 + prompt
 - [x] 统一 API：`ccs.py start --drive …`（`--partner/--bus-track/--auto-restart` 仍在 argparse
   里，但守护线程随 CLI 进程退出，协作已收编到 pipeline 模板——见 `src/ccs.py` 的 --help）
 - [x] pipeline 侧 `session-pipeline/src/routing/router.py:get_consumers` 自动路由
-- [x] feed listener 随 `start` 自动拉起（`core.py:_start_feed_subprocess`）
+- [x] feed listener 随 `start` 自动拉起——**仅 drive≠ondemand**（`_start_monitoring_threads`；
+  19 个 persona 里 12 个是 ondemand，它们没有 listener）
 
 ### Phase 4：LLM 驾驭工程（部分）
-- [x] ccs-monitor CLAUDE.md 决策树
-- [ ] 审计 bus cat=monitor_audit（未验证：无独立消费者）
+- [ ] ccs-monitor CLAUDE.md 决策树（真实文件无此章节，只有身份/职责/禁令段）
+- [ ] 审计 bus cat=monitor_audit（写入已实现：`watchdog.py:77`、`tracker.py:55`；缺消费者）
 - [x] 降级策略：watchdog/tracker 不依赖 LLM

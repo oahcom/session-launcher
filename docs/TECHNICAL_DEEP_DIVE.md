@@ -95,14 +95,14 @@ bus_timeout / session_id / engine / health。
 `--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
 角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。实测全 pass、exit=0（条数随运行态变化，别引用具体数）。
 
-## 4. 协作模式
+## 4. 协作模式（参数保留，能力已退场）
 
 | 模式 | CLI | 说明 |
 |------|-----|------|
-| 主从 | `--partner role --auto-restart` | 守护伙伴，挂了自动重启 |
-| 对等 | `--bus-track category` | 追踪 bus 轮次，超时提醒 |
-| 仲裁 | `--partner A --partner B --bus-track X` | 守护 + 追踪 |
-| 直连 | `send-direct from to msg` | 不走 bus，Unix Socket |
+| 主从 | `--partner role --auto-restart` | 参数仍被接受，但 watchdog 是 CLI 进程内的 daemon 线程：`start()` 返回即消失 |
+| 对等 | `--bus-track category` | 同上（tracker 线程），轮次追踪实际由 pipeline 模板的 exit_condition 承担 |
+| 仲裁 | `--partner A --partner B --bus-track X` | 同上 |
+| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`，当前无监听（见 §5） |
 
 ## 5. 工作流
 
@@ -114,5 +114,5 @@ bus_timeout / session_id / engine / health。
 
 1. 上下文隔离：每角色独占独立 CLAUDE.md（L0 通用→L1 红线→L2 专业→L3 经验）。
 2. 协作逻辑在代码层，不写进 prompt。
-3. 死锁超时 300s 提醒；> 15 分钟写 bus 升级给人。
+3. 死锁 300s 提醒；同一角色 30 分钟内不重复（`tracker.py:98` 的 1800s 节流）。**没有更高级的自动升级档**——跨角色升级走 pipeline 模板的超时链。
 4. 连续启动间隔 8s；内存/cgroup 闸门见 §3.3。

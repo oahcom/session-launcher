@@ -183,7 +183,7 @@ ccs.py send-direct alice bob "hi"
             └─ PUBLISH → bob (<1ms)
 ```
 
-**协议**：JSON-over-newline，支持 SUBSCRIBE/PUBLISH/PING/STATS
+**协议**：JSON-over-newline。客户端（`ccs_socket.py`）只发 SUBSCRIBE / PUBLISH；PING / STATS 只在服务端（`~/.hermes/scripts/hermes_bus/socket_server.py`）实现
 
 **认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
 

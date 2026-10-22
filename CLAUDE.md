@@ -15,7 +15,7 @@ ccs.py start <role>  → 读取 persona JSON + prompt 模板
                      → inject_role_knowledge_into_workspace() 写入角色知识
                      → tmux send 发送初始任务指令
                      → 写入哨兵
-                     → 启动 watchdog/turn_tracker
+                     → 启动 watchdog/turn_tracker（CLI 进程内 daemon 线程：start 返回即消失）（CLI 进程内 daemon 线程：start 返回即消失）
 ```
 
 ## 关键路径
@@ -43,5 +43,6 @@ python3 src/ccs.py start <role> --partner x   # 带伙伴
 ### 服务检查
 ```bash
 python3 src/ccs.py status          # 不带参数；单角色用 status-role <role>
-python3 src/ecosystem_health.py --json                # 实测 115/115 全 pass、exit=0（2026-10-22）
+python3 src/ecosystem_health.py --json                # 只打 summary（当前 114/115，wf:engine 随 pipeline 侧 import 抖动）
+python3 src/ecosystem_health.py --ci                  # 要门禁 exit code 用这个
 ```
