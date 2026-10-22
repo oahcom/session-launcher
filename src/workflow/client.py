@@ -64,7 +64,10 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
         m = re.search(r"queued=(\d+)", text)
         if not m:
             return "zombie_stall"        # 旧日志没有 queued 字段
-        return "zombie_stall_queue" if int(m.group(1)) > 0 else "zombie_stall_silent"
+        # 名字不叫 silent：抽读 10 例 queued=0 的回收，10/10 的角色在窗口内一直在调工具
+        # （57~141 条 assistant 消息），是「干了活没按契约回传」而不是没动。这里只敢说
+        # 「没有等待角色的信号」。真静默要用转录探针判（见 production_audit_monitor）。
+        return "zombie_stall_queue" if int(m.group(1)) > 0 else "zombie_stall_no_wait"
     if "无活跃工作流" in text:
         return "starvation"
     if "角色不响应" in text:
