@@ -10,6 +10,7 @@ lint:
 
 check:
 	PYTHONPATH=src python3 -c "from routing.roles import load_roles; print('import OK')"
+	python3 tests/test_wl_selfcheck.py
 
 # 文档行数与 xxx.py:NNN 引用随代码腐烂。检查器只有一份（session-pipeline 侧），
 # 三个仓共用 --root 复用。缺检查器时**失败**而不是 SKIP 通过：

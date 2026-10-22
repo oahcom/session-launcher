@@ -273,9 +273,9 @@ python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合
 网关错误**不是**单轮输出过大（错误收尾的工具结果 median 17.4KB vs 正常 14.1KB，>50KB 占比 23% vs 23%）、
 **不是**回合太长（366s vs 341s）、**不是**并发太高（按并发分带的错误率 0.5%（8+ 角色）vs 0.9%（5-7 角色），高并发反而更低）。
 
-`tests/test_wl_selfcheck.py` 检查 `kanban_board` / `_validate_create_task`（Gate 已内联）——但
-`SRC` 写死 `Path.home()/"session-launcher/src"`（`tests/test_wl_selfcheck.py:10`），**在 feature worktree 里
-它查的是生产克隆**：worktree 改了这条测试照样绿（假覆盖）。改本仓代码后要么把 `SRC` 指向本仓，要么两处都跑。
+`tests/test_wl_selfcheck.py` 查 `kanban_board` / `_validate_create_task`（Gate 已内联）。`SRC` 取自
+`Path(__file__).parents[1]/src`——旧版写死 `~/session-launcher/src`，在 feature worktree 里查的是生产克隆，
+worktree 改坏也照样绿。已接进 `make check`（`make all` 含它），变异验证：改掉 `if not template_id:` → `mut_rc=1`。
 
 ## 提示词生效方式
 

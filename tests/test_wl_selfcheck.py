@@ -7,7 +7,7 @@ Run: python3 tests/test_wl_selfcheck.py
 
 from pathlib import Path
 
-SRC = Path.home() / "session-launcher/src"
+SRC = Path(__file__).resolve().parents[1] / "src"
 PIPELINE_SRC = Path.home() / "session-pipeline" / "src"
 
 files = {}
