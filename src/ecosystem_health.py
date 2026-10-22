@@ -218,6 +218,24 @@ def _check_hardcoded_paths() -> CheckItem:
                      duration_ms=(time.time() - start) * 1000)
 
 
+_TMUX_PROBE_TIMEOUT = 2.0
+
+
+def _tmux_alive(timeout: float = _TMUX_PROBE_TIMEOUT) -> bool:
+    """tmux server 是否应答（单次、短超时）。
+
+    WHY 单独探一次：单会话探测失败(None)按「不计失败」处理是对的（瞬时抖动），
+    但 19 个会话**全部** None 就不是抖动，是 server 不响应。2026-10-22 实测
+    tmux server 自 08:29 不应答、11 个 client 挂起，而 health --json 依然全绿
+    （只是每个会话各花 3s 超时，整轮 57s）。这里先探一次，不响应直接红。
+    """
+    try:
+        return subprocess.run(["tmux", "ls"], capture_output=True,
+                              timeout=timeout).returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def _pane_has_claude(tmux_name: str) -> bool | None:
     """pane 的后代进程里是否存在 claude。三态：True/False/None（探测失败）。
 
@@ -261,6 +279,12 @@ def _check_sentinels() -> CheckItem:
     except Exception as _e:  # noqa: BLE001 - 健康检查自身不得抛出
         return CheckItem(name="sentinels:active", passed=False,
                          detail=f"list_sentinels 失败: {_e}",
+                         duration_ms=(time.time() - start) * 1000)
+    if sentinels and not _tmux_alive():
+        # 不响应就别逐个探（每个 3s，19 个会话要 57s），也别报绿
+        return CheckItem(name="sentinels:active", passed=False,
+                         detail=f"tmux 无应答（>{_TMUX_PROBE_TIMEOUT:.0f}s）："
+                                f"{len(sentinels)} 个会话状态不可判定",
                          duration_ms=(time.time() - start) * 1000)
     zombies = [s.tmux_session for s in sentinels if _pane_has_claude(s.tmux_session) is False]
     ok = not zombies
