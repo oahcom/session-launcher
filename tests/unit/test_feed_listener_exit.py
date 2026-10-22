@@ -19,7 +19,12 @@ _PROBE_BUDGET_S = 3.0
 
 def _tmux_latency() -> float:
     t0 = time.monotonic()
-    subprocess.run(["tmux", "ls", "-F", "#{session_name}"], capture_output=True, timeout=60)
+    try:
+        subprocess.run(["tmux", "ls", "-F", "#{session_name}"], capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        # 60s 都不应答时返回 inf，让下面的 fixture 走 skip 而不是 error：
+        # 探活预算 3s 已经不可满足，两个断言都失去意义（实测 11:05/11:15 两次）。
+        return float("inf")
     return time.monotonic() - t0
 
 
