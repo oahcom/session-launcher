@@ -160,9 +160,56 @@ def test_close_does_not_clobber_concurrent_step_updates():
         b.close()
 
 
+
+
+def test_chain_state_skips_metadata_keys():
+    """_close_reason 是元数据，不能被渲染成一条假步骤。"""
+    from workflow.state import chain_state
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE workflow_instances (instance_id TEXT, task_id TEXT, template_id TEXT,
+            status TEXT, current_step_id TEXT, step_results TEXT, created_at REAL);
+    """)
+    payload = json.dumps({"s1": {"status": "cancelled"},
+                          "_close_reason": {"status": "cancelled", "reason": "x"}})
+    conn.execute(
+        "INSERT INTO workflow_instances VALUES ('wf_m', NULL, 'WL-01', 'cancelled',"
+        " 's1', ?, 0)", (payload,))
+    steps = chain_state(conn, "wf_m")["steps"]
+    assert [s["step"] for s in steps] == ["s1"], steps
+    conn.close()
+
+
+def test_task_sync_does_not_mark_cancelled_task_completed():
+    """取消实例必须把 task 标 cancelled；未知状态 fail-safe 为 in_progress。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE workflow_instances (instance_id TEXT, task_id TEXT, status TEXT);
+        CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, updated_at REAL);
+    """)
+    conn.execute("INSERT INTO tasks VALUES ('t1', 'in_progress', 0)")
+    conn.execute("INSERT INTO tasks VALUES ('t2', 'in_progress', 0)")
+    conn.execute("INSERT INTO workflow_instances VALUES ('wf_a', 't1', 'cancelled')")
+    conn.execute("INSERT INTO workflow_instances VALUES ('wf_b', 't2', 'delivery_blocked')")
+    wf = object.__new__(WorkflowClient)
+    wf._conn, wf.role, wf.db_path = conn, 'tester', None
+    try:
+        wf._sync_task_from_workflows('t1')
+        wf._sync_task_from_workflows('t2')
+        got = {r[0]: r[1] for r in conn.execute('SELECT task_id, status FROM tasks')}
+        assert got == {'t1': 'cancelled', 't2': 'in_progress'}, got
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     test_cancel_cause_buckets()
     test_cancelled_by_cause_uses_last_cancel_family_log()
     test_cancel_keeps_step_results_and_records_reason()
     test_close_does_not_clobber_concurrent_step_updates()
-    print("PASS", len(CASES), "cases + 3 sql cases")
+    test_chain_state_skips_metadata_keys()
+    test_task_sync_does_not_mark_cancelled_task_completed()
+    print("PASS", len(CASES), "cases + 5 sql cases")

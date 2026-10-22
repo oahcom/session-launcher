@@ -13,10 +13,11 @@ from workflow.db import create_connection
 CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 
 # 终态：任何写入型操作（complete/fail/cancel）都不应改写这些状态。
-# 与 pipeline 侧 lifecycle.manager 的状态机对齐，避免两套语义分裂。
-# archived 是 pipeline workflow/client.py:483 写的归档态；漏掉它会让归档实例被 wf complete 复活。
-# delivery_blocked **不是**终态：pipeflow/engine.py:_recover_delivery_blocked 会把它还原成
-# running 重试，纳入守卫会切断该恢复路径。
+# 与 pipeline 侧 lifecycle.manager 的状态机大体对齐，但两处故意不同：
+# - archived：pipeline 全仓没有写入方（只在本仓测试里出现），保留是防御。
+# - delivery_blocked：pipeline manager 把它当终态，这里**不**当终态——
+#   pipeflow/engine.py:_recover_delivery_blocked 会把它还原成 running 重试，
+#   纳入守卫会切断该恢复路径。
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed", "archived"})
 _TERMINAL_PLACEHOLDERS = ",".join("?" * len(_TERMINAL_STATUSES))
 
@@ -33,8 +34,6 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     """
     text = (detail or "").strip()
     # 父链死了被级联取消，不是角色或引擎的错，单列一桶
-    if text.startswith("cascade from parent"):
-        return "cascade"
     # 两种"调用方给了理由"的包装：reason=... 与 workflow cancelled (...)。
     # 不剥壳会让里的"重复派发/误路由"永远落进 other。
     by_caller = False
@@ -46,9 +45,11 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     if text.startswith("reason="):
         text, by_caller = text[len("reason="):].strip(), True
     if not text:
-        text = (reason or "").strip()
+        text = str(reason or "").strip()   # context.reason 可能不是字符串
     if not text:
         return "unspecified" if by_caller else "no_log"
+    if text.startswith("cascade from parent"):
+        return "cascade"
     if "僵尸回收" in text or "zombie" in text.lower():
         if "24h全局阈值" in text:
             return "zombie_24h"
@@ -444,10 +445,14 @@ class WorkflowClient:
             task_status = "completed"
         elif any(s == "failed" for s in statuses):
             task_status = "failed"
-        elif any(s in ("running", "pending") for s in statuses):
+        elif any(s == "cancelled" for s in statuses):
+            task_status = "cancelled"
+        elif any(s in ("running", "pending", "step_done_ready") for s in statuses):
             task_status = "in_progress"
         else:
-            task_status = "completed"
+            # 未知状态一律 fail-safe 为 in_progress：把没见过的状态判成 completed
+            # 是单向门（后续无人复查），投递失败/取消反被记成完成。
+            task_status = "in_progress"
         self._conn.execute("UPDATE tasks SET status=?, updated_at=? WHERE task_id=?",
                           (task_status, time.time(), task_id))
         self._conn.commit()
@@ -471,23 +476,25 @@ class WorkflowClient:
             "ELSE json_object('_close_reason', json(?)) END",
             (status, time.time(), payload, payload))
 
-    def fail(self, wf_id: str, reason: str):
-        if not self._close(wf_id, "failed", reason):
-            return None  # 终态，不覆写
+    def _close_and_log(self, wf_id: str, status: str, reason: str):
+        if not self._close(wf_id, status, reason):
+            return None  # 终态，不覆写（重复 cancel 幂等无动作）
+        # 先写日志再同步任务：同步抛错时实例已经是终态，日志没写就等于把原因丢了
+        # （归因只能落 no_log）。pipeline 版同样是无条件写日志。
+        self._log(wf_id=wf_id, action=status, detail=f"reason={reason}")
         wf = self.get(wf_id)
         if wf and wf.get('task_id'):
-            self._sync_task_from_workflows(wf['task_id'])
-        self._log(wf_id=wf_id, action="failed", detail=f"reason={reason}")
+            try:
+                self._sync_task_from_workflows(wf['task_id'])
+            except sqlite3.Error as e:
+                print(f"警告: 任务状态同步失败 {wf['task_id']}: {e}", file=sys.stderr)
         return True
 
+    def fail(self, wf_id: str, reason: str):
+        return self._close_and_log(wf_id, "failed", reason)
+
     def cancel(self, wf_id: str, reason: str = ""):
-        if not self._close(wf_id, "cancelled", reason):
-            return None  # 终态，不覆写（重复 cancel 幂等无动作）
-        wf = self.get(wf_id)
-        if wf and wf.get('task_id'):
-            self._sync_task_from_workflows(wf['task_id'])
-        self._log(wf_id=wf_id, action="cancelled", detail=f"reason={reason}")
-        return True
+        return self._close_and_log(wf_id, "cancelled", reason)
 
     def find_zombies(self, minutes: int = 120, limit: int = 50) -> list[dict]:
         """僵尸检测: running > minutes 分钟的工作流。

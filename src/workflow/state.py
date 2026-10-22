@@ -36,7 +36,9 @@ def chain_state(conn, wf_id: str) -> Optional[dict]:
     now = time.time()
     steps = []
     for sid, val in parsed.items():
-        if not isinstance(val, dict):
+        # 下划线开头是元数据键（_close_reason 等），不是步骤；渲染成步骤会伪造一条
+        # status=cancelled 的假步。
+        if not isinstance(val, dict) or sid.startswith("_"):
             continue
         # queued 不是"队列深度"，是"派单被拒的 tick 次数"（471 次 × 14.5s ≈ 1.90h，
         # 与 queued_since 吻合）。计数与时长必须是两个字段，否则会被读成一个。
