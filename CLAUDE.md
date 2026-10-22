@@ -10,7 +10,7 @@ CCS 创建/停止/检测/注入，worktree 管理，哨兵系统，跨角色协�
 
 ```
 ccs.py start <role>  → 读取 persona JSON + prompt 模板
-                     → 创建 tmux session（ccs-<role>）
+                     → 创建 tmux session（ccs-<role>；instance_id>0 时 ccs-<role>-<id>）
                      → 创建 ccs-workspaces/<role>/ 目录
                      → inject_role_knowledge_into_workspace() 写入角色知识
                      → tmux send 发送初始任务指令
@@ -25,10 +25,11 @@ ccs.py start <role>  → 读取 persona JSON + prompt 模板
          ↓ 继承
 ~/.claude/CLAUDE.md（全球身份）
          ↓ 叠加 WORKSPACE_SYS marker
-ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块）
-         ↓ 叠加 SESSION_ROLE marker
-主项目 ~/CLAUDE.md（运行时注入，legacy）
+ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块 = 最终身份层）
 ```
+
+SESSION_ROLE marker 与 ~/CLAUDE.md 运行时注入已退场：`routing/roles.py:113-117` 只剩
+常量定义，全仓无写入调用。
 
 ## 关键规则
 

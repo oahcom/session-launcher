@@ -70,7 +70,7 @@ def main():
     p_start.add_argument("--workspace", default="",
                          help="工作空间名（默认同 role），设置后 tmux 在对应 ~/ccs-workspaces/<name>/ 启动")
     p_start.add_argument("--drive", default="",
-                         help="驱动方式: loop / feed / ondemand（默认从 persona JSON 读取）")
+                         help="驱动配置: cron / goal / infinite / ondemand（默认从 persona JSON 读取）")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
     p_start.add_argument("--instance-id", type=int, default=0,
@@ -144,8 +144,6 @@ def main():
     p_out.add_argument("--tail", type=int, default=20, help="行数")
     p_out.add_argument("--instance-id", type=int, default=0,
                         help="实例编号（默认 0=主实例）")
-    p_out.add_argument("--dry-run", action="store_true",
-                        help="只打印将执行的操作，不实际执行")
 
     # ── dashboard ──
     sub.add_parser("dashboard", help="聚合健康仪表板 + 路由拓扑")
@@ -154,8 +152,6 @@ def main():
     p_health = sub.add_parser("health", help="健康检查")
     p_health.add_argument("role", nargs="?", default="",
                           help="角色名（空=全部）")
-    p_health.add_argument("--dry-run", action="store_true",
-                          help="只打印将执行的操作，不实际执行")
 
     # ── register ──
     p_reg = sub.add_parser("register", help="注册手动 tmux 为 CCS")

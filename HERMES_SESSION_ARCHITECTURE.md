@@ -1,6 +1,6 @@
 # Hermes Session 协作架构设计 V2
 
-> 版本: 2.0 | 日期: 2026-07-07 | 状态: 已实施（2026-10-22 按代码复核：Phase 2-4 已落地；数字类指标为当时实测，不可复验）
+> 版本: 2.0 | 日期: 2026-07-07 | 状态: 部分实施（2026-10-22 按代码复核：Phase 2-3 已落地；Phase 1 未实现、Phase 4 部分——见文末清单勾选状态；数字类指标为当时实测，不可复验）
 
 ---
 
@@ -60,8 +60,8 @@
 ├──────────────────────────────────────────────────────────────┤
 │  第二层：工作空间（~/ccs-workspaces/<role>/）                 │
 │  禁令 + 权限 + 工作方式 + 上下文                              │
-│  系统级 CCS：独立 CLAUDE.md                                   │
-│  普通级 CCS：全局 ~/.claude/CLAUDE.md                        │
+│  每次 ccs start 都建 workspace 并注入 WORKSPACE_SYS 块         │
+│  全局 ~/.claude/CLAUDE.md 只是被继承的底稿，不是身份来源         │
 ├──────────────────────────────────────────────────────────────┤
 │  第三层：驱动机制（session-launcher + session-pipeline）       │
 │  包装循环 + ccs-send + feed push                             │
@@ -77,15 +77,15 @@
 | 工作空间 | "我能做什么、禁止做什么" | 架构变更 | `~/ccs-workspaces/<role>/CLAUDE.md` |
 | 驱动机制 | "怎么执行、何时触发" | 系统优化 | session-launcher + session-pipeline |
 
-### CLAUDE.md 内容对比
+### CLAUDE.md 两层关系（2026-10-22 实测）
 
-| 内容 | 系统级 CLAUDE.md | 普通级 CLAUDE.md |
-|------|-----------------|-----------------|
-| 位置 | `~/ccs-workspaces/<role>/CLAUDE.md` | `~/.claude/CLAUDE.md` |
-| 角色定义 | ✅ 独立 | ✅ 共享 |
-| 权限/禁令 | ✅ 独立（如"不调 LLM"） | ✅ 共享（全局） |
-| 工作方式 | ✅ 独立（如"每 30s 巡检"） | ✅ 共享（bus 协议） |
-| 上下文 | ✅ 独立（监控历史） | ✅ 共享 |
+`core.py:490-508` 每次 start 都 `workspace_create` + `inject_role_knowledge_into_workspace`，
+`ops/workspace.py:57-78` 写 WORKSPACE_SYS 块 —— 每个角色都有一份独立的
+`~/ccs-workspaces/<role>/CLAUDE.md`（实测 45 个 ws 目录）。所谓"系统级/普通级"在代码里
+**没有分支**：区别只是角色卡内容不同，注入路径完全相同。
+
+全局 `~/.claude/CLAUDE.md` 会被 claude 当作 cwd 上层继承，属于底稿；角色身份以
+workspace 那份为准（后注入覆盖）。
 
 ---
 
@@ -113,7 +113,7 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 |------|------|
 | 角色定义 | `persona_*.json: input_signals: ["bus cat=task @ccs-role"]` |
 | 消息路由 | `session-pipeline/src/routing/router.py:get_consumers` → 决定谁该收 |
-| 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（无 `ccs_send` 脚本） |
+| 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（`~/.local/bin/ccs-send` 是它的 exec 包装） |
 | 执行 | claude 收到消息 → 处理 → 回复 |
 
 ### 4.3 feed push 实时

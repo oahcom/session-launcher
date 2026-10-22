@@ -15,7 +15,7 @@ Session 生态的执行层：起 CCS（Claude Code Session）进程、管生命�
 ```
 src/
 ├── ccs.py                    # CLI（子命令见 --help）
-├── core.py                   # 生命周期编排（1332 行）
+├── core.py                   # 生命周期编排（行数现算：wc -l src/core.py）
 ├── tmux_ops.py               # tmux 底层 + 内存闸门 + 忙判据
 ├── ccs_socket.py             # CCSClient（Unix Socket 直连）
 ├── codex_ops.py              # Codex session
@@ -46,7 +46,7 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
 
 **stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
-`--dry-run` 只返回计划（`core.py:835-839`）。
+`--dry-run` 只返回计划（`core.py` 的 `if dry_run:` 预检块，行号随改动漂，按 grep 定位）。
 
 **send()**：跨角色路由门禁 → 红线 1 拦截 gateway 重启 → 忙判据 → `_tmux_send`；
 tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]`。
@@ -62,7 +62,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 ### 3.4 ops/sentinel.py — 哨兵
 
-**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，实测 12~17 波动），
+**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，现算 `ls ~/.hermes/run/ccs-sentinels | wc -l`），
 健康字段另落 `~/.hermes/run/ccs-health/<role>.json`。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
 bus_timeout / session_id / engine / health。

@@ -163,13 +163,15 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 }
 ```
 
-### 4. 协作模式
+### 4. 协作模式（已退场）
 
-| 模式 | 命令 | 说明 |
+`--partner` / `--bus-track` / `--auto-restart` 仍被接受，但守护线程与 tracker 是
+**CLI 进程内的 daemon 线程**：`ccs start` 返回后进程退出，二者随之消失
+（`src/ccs.py:35-47` 的 --help 自己写着“已废弃，由 workflow 引擎取代”）。
+角色间协作改由 session-pipeline 的 workflow 模板承担；launcher 只剩单角色生命周期。
+
+| 仍在用 | 命令 | 说明 |
 |------|------|------|
-| 主从 | `--partner <role> --auto-restart` | 守护伙伴存活，挂了自动重启 |
-| 对等 | `--bus-track <category>` | 追踪 bus 轮次，超时发死锁提醒 |
-| 仲裁 | `--partner A --partner B --bus-track X` | 同时守护 + 追踪 |
 | 直连 | `send-direct <from> <to> <msg>` | 不走 bus，<1ms Unix Socket |
 
 ### 5. 直接通信 Socket
@@ -211,7 +213,8 @@ SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
 ```
-session-pipeline/src/routing/routes.py:send_to_role → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
+session-pipeline/src/routing/routes.py:444 的 _send → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
+（send_to_role 已迁到 src/pipeflow/role_lifecycle.py:911，不在 routes.py）
 ```
 
 **注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
