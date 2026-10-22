@@ -159,41 +159,47 @@ def self_check():
     print("self-check PASS", dict(t))
 
 
+def _report(hours, cut: str, s) -> None:
+    tot = Counter()
+    for r in s.values():
+        tot.update(r)
+    print("[{}h] cut={} 回合={} 零工具回合={} ({:.1f}%) 收尾文本={} 无证据={} 网关错误={}".format(
+        hours, cut, tot["turns"], tot["zero_tool_turns"],
+        100 * tot["zero_tool_turns"] / max(1, tot["turns"]),
+        tot["final_text"], tot["final_no_evidence"], tot["final_api_error"]))
+    kinds = sorted({kk[5:] for r in s.values() for kk in r
+                    if kk.startswith("kind:") and not kk.endswith(":zero")},
+                   key=lambda kk: -tot["kind:" + kk])
+    print("按注入类别（零工具回合率）：" + "  ".join(
+        "{}={}({:.0f}%)".format(kk, tot["kind:" + kk],
+                                100 * tot["kind:" + kk + ":zero"] / max(1, tot["kind:" + kk]))
+        for kk in kinds))
+    errs = Counter()
+    for r in s.values():
+        for k, v in r.items():
+            if k.startswith("err:"):
+                errs[k[4:]] += v      # 同一端点在多个角色下重复出现，必须先跨角色合并
+    if errs:
+        print("网关错误按端点: " + "  ".join("{}={}".format(k, v)
+                                          for k, v in errs.most_common(6)))
+    for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero_tool_turns"])[:8]:
+        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
+            role, r["turns"], r["zero_tool_turns"], r["final_text"], r["final_no_evidence"]))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hours", type=float, default=6.0)
-    ap.add_argument("--cut", help="ISO 起点(UTC)，与 --hours 二选一")
+    ap.add_argument("--hours", type=float, nargs="+", default=[6.0, 24.0],
+                    help="可给多个窗口；默认 6h+24h（24h 会把已结束的事故算成现状）")
+    ap.add_argument("--cut", help="ISO 起点(UTC)，给定时忽略 --hours")
     ap.add_argument("--self-check", action="store_true")
     a = ap.parse_args()
     if a.self_check:
         self_check()
     else:
         import time
-        cut = a.cut or time.strftime("%Y-%m-%dT%H:%M:%S",
-                                     time.gmtime(time.time() - a.hours * 3600))
-        s = measure(cut)
-        tot = Counter()
-        for r in s.values():
-            tot.update(r)
-        print("cut={} 回合={} 零工具回合={} ({:.1f}%) 收尾文本={} 无证据={} 网关错误={}".format(
-            cut, tot["turns"], tot["zero_tool_turns"],
-            100 * tot["zero_tool_turns"] / max(1, tot["turns"]),
-            tot["final_text"], tot["final_no_evidence"], tot["final_api_error"]))
-        kinds = sorted({kk[5:] for r in s.values() for kk in r
-                        if kk.startswith("kind:") and not kk.endswith(":zero")},
-                       key=lambda kk: -tot["kind:" + kk])
-        print("按注入类别（零工具回合率）：" + "  ".join(
-            "{}={}({:.0f}%)".format(kk, tot["kind:" + kk],
-                                    100 * tot["kind:" + kk + ":zero"] / max(1, tot["kind:" + kk]))
-            for kk in kinds))
-        errs = Counter()
-        for r in s.values():
-            for k, v in r.items():
-                if k.startswith("err:"):
-                    errs[k[4:]] += v      # 同一端点在多个角色下重复出现，必须先跨角色合并
-        if errs:
-            print("网关错误按端点: " + "  ".join("{}={}".format(k, v)
-                                              for k, v in errs.most_common(6)))
-        for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero_tool_turns"])[:8]:
-            print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
-                role, r["turns"], r["zero_tool_turns"], r["final_text"], r["final_no_evidence"]))
+        pairs = ([(0, a.cut)] if a.cut else
+                 [(h, time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - h * 3600)))
+                  for h in a.hours])
+        for h, cut in pairs:
+            _report(h or "custom", cut, measure(cut))

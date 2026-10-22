@@ -259,8 +259,8 @@ python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合
 
 | 你在 pane / 日志里看到 | 判据（现查，别靠记忆） | 系统已有的动作 | 你该做什么 |
 |---|---|---|---|
-| `API Error: Request rejected (429) · [ollama/...]` | `make quality` 的「网关错误按端点」行 | `_recover_rate_limited_roles` 按 120→1800s 退避发「继续」 | 回落链别挂满载端点；实测 24h 61 次全来自 `ollama/gpt-oss:120b`，归 @routing |
-| `upstream connection lost` | 同上（`conn_lost` 桶） | 同一条恢复链（`_RATE_LIMIT_PATTERNS` 含该文案） | 查主模型流的 keepalive/超时；24h 82 次集中在 deepseek-v4.1 |
+| `API Error: Request rejected (429) · [ollama/...]` | `make quality` 的「网关错误按端点」行 | `_recover_rate_limited_roles` 按 120→1800s 退避发「继续」 | 回落链别挂满载端点；实测 24h 61 次全来自 `ollama/gpt-oss:120b`，**恢复 median 201s、68% 超 120s**（等配额回血，不是卡死），归 @routing |
+| `upstream connection lost` | 同上（`conn_lost` 桶） | 同一条恢复链（`_RATE_LIMIT_PATTERNS` 含该文案） | 查主模型流的 keepalive/超时；24h 82 次集中在 deepseek-v4.1，**恢复 median 23s**（这类多半自愈，别急着人工介入） |
 | 健康检查红 / 探针返回 `None` / `tmux 无应答` | `python3 src/ecosystem_health.py --json`（看 `sentinels:active`）；`--ci` 会 exit≠0 | 探针一律 **fail-open**：不判忙、不判死（空闲判死不会被误触发） | 别急着重启：先 `pgrep -a tmux` 找等了 >40s 的 client，再定位阻塞的 pane |
 | `tool_use ... could not be parsed as JSON` | 转录里搜 `InputValidationError` | 角色自己会单条重发（实测 242/242 回合自愈） | 模型侧问题：实测 98% 来自 mimo-v2.6（同一 JSON 重复写两遍），改路由而不是改提示词 |
 | 角色回「已完成，无新动作。」 | 同上（零工具收尾） | 提醒链 TTL 1800s，过期即停 | 先看这条提醒的 `原始请求` 是不是测试残留（`test message`），别去改角色提示 |
