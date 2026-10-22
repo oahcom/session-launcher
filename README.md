@@ -102,7 +102,7 @@ src/                                   （ls src 实测）
   ├── workflow/client.py    WorkflowClient（wf.py 的实现在此）
   ├── workflow/db.py        DB 连接
   ├── workflow/schema.py    Schema
-  ├── workflow/state.py      chain_state（client.py:364 引用）
+  ├── workflow/state.py      chain_state（client.py:369 引用）
   ├── wf.py                 wf CLI（check/create/complete/confirm/…）
   ├── workflow_client.py    薄包装：re-export + check()
   │
