@@ -137,17 +137,24 @@ class TestRun:
             _run("role_a", "work", 300, 10, ["role_b"], instance_id=0)
         mock_health.assert_not_called()
 
+    @patch("ops.tracker._bus_write")
     @patch("ops.tracker.time.sleep")
     @patch("ops.tracker.update_health")
     @patch("ops.tracker._bus_read_latest")
-    def test_run_not_timed_out_skips(self, mock_read, mock_health, mock_sleep):
-        """P8: 消息年龄 < timeout → 跳过。"""
+    def test_run_not_timed_out_skips(self, mock_read, mock_health, mock_sleep, mock_bwrite):
+        """P8: 消息年龄 < timeout → 不发提醒。
+
+        旧断言 update_health.assert_called_once() 抓不到回归：update_health 在
+        age 判断**之前**无条件调用，把 age <= timeout 取反仍然满足它。
+        真正的判据是「没写 bus 提醒」。
+        """
         now = time.time()
         mock_read.return_value = _fact(ts=now - 50)  # age≈50 < timeout=300
         mock_sleep.side_effect = _sleep_breaker(2)
         with pytest.raises(SystemExit):
             _run("role_a", "work", 300, 10, ["role_b"], instance_id=0)
-        mock_health.assert_called_once()
+        mock_health.assert_called_once()      # 年龄每轮都要记账
+        mock_bwrite.assert_not_called()       # 未超时不得发提醒
 
     @patch("ops.tracker.time.sleep")
     @patch("ops.tracker.update_health")
