@@ -59,8 +59,8 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 > cgroup 闸门（`memory.current/memory.high ≥ 95%`）已于 2026-10-22 **删除**：它读的
 > `system.slice/session-pipeline.service` 从来不存在（引擎在 `hermes.slice/workflow-engine.service`），
-> OSError 被静默吞掉，从未生效；把路径修对也不成立 —— 健康时该比值就在 93~96% 漂
-> （十次采样 93/94%），阈值命中与否取决于采样时刻。`Dl+` 卡死没有水位判据能抓，
+> OSError 被静默吞掉，从未生效；把路径修对也不成立 —— 同一个 slice 一天内采到
+> 84% / 93~94% / 95.2%，负载一动就跨过阈值，命中与否取决于采样时刻。`Dl+` 卡死没有水位判据能抓，
 > 抓它的是 pane 空白 + 无对话增量（`conversation_monitor` / `_looks_stuck`）。
 
 ### 3.4 ops/sentinel.py — 哨兵
