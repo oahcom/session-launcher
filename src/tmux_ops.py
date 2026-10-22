@@ -112,10 +112,13 @@ _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
 # ① 它读的 system.slice/session-pipeline.service 从来不存在（引擎在
 #    user.slice/…/hermes.slice/workflow-engine.service），OSError 被 except 吞掉
 #    → 这道闸门从上线起没生效过一次，只是给了「已有防护」的错觉；
-# ② 把路径修对也不成立：hermes.slice 的 memory.current/memory.high 长期 ≥95%
-#    （实测 6.13/6.44GB），闸门会拒掉每一次启动 —— 撞 high 在这台机器是稳态。
-# 2026-10-16「4 个 claude 卡在 Dl+」的判据是 pane/进程状态（liveness + 对话监控），
-# 不是水位百分比。下面只留宿主机 swap/avail 兜底。
+# ② 把路径修对也不成立：健康时 hermes.slice 的 memory.current/memory.high 就在
+#    93~96% 之间漂（2026-10-22 十次采样 93/94%，早前一次 95.2%），95% 阈值的命中与否
+#    取决于采样时刻，不取决于有没有在抖 —— 那会变成随机拒启。
+# 2026-10-16「4 个 claude 卡在 Dl+」没有水位判据能抓（宿主机还有 6.1GB 可用），
+# 能抓它的是 pane 空白 + 无对话增量（conversation_monitor / _looks_stuck），
+# 不是 liveness（`_is_alive` 只验 tmux session 存在，超时还返回 True）。
+# 下面只留宿主机 swap/avail 兜底。
 _SWAP_FREE_MIN_MB = 128
 _SWAP_LOW_AVAIL_MB = 1024  # 兜底判据：swap 见底且宿主机可用内存也紧才拦
 

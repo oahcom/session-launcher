@@ -59,8 +59,9 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 > cgroup 闸门（`memory.current/memory.high ≥ 95%`）已于 2026-10-22 **删除**：它读的
 > `system.slice/session-pipeline.service` 从来不存在（引擎在 `hermes.slice/workflow-engine.service`），
-> OSError 被静默吞掉，从未生效；而把路径修对后 hermes.slice 长期 ≥95%（实测 6.13/6.44GB），
-> 会拒掉每一次启动。`Dl+` 卡死的判据是 pane/进程状态（liveness + 对话监控），不是水位百分比。
+> OSError 被静默吞掉，从未生效；把路径修对也不成立 —— 健康时该比值就在 93~96% 漂
+> （十次采样 93/94%），阈值命中与否取决于采样时刻。`Dl+` 卡死没有水位判据能抓，
+> 抓它的是 pane 空白 + 无对话增量（`conversation_monitor` / `_looks_stuck`）。
 
 ### 3.4 ops/sentinel.py — 哨兵
 
@@ -116,5 +117,5 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 
 1. 上下文隔离：每角色独占独立 CLAUDE.md（L0 通用→L1 红线→L2 专业→L3 经验）。
 2. 协作逻辑在代码层，不写进 prompt。
-3. 死锁超时 300s 提醒；> 15 分钟写 bus 升级给人。
-4. 连续启动间隔 8s；内存/cgroup 闸门见 §3.3。
+3. 轮次死锁判据 300s（`tracker.py` 的 `timeout_sec`，另有 1800s 节流）：伙伴还活着就向它的 bus cat 写「请继续」，伙伴已死只写 `monitor_audit`；**面向人**的升级在 `partner.py`（300s 存活但不接单 → 「需要人工介入」）。没有 15 分钟档。
+4. 连续启动间隔 8s；启动前只有宿主机内存判据，见 §3.3。
