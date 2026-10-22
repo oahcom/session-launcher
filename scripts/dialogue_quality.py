@@ -80,8 +80,10 @@ def _turns(path):
 # 行动型角色（devops 就是）的产出是 bus 动作不是文件 —— 0 行不代表空转，看 _bus_writes。
 _WS = os.path.expanduser("~/ccs-workspaces")
 _SKIP_NAME = ("CLAUDE.md", "TASKS.md")
-_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules")
-_SKIP_EXT = (".out", ".log", ".jsonl", ".pyc")
+# tmp/.tmp 是草稿区、.bak 是备份：把仓库源码或日志复制进来就能刷高产物行
+# （实测 consumer 里 .tmp/head_guard/step_handler_head.py 1696 行、maintainer tmp/j.txt 2687 行）。
+_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules", "tmp", ".tmp")
+_SKIP_EXT = (".out", ".log", ".jsonl", ".pyc", ".bak")
 
 
 def _artifact_lines(cut: float, root: str = _WS) -> dict:
@@ -259,14 +261,18 @@ def self_check():
     ws = os.path.join(td, "ws", "role_x")
     os.makedirs(ws)
     for name, body, old in (("a.md", "l1\nl2\n", False), ("b.md", "l1\nl2\n", False),
-                            ("CLAUDE.md", "x\ny\n", False), ("old.md", "l9\n", True)):
+                            ("CLAUDE.md", "x\ny\n", False), ("old.md", "l9\n", True),
+                            ("tmp/scratch.md", "s1\ns2\ns3\n", False),
+                            ("c.md.bak", "b1\nb2\n", False)):
         p = os.path.join(ws, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(body)
         if old:
             os.utime(p, (0, 0))
     art = _artifact_lines(1.0, os.path.join(td, "ws"))
-    assert art["role_x"] == 2, art       # 去重后 1 份 2 行；跳过 CLAUDE.md 与旧 mtime
+    # 去重后 1 份 2 行；跳过 CLAUDE.md、旧 mtime、tmp/ 草稿、.bak 备份
+    assert art["role_x"] == 2, art
     assert _lookup({"product_architect": 5}, "product-architect") == 5   # 名字归一（真实一对）
     print("self-check PASS", dict(t), "artifacts=2")
 
