@@ -106,7 +106,7 @@ def _artifact_lines(cut: float, root: str = _WS) -> dict:
                 if h in seen:
                     continue
                 seen.add(h)
-                lines += data.count(chr(10).encode())
+                lines += data.count(b"\n")
         out[role_dir.rsplit("/", 1)[-1]] = lines
     return out
 
@@ -249,11 +249,12 @@ def _report(hours, cut: float, s, art=None) -> None:
     tot = Counter()
     for r in s.values():
         tot.update(r)
-    # k:<类别> 只按回合记一次，:zero 是同口径的重叠标记，不能重复累加
-    def _turns(r):
+    # k:<类别> 只按回合记一次，:zero 是同口径的重叠标记，不能重复累加。
+    # 名字不能叫 _turns：模块级 _turns(path) 是回合切分器，同名遮蔽读代码时容易长错。
+    def _n_turns(r):
         return sum(v for k, v in r.items()
                    if k.startswith("k:") and not k.endswith(":zero") and k != "k:system")
-    rt = sum(_turns(r) for r in s.values())
+    rt = sum(_n_turns(r) for r in s.values())
     print("[{}] cut={} 回合={} 系统语料={} 零工具={}({:.1f}%) 收尾={} 无证据={} 网关错误={}".format(
         hours, datetime.fromtimestamp(cut).isoformat(timespec="seconds"), rt, tot["system"],
         tot["zero"], 100 * tot["zero"] / max(1, rt), tot["final"],
@@ -281,8 +282,8 @@ def _report(hours, cut: float, s, art=None) -> None:
 
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
         print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f}".format(
-            role, _turns(r), r["zero"], r["final"], r["no_evidence"],
-            _art_for(role), 1000.0 * _art_for(role) / max(1, _turns(r))))
+            role, _n_turns(r), r["zero"], r["final"], r["no_evidence"],
+            _art_for(role), 1000.0 * _art_for(role) / max(1, _n_turns(r))))
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
