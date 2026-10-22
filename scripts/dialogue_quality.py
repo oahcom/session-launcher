@@ -72,6 +72,45 @@ def _turns(path):
     return out + ([(head, cur)] if cur else [])
 
 
+# -- 产物行（落盘口径）-------------------------------------------------
+# WHY 单列：回合指标回答「说了什么」，回答不了「留下什么」。2026-10-22 实测 24h：
+# devops 21 回合 / 0 行产物、coordinator 63 回合 / 286 行 —— 只看回合率两者都"正常"，
+# 只有落盘口径能看出谁在空转。窗口与 transcripts 同源。
+_WS = os.path.expanduser("~/ccs-workspaces")
+_SKIP_NAME = ("CLAUDE.md", "TASKS.md")
+_SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules")
+_SKIP_EXT = (".out", ".log", ".jsonl", ".pyc")
+
+
+def _artifact_lines(cut: float, root: str = _WS) -> dict:
+    """{role: 去重后的产物行数}。按内容 md5 去重：同一份文件改个名不算两份产出。"""
+    import hashlib
+    out = {}
+    for role_dir in sorted(glob.glob(root + "/*")):
+        if not os.path.isdir(role_dir):
+            continue
+        seen, lines = set(), 0
+        for dirpath, dirnames, filenames in os.walk(role_dir):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR]
+            for fn in filenames:
+                if fn in _SKIP_NAME or fn.endswith(_SKIP_EXT):
+                    continue
+                p = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getmtime(p) < cut:
+                        continue
+                    data = open(p, "rb").read()
+                except OSError:
+                    continue
+                h = hashlib.md5(data).hexdigest()
+                if h in seen:
+                    continue
+                seen.add(h)
+                lines += data.count(chr(10).encode())
+        out[role_dir.rsplit("/", 1)[-1]] = lines
+    return out
+
+
 def measure(cut: float, pattern=None):
     dirs = glob.glob(pattern or str(os.path.expanduser("~/.claude/projects/-*ccs-workspaces-*")))
     s = defaultdict(Counter)
@@ -190,15 +229,31 @@ def self_check():
     assert t["api_error"] == 3, t        # 元数据 2（含混排）+ "正常→错误" 1
     assert t["final"] == 2, t            # "错误→正常交付" 与 "已完成" 各一
     assert t["no_evidence"] == 1, t      # 只有"已完成，无新动作"
-    print("self-check PASS", dict(t))
+    # 产物行口径自证：改名副本按内容去重、CLAUDE.md 不计、旧文件不计。
+    ws = os.path.join(td, "ws", "role_x")
+    os.makedirs(ws)
+    for name, body, old in (("a.md", "l1\nl2\n", False), ("b.md", "l1\nl2\n", False),
+                            ("CLAUDE.md", "x\ny\n", False), ("old.md", "l9\n", True)):
+        p = os.path.join(ws, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        if old:
+            os.utime(p, (0, 0))
+    art = _artifact_lines(1.0, os.path.join(td, "ws"))
+    assert art["role_x"] == 2, art       # 去重后 1 份 2 行；跳过 CLAUDE.md 与旧 mtime
+    print("self-check PASS", dict(t), "artifacts=2")
 
 
-def _report(hours, cut: float, s) -> None:
+def _report(hours, cut: float, s, art=None) -> None:
+    art = art or {}
     tot = Counter()
     for r in s.values():
         tot.update(r)
-    rt = sum(v for k, v in tot.items()
-             if k.startswith("k:") and not k.endswith(":zero") and k != "k:system")
+    # k:<类别> 只按回合记一次，:zero 是同口径的重叠标记，不能重复累加
+    def _turns(r):
+        return sum(v for k, v in r.items()
+                   if k.startswith("k:") and not k.endswith(":zero") and k != "k:system")
+    rt = sum(_turns(r) for r in s.values())
     print("[{}] cut={} 回合={} 系统语料={} 零工具={}({:.1f}%) 收尾={} 无证据={} 网关错误={}".format(
         hours, datetime.fromtimestamp(cut).isoformat(timespec="seconds"), rt, tot["system"],
         tot["zero"], 100 * tot["zero"] / max(1, rt), tot["final"],
@@ -212,10 +267,22 @@ def _report(hours, cut: float, s) -> None:
     errs = sorted(((k, v) for k, v in tot.items() if k.startswith("err:")), key=lambda kv: -kv[1])
     if errs:
         print("网关错误按端点: " + "  ".join("{}={}".format(k[4:], v) for k, v in errs[:6]))
+    _art_tot = sum(art.values())
+    print("产物行（落盘、按内容去重）= {}  行/千回合={:.0f}".format(
+        _art_tot, 1000.0 * _art_tot / max(1, rt)))
+
+    # 角色名两套写法：转录目录用连字符（product-architect），工作区目录用下划线
+    # （product_architect）。不互相兜底时整列全是 0 —— 第一版就这么错过一次。
+    def _art_for(role):
+        for k in (role, role.replace("-", "_"), role.replace("_", "-")):
+            if k in art:
+                return art[k]
+        return 0
+
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
-        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
-            role, sum(v for k, v in r.items() if k.startswith("k:") and not k.endswith(":zero")
-                      and k != "k:system"), r["zero"], r["final"], r["no_evidence"]))
+        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f}".format(
+            role, _turns(r), r["zero"], r["final"], r["no_evidence"],
+            _art_for(role), 1000.0 * _art_for(role) / max(1, _turns(r))))
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -234,4 +301,4 @@ if __name__ == "__main__":
         s, ndirs = measure(c)
         if not ndirs:
             raise SystemExit("找不到角色转录目录 —— 判据基准错了，不看 0 结果")
-        _report("{}h".format(h) if h else "custom", c, s)
+        _report("{}h".format(h) if h else "custom", c, s, _artifact_lines(c))
