@@ -193,27 +193,14 @@ def self_check():
     print("self-check PASS", dict(t))
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--hours", type=float, default=6.0)
-    ap.add_argument("--cut", help="ISO 起点(UTC/带时区)")
-    ap.add_argument("--self-check", action="store_true")
-    a = ap.parse_args()
-    if a.self_check:
-        self_check()
-        raise SystemExit(0)
-    cut = (datetime.fromisoformat(a.cut.replace("Z", "+00:00")).timestamp()
-           if a.cut else time.time() - a.hours * 3600)
-    s, ndirs = measure(cut)
-    if not ndirs:
-        raise SystemExit("找不到角色转录目录 —— 判据基准错了，不看 0 结果")
+def _report(hours, cut: float, s) -> None:
     tot = Counter()
     for r in s.values():
         tot.update(r)
     rt = sum(v for k, v in tot.items()
              if k.startswith("k:") and not k.endswith(":zero") and k != "k:system")
-    print("cut={} 目录={} 回合={} 系统语料={} 零工具={}({:.1f}%) 收尾={} 无证据={} 网关错误={}".format(
-        datetime.fromtimestamp(cut).isoformat(timespec="seconds"), ndirs, rt, tot["system"],
+    print("[{}] cut={} 回合={} 系统语料={} 零工具={}({:.1f}%) 收尾={} 无证据={} 网关错误={}".format(
+        hours, datetime.fromtimestamp(cut).isoformat(timespec="seconds"), rt, tot["system"],
         tot["zero"], 100 * tot["zero"] / max(1, rt), tot["final"],
         tot["no_evidence"], tot["api_error"]))
     kinds = sorted({k[2:] for r in s.values() for k in r
@@ -228,5 +215,23 @@ if __name__ == "__main__":
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
         print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
             role, sum(v for k, v in r.items() if k.startswith("k:") and not k.endswith(":zero")
-                      and k != "k:system"),
-            r["zero"], r["final"], r["no_evidence"]))
+                      and k != "k:system"), r["zero"], r["final"], r["no_evidence"]))
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hours", type=float, nargs="+", default=[6.0, 24.0],
+                    help="可给多个窗口；默认 6h+24h（24h 会把已结束的事故算成现状）")
+    ap.add_argument("--cut", help="ISO 起点(UTC)，给定时忽略 --hours")
+    ap.add_argument("--self-check", action="store_true")
+    a = ap.parse_args()
+    if a.self_check:
+        self_check()
+        raise SystemExit(0)
+    now = time.time()
+    for h, cut in ([(0, a.cut)] if a.cut else [(h, None) for h in a.hours]):
+        c = (datetime.fromisoformat(cut.replace("Z", "+00:00")).timestamp()
+             if cut else now - h * 3600)
+        s, ndirs = measure(c)
+        if not ndirs:
+            raise SystemExit("找不到角色转录目录 —— 判据基准错了，不看 0 结果")
+        _report("{}h".format(h) if h else "custom", c, s)

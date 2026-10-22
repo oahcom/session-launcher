@@ -1,6 +1,7 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -10,6 +11,8 @@ from typing import Optional
 
 from paths import BUS_CLIENT
 from workflow.db import create_connection
+
+LOGGER = logging.getLogger("workflow.client")
 
 CCS_CLI = Path(__file__).resolve().parent.parent / "ccs.py"
 
@@ -280,6 +283,24 @@ class WorkflowClient:
             self.notify("task_spec", f"创建任务: {title}", evidence=evidence)
         return task_id
 
+    def _first_step_id(self, template_id: str) -> str:
+        """模板首步步号。取不到时退回 's1'（与旧行为一致，不阻断建链）。
+
+        硬编码 's1' 会跳过首步为 s0 的模板（food_chain_loop 系）：实例建在 s1，
+        s0 永远不被派发，而 engine 侧 start 路径用 wf.steps[0].id —— 两条建链
+        路径不一致（实测 45 条 food_chain_loop 实例 23 条无 s0 键）。
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT steps_json FROM workflow_templates WHERE template_id=?",
+                (template_id,)).fetchone()
+            steps = json.loads((row["steps_json"] if row else "") or "[]")
+            sid = (steps[0].get("step_id") or steps[0].get("id") or "") if steps else ""
+            return sid or "s1"
+        except Exception as _e:
+            LOGGER.debug("读模板首步失败（退回 s1）: %s", _e)
+            return "s1"
+
     def _create_workflow_instance(self, task_id: str, template_id: str, assignee: str,
                                    initiator_role: str = None) -> str:
         # ponytail: Gate was YAGNI'd. Gate.validate_create_task inlined as _validate_create_task.
@@ -288,12 +309,13 @@ class WorkflowClient:
         import uuid
         wf_id = f"wf_{uuid.uuid4().hex[:12]}"
         now = time.time()
+        first_step = self._first_step_id(template_id)
         self._conn.execute("""
             INSERT OR IGNORE INTO workflow_instances (instance_id, template_id, task_id,
                                             assigner, assignee, status,
                                             current_step_id, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', 's1', ?)
-        """, (wf_id, template_id, task_id, self.role, assignee, now))
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (wf_id, template_id, task_id, self.role, assignee, first_step, now))
         self._conn.commit()
         self._conn.execute(
             "UPDATE tasks SET current_workflow_id=?, status='in_progress' WHERE task_id=?",
