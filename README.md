@@ -220,6 +220,8 @@ session-pipeline/src/routing/routes.py → subprocess run([sys.executable, CCS_C
 
 **`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：实测三天 497 个 completed 步骤里 32% 连 `exit_messages` 都没有，`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
+摘要为空/默认值/短于 12 字时 `wf complete` 会在 stderr 打一行提示并给出正确形态（不改完成语义、不拦流程）——提示在动作发生的那一刻出现，而不是靠 18KB 的 base.md 里一句「必须内联输出」。
+
 ### MCP 隔离
 
 launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，实现 MCP 按角色隔离：

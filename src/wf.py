@@ -22,6 +22,23 @@ def _require_role() -> str:
     return input("role: ")
 
 
+_DEFAULT_SUMMARIES = {"", "done", "ok", "pass", "success", "完成", "已完成", "无"}
+
+
+def _summary_warning(summary: str) -> str | None:
+    """摘要为空/默认值时在 stderr 提示正确形态（不拦完成）。
+
+    实测 1,136 个 completed 步骤里 367 个（32.3%）没有 exit_messages：默认值 "done"
+    会被引擎当成该步的全部产出，下游无法核验。提示放在动作发生的那一刻，
+    比在 18KB 的 base.md 里写一句「必须内联输出」有效。
+    """
+    s = (summary or "").strip()
+    if s.lower() in _DEFAULT_SUMMARIES or len(s) < 12:
+        return ("摘要太短/默认值：引擎把它当成该步的全部产出，下游核验不了。"
+                '正确形态：-s "做了什么 | rc=0 | 命令最后一行原文"')
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(prog="wf", formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--role", "-r", default=os.getenv("CCS_ROLE", ""), help="角色 (默认 $CCS_ROLE)")
@@ -141,6 +158,9 @@ def main():
         if _terminated:
             print(f"未写入: {args.wf_id} 已是终态，complete 为空操作", file=sys.stderr)
             sys.exit(1)
+        _warn = _summary_warning(args.summary)
+        if _warn:
+            print(_warn, file=sys.stderr)
         print(f"完成: {args.wf_id}")
 
     elif args.cmd == "fail":
