@@ -100,7 +100,7 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 | 层次 | 实现 |
 |------|------|
 | 角色定义 | `persona_*.json: drive`（实测取值 `infinite`/`ondemand`/`cron`，无 `loop`） |
-| 启动包装 | `ccs.py start` 起 `bash -c "while true; do claude …; done"`（core.py:627），**不发 `/loop`**（`grep -rn '/loop' src/` = 0） |
+| 启动包装 | `ccs.py start` 起 `bash -c "while true; do claude …; done"`（`core.py` 的启动包装处），**不发 `/loop`**（`grep -rn '/loop' src/` = 0） |
 | 执行 | 每轮 claude 由 workspace `CLAUDE.md` 驱动，轮间由包装循环重启 |
 
 ### 4.2 ccs-send 外驱
@@ -112,16 +112,15 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 | 层次 | 实现 |
 |------|------|
 | 角色定义 | `persona_*.json: input_signals: ["bus cat=task @ccs-role"]` |
-| 消息路由 | `session-pipeline/src/routing/router.py:165 get_consumers()` → 决定谁该收 |
+| 消息路由 | `session-pipeline/src/routing/router.py 的 `get_consumers()`` → 决定谁该收 |
 | 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（无 `ccs_send` 脚本） |
 | 执行 | claude 收到消息 → 处理 → 回复 |
 
 ### 4.3 feed push 实时
 
 ```
-bus_client.py write → bus_protocol.py Blackboard.write()
-  → INSERT (SQLite) + _notify_feed() → socket push
-  → socket_server.py broadcast → claude 收到
+bus_client.py write → INSERT (SQLite facts)　← 唯一写入路径，不推送
+显式 publish('feed', …) → socket_server._dispatch → _push_to("feed") → feed_listener
 ```
 
 | 层次 | 实现 |
@@ -207,7 +206,7 @@ CCS 启动（session-launcher）
 | 角色 JSON 定义 | ✅ 负责 | 读取 | — |
 | CLAUDE.md 管理 | — | ✅ 负责（启动时注入） | — |
 | 工作空间管理 | — | ✅ 负责（系统级 CCS） | — |
-| 包装循环（core.py:627） | — | ✅ 负责 | — |
+| 包装循环（见上） | — | ✅ 负责 | — |
 | ccs-send 消息路由 | — | 发送 | ✅ 路由决策 |
 | feed push 推送源 | — | 订阅 | —（只写 SQLite，无推送源） |
 | watchdog 线程 | — | ✅ 负责 | — |
@@ -262,11 +261,11 @@ persona_*.json  → 专业领域 + prompt
 ## 九、实施路径
 
 ### Phase 1：架构落地（当前）
-- [x] bus_protocol.py feed push
+- [ ] bus_protocol.py feed push（**未实现**：写入只落 SQLite，`grep -rn _notify_feed ~/.hermes/scripts` 零命中，见 §4.3）
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
 - [x] watchdog 线程（`daemon=True`，`ops/watchdog.py` 的 `start_watchdog`）
-- [x] turn_tracker 线程（daemon=True，tracker.py:167）
+- [x] turn_tracker 线程（daemon=True，tracker.py 的 `start_tracker`）
 - [x] sentinel 健康字段
 - [x] 三方三轮审查
 
@@ -279,7 +278,7 @@ persona_*.json  → 专业领域 + prompt
 ### Phase 3：三驱动统一封装（完成）
 - [x] 统一 API：`ccs.py start --drive … --feed-cat … --partner …`
 - [x] pipeline 侧 `routing/router.py get_consumers()` 自动路由
-- [x] feed listener 随 `start` 自动拉起（`core.py:818-823`）
+- [x] feed listener 随 `start` 自动拉起（`core.py 的 `_start_feed_subprocess``）
 
 ### Phase 4：LLM 驾驭工程（部分）
 - [x] ccs-monitor CLAUDE.md 决策树

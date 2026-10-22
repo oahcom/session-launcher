@@ -78,7 +78,7 @@ Cron 的 CLAUDE.md:
 ```
 src/                                   （ls src 实测）
   # ── CCS 生命周期 ──
-  ├── ccs.py                CLI 主入口（19 个顶层子命令）
+  ├── ccs.py                CLI 主入口（子命令清单见 `ccs.py --help`）
   ├── core.py               生命周期编排（start/stop/status/send/health/dashboard）
   ├── tmux_ops.py           tmux 底层（_is_alive/_tmux_send/_role_is_busy）
   ├── ccs_socket.py         CCSClient：Unix Socket 直连
@@ -102,7 +102,7 @@ src/                                   （ls src 实测）
   ├── workflow/client.py    WorkflowClient（wf.py 的实现在此）
   ├── workflow/db.py        DB 连接
   ├── workflow/schema.py    Schema
-  ├── workflow/state.py      chain_state（client.py:369 引用）
+  ├── workflow/state.py      chain_state（client.py:377 引用）
   ├── wf.py                 wf CLI（check/create/complete/confirm/…）
   ├── workflow_client.py    薄包装：re-export + check()
   │
@@ -144,7 +144,7 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 | `ccs-reload-knowledge.timer` | 每 10 分钟重注入角色 KNOWLEDGE 块（不带 `--restart-idle`，不重启进程） | `systemctl --user is-active ccs-reload-knowledge.timer` |
 | `ccs-intent-guardian.service` | 用户意图守护：对 ccs 的疑问/任务类输入注入两条自检提醒（至多 3 次；角色回过一轮即停，R123）（"你真解决了用户问题吗？"+"你真严格按用户提示完成了吗？"），防止答非所问 | `systemctl --user is-active ccs-intent-guardian.service` |
 
-**意图判定逻辑**：`src/user_intent_reminder.py` 的 `classify_intent` 将输入分为 `QUESTION`/`TASK`/`OTHER`；仅疑问/任务类在 `core.send` 路径经 `inject_reminder` 注入提醒（`pipeline`/`daemon` 自动化来源排除，防递归自提醒）。守护类 `IntentReminderDaemon`（`src/ccls_daemon_intent_classifier.py`）从 systemd 自启动，验证：`python3 src/ccls_daemon_intent_classifier.py --selfcheck`（11/11 PASS）。
+**意图判定逻辑**：`src/user_intent_reminder.py` 的 `classify_intent` 将输入分为 `QUESTION`/`TASK`/`OTHER`；仅疑问/任务类在 `core.send` 路径经 `inject_reminder` 注入提醒（`pipeline`/`daemon` 自动化来源排除，防递归自提醒）。守护类 `IntentReminderDaemon`（`src/ccls_daemon_intent_classifier.py`）从 systemd 自启动，验证：`python3 src/ccls_daemon_intent_classifier.py --selfcheck`（判据是全条 PASS，不记分项数）。
 
 ### 3. 哨兵文件
 
@@ -197,16 +197,16 @@ SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
 ```
-session-pipeline/src/routing/routes.py → subprocess run([sys.executable, CCS_CLI, "send", role, message])
+session-pipeline/src/routing/routes.py:446 → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
 ```
 
-**注意**：这是 pipeline→launcher 的唯一调用路径。launcher 不反向调用 pipeline。
+**注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
 
 `CCS_CLI` 定义在 `src/paths.py:46`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
 
-**`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：实测三天 497 个 completed 步骤里 32% 连 `exit_messages` 都没有，`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
+**`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：抽查过大量 completed 步骤，其中相当一部分连 `exit_messages` 都没有（要引用就现查，别抄比例），`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
-摘要为空/默认值/短于 12 字时 `wf complete` 会在 stderr 打一行提示并给出正确形态（不改完成语义、不拦流程）——提示在动作发生的那一刻出现，而不是靠 18KB 的 base.md 里一句「必须内联输出」。
+摘要为空/默认值/短于 12 字时 `wf complete` 会在 stderr 打一行提示并给出正确形态（不改完成语义、不拦流程）——提示在动作发生的那一刻出现，而不是靠 base.md 里一句「必须内联输出」。
 
 ### MCP 隔离
 
@@ -238,7 +238,7 @@ python3 src/ccs.py health
 `claude --model 9router_hermes --tools Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill --effort high`，
 workspace 的 `CLAUDE.md` 靠 claude 的 auto-discovery 加载（cwd 就是 `~/ccs-workspaces/<role>`）。
 不加 `--bare`：它只暴露 Bash/Edit/Read，Task/Agent、WebSearch、Write、Skill 全部消失。
-也不加 `--append-system-prompt-file`：与 auto-discovery 同时给会把同一份 prompt（实测 15–40KB/角色）注入两次，
+也不加 `--append-system-prompt-file`：与 auto-discovery 同时给会把同一份 prompt（每角色几十 KB，`wc -c` 现取）注入两次，
 而严格探针（`--tools ""` 禁工具、排除模型自读文件）下发现式加载能逐字复述文件中段小节，两者等价。
 实测一次：`/clear` 之后角色仍背出 9 小时前的旧文案，重启进程后才答出新文案（n=1，未验证
 claude 内部是否缓存该文件——不要当成通用结论，要重测再改写本节）。
@@ -256,7 +256,7 @@ claude 内部是否缓存该文件——不要当成通用结论，要重测再�
 cd ~/session-launcher
 # 1 复核空闲：必须 0 命中
 tmux capture-pane -p -J -t ccs-<R> | tail -8 | grep -c "esc to interrupt\|Retrying attempt"
-# 2 内存闸门：MemAvailable > 1229MB
+# 2 内存闸门：MemAvailable > 1000MB（tmux_ops.py:110 _MEM_FREE_MIN_MB）
 free -m
 # 3 找该角色的 claude pid（role = cwd basename）
 for p in $(pgrep -x claude); do [ "$(basename "$(readlink /proc/$p/cwd)")" = "<R>" ] && pid=$p; done

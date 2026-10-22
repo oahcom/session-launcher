@@ -9,7 +9,7 @@ session-pipeline → **session-launcher** → hermes-session-roles（定义层�
 
 launcher → pipeline 是已知的反向引用，全部是路径常量，不是业务调用：
 - `paths.py` 的 `SESSION_PIPELINE_SRC = ~/session-pipeline/src`
-- `ecosystem_health.py` 用它做 pipeline 侧 import/路由检查
+- `ecosystem_health.py` **不用**它：自己定义 `PIPELINE = HOME / "session-pipeline"`（:35）
 - `wf.py` 的 `templates` 子命令 `from template_registry import TemplateRegistry`
 
 ## Subpackage Structure
@@ -34,7 +34,7 @@ src/
 └── workflow/                    # client db schema
 ```
 
-CLI 子命令（`python3 src/ccs.py --help` 实测 19 个）：
+CLI 子命令（现取：`python3 src/ccs.py --help`）：
 start, config, auto-send, roles, stop, status, send, output, dashboard, health,
 register, p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-knowledge。
 
@@ -54,7 +54,7 @@ cancel, confirm, templates, my, ls, kanban, cleanup, stats。
 
 - `CcsHealth`（:55）`CcsSentinel`（:64）两个 dataclass。
 - `SENTINEL_DIR = ~/.hermes/run/ccs-sentinels`（:46），健康字段另落 `~/.hermes/run/ccs-health/`。
-- 函数：`write_sentinel`（:216）`read_sentinel`（:248）`list_sentinels`（:321）`delete_sentinel`（:226）`update_health`（:380）。
+- 函数：`write_sentinel` / `read_sentinel` / `list_sentinels` / `delete_sentinel` / `update_health`（行号会漂，现取 `grep -n '^def ' src/ops/sentinel.py`）。
 
 ## CrossRoleRouter（`routing/gatekeeper.py`）
 
