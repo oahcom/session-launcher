@@ -48,7 +48,12 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
 
 **stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
-`--dry-run` 只返回计划（`core.py:835-839`）。
+`--dry-run` 只返回计划（`core.py:835-839`）。`output`/`health` **没有** `--dry-run`：那两个参数
+2026-10-22 已删——旧实现收下参数照常真执行，只是把输出换成 JSON，传它现在直接 argparse 报错。
+
+**验证标准注入**（`routing/roles.py`）：persona 的 `eval_criteria` 只取**前 3 条**写进 workspace
+CLAUDE.md 的「### 验证标准」（`[:3]`，与 pipeline 运行期 `CRITERIA_WINDOW=3` 同口径）。写到第 4 条
+不会出现在角色上下文里，也不会被 eval_checker 执行——判据要按重要性排前面。
 
 **send()**：跨角色路由门禁 → 红线 1 拦截 gateway 重启 → 忙判据 → `_tmux_send`；
 tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]`。
