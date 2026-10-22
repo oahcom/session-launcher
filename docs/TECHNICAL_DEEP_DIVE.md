@@ -43,7 +43,7 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 
 **start()**：校验角色 → 查重（已在跑则不重复创建）→ `tmux_ops._memory_shortage` 闸门 →
 建 `~/ccs-workspaces/<role>` → 读 persona → 注入 KNOWLEDGE 块 → 起 tmux + claude →
-等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
+等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker 线程与 feed_listener 子进程。
 
 **stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
 `--dry-run` 只返回计划（`core.py` 的 `if dry_run:` 预检块，行号随改动漂，按 grep 定位）。
@@ -80,7 +80,7 @@ bus_timeout / session_id / engine / health。
 
 ### 3.7 ccs_socket.py — 直连
 
-`CCSClient`（`:34`）：SUBSCRIBE/PUBLISH，JSON-over-newline，走 `/tmp/sister_bus_ccs.sock`。
+`CCSClient`（`:34`）：SUBSCRIBE/PUBLISH，JSON-over-newline，走 `/tmp/sister_bus_ccs.sock`（该文件当前不存在、无监听，见 §4 直连行）。
 无认证——同机进程可任意 PUBLISH。
 
 ### 3.8 routing/ — 角色、门禁、伙伴
@@ -92,8 +92,8 @@ bus_timeout / session_id / engine / health。
 
 ### 3.9 ecosystem_health.py
 
-`--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
-角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。实测全 pass、exit=0（条数随运行态变化，别引用具体数）。
+`--json` 输出 `summary` 与逐项 `checks`（现取：`python3 src/ecosystem_health.py --json`）；`--ci` 任一检查失败即 exit 1。覆盖三项目目录、模块导入、语法、
+角色校验、路由表、硬编码路径、CCS 会话数、工作空间数（条数随运行态变化，别引用具体数）。
 
 ## 4. 协作模式（参数保留，能力已退场）
 
@@ -102,7 +102,7 @@ bus_timeout / session_id / engine / health。
 | 主从 | `--partner role --auto-restart` | 参数仍被接受，但 watchdog 是 CLI 进程内的 daemon 线程：`start()` 返回即消失 |
 | 对等 | `--bus-track category` | 同上（tracker 线程），轮次追踪实际由 pipeline 模板的 exit_condition 承担 |
 | 仲裁 | `--partner A --partner B --bus-track X` | 同上 |
-| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`，当前无监听（见 §5） |
+| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`；该文件不存在、无监听（`ls /tmp/sister_bus_*` 只有 cron/dkk/feed/ssk） |
 
 ## 5. 工作流
 
