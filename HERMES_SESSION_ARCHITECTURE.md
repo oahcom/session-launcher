@@ -112,7 +112,7 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 | 层次 | 实现 |
 |------|------|
 | 角色定义 | `persona_*.json: input_signals: ["bus cat=task @ccs-role"]` |
-| 消息路由 | `session-pipeline/src/routing/router.py 的 `get_consumers()`` → 决定谁该收 |
+| 消息路由 | `session-pipeline/src/routing/router.py:get_consumers` → 决定谁该收 |
 | 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（无 `ccs_send` 脚本） |
 | 执行 | claude 收到消息 → 处理 → 回复 |
 
@@ -277,8 +277,8 @@ persona_*.json  → 专业领域 + prompt
 
 ### Phase 3：三驱动统一封装（完成）
 - [x] 统一 API：`ccs.py start --drive … --feed-cat … --partner …`
-- [x] pipeline 侧 `routing/router.py get_consumers()` 自动路由
-- [x] feed listener 随 `start` 自动拉起（`core.py 的 `_start_feed_subprocess``）
+- [x] pipeline 侧 `routing/router.py:get_consumers` 自动路由
+- [x] feed listener 随 `start` 自动拉起（`core.py:_start_feed_subprocess`）
 
 ### Phase 4：LLM 驾驭工程（部分）
 - [x] ccs-monitor CLAUDE.md 决策树
