@@ -128,7 +128,10 @@ def measure(cut: float, pattern=None):
                     _ek = ("429" if "429" in tail else
                            "conn_lost" if "connection lost" in tail.lower() else "other")
                     _tag = re.search(r"\[([^\]]{3,40})\]", tail)
-                    _who = (_tag.group(1) if _tag else model or "?").split("/")[-1][:28]
+                    _tagv = _tag.group(1) if _tag else ""
+                    # 模型名才是端点线索；`[400]` 这类状态码 tag 不是端点（codex 指出）
+                    _who = (model if model and "synthetic" not in model
+                            else (_tagv if _tagv and not _tagv.isdigit() else "?")).split("/")[-1][:28]
                     r0["err:%s:%s" % (_ek, _who)] += 1
                 else:
                     r0["final"] += 1

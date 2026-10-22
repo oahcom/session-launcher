@@ -15,7 +15,7 @@ ccs.py start <role>  → 读取 persona JSON + prompt 模板
                      → inject_role_knowledge_into_workspace() 写入角色知识
                      → tmux send 发送初始任务指令
                      → 写入哨兵
-                     → 启动 watchdog/turn_tracker（CLI 进程内 daemon 线程：start 返回即消失）（CLI 进程内 daemon 线程：start 返回即消失）
+                     → 启动 watchdog/turn_tracker（CLI 进程内 daemon 线程：start 返回即消失）
 ```
 
 ## 关键路径
