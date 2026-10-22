@@ -265,7 +265,7 @@ persona_*.json  → 专业领域 + prompt
 - [x] bus_protocol.py feed push
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
-- [x] watchdog 线程（daemon=True，watchdog.py:248）
+- [x] watchdog 线程（`daemon=True`，`ops/watchdog.py` 的 `start_watchdog`）
 - [x] turn_tracker 线程（daemon=True，tracker.py:167）
 - [x] sentinel 健康字段
 - [x] 三方三轮审查
