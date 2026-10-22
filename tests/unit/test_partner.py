@@ -328,7 +328,7 @@ class TestCheckBusNotificationExceptions:
 
 
 # ══════════════════════════════════════════════════════════════════
-# P6: resolve — workflow DB / _output 异常
+# P6: resolve — workflow DB 异常
 # ══════════════════════════════════════════════════════════════════
 
 class TestResolveExceptions:
@@ -341,27 +341,14 @@ class TestResolveExceptions:
         with patch("routing.partner.read_sentinel", return_value=mock_sentinel):
             with patch("routing.partner.is_ccs_running", return_value=True):
                 with patch("routing.partner._find_pid", return_value=12345):
-                    with patch("routing.partner._output", return_value="last line"):
-                        with patch.object(_partner, "WORKFLOW_DB",
-                                          Path("/nonexistent/db/path")):
-                            pc = PartnerClient("tester")
-                            result = pc.resolve("engineer")
+                    with patch.object(_partner, "WORKFLOW_DB",
+                                      Path("/nonexistent/db/path")):
+                        pc = PartnerClient("tester")
+                        result = pc.resolve("engineer")
         assert result["role"] == "engineer"
         assert result["alive"] is True
         assert result["pending_tasks"] == 0
         assert result["current_task_id"] is None
-
-    def test_tmux_output_exception_returns_neg_one(self, mock_sentinel):
-        """P6b: _output 异常 → last_active_sec 保持 -1.0"""
-        from routing.partner import PartnerClient
-        with patch("routing.partner.read_sentinel", return_value=mock_sentinel):
-            with patch("routing.partner.is_ccs_running", return_value=True):
-                with patch("routing.partner._find_pid", return_value=12345):
-                    with patch("routing.partner._output",
-                               side_effect=RuntimeError("tmux dead")):
-                        pc = PartnerClient("tester")
-                        result = pc.resolve("engineer")
-        assert result["last_active_sec"] == -1.0
 
     def test_sentinel_none_still_returns_basic_info(self):
         """P6c: 哨兵不存在 → 基本字段使用默认值"""

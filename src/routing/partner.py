@@ -40,9 +40,6 @@ def _core() -> ModuleType:
     import core as _m
     return _m
 
-def _output(role: str, tail: int = 20, instance_id: int = 0) -> str:
-    return _core().output(role, tail=tail, instance_id=instance_id)
-
 def _check_wake(role: str, target: str) -> bool:
     return _core().check_wake_permission(role, target)
 
@@ -229,7 +226,7 @@ class PartnerClient:
 
         返回字段:
           role, alive, pid, lifecycle, pending_tasks,
-          last_active_sec, current_task_id, bus_msg_age
+          current_task_id, bus_msg_age
         """
         from tmux_ops import make_tmux_name
         sentinel = read_sentinel(role, instance_id)
@@ -270,23 +267,12 @@ class PartnerClient:
         # bus_msg_age
         bus_msg_age = sentinel.health.last_bus_msg_age if sentinel and hasattr(sentinel, "health") else -1.0
 
-        # last_active_sec: tmux last activity or uptime
-        last_active_sec = -1.0
-        if alive:
-            try:
-                output = _output(role, tail=1)
-                if output:
-                    last_active_sec = 0.0  # 有输出表示活跃
-            except Exception as e:
-                logger.debug("tmux output check failed: %s", e)
-
         return {
             "role": role,
             "alive": alive,
             "pid": pid,
             "lifecycle": lifecycle,
             "pending_tasks": pending_tasks,
-            "last_active_sec": last_active_sec,
             "current_task_id": current_task_id,
             "bus_msg_age": bus_msg_age,
         }
