@@ -74,8 +74,10 @@ def _turns(path):
 
 # -- 产物行（落盘口径）-------------------------------------------------
 # WHY 单列：回合指标回答「说了什么」，回答不了「留下什么」。2026-10-22 实测 24h：
-# devops 21 回合 / 0 行产物、coordinator 63 回合 / 286 行 —— 只看回合率两者都"正常"，
-# 只有落盘口径能看出谁在空转。窗口与 transcripts 同源。
+# devops 21 回合 / 0 行产物、coordinator 63 回合 / 286 行 —— 只看回合率两者都"正常"。
+# 口径有已知偏差：窗口按文件 mtime 切，mtime 被 cp -p/解包保留会漏计，老文件在窗口内
+# 改一次则整篇计入；所以它是「同角色前后对比」用的粗糙尺子，不是精确产出账。
+# 行动型角色（devops 就是）的产出是 bus 动作不是文件 —— 0 行不代表空转，看 _bus_writes。
 _WS = os.path.expanduser("~/ccs-workspaces")
 _SKIP_NAME = ("CLAUDE.md", "TASKS.md")
 _SKIP_DIR = (".claude", ".git", "__pycache__", ".pytest_cache", "node_modules")
@@ -102,6 +104,8 @@ def _artifact_lines(cut: float, root: str = _WS) -> dict:
                     data = open(p, "rb").read()
                 except OSError:
                     continue
+                if b"\x00" in data[:65536]:
+                    continue          # 二进制（coverage/db/缓存）不算文本产出，避免按换行字节乱计
                 h = hashlib.md5(data).hexdigest()
                 if h in seen:
                     continue
@@ -109,6 +113,28 @@ def _artifact_lines(cut: float, root: str = _WS) -> dict:
                 lines += data.count(b"\n")
         out[role_dir.rsplit("/", 1)[-1]] = lines
     return out
+
+
+def _bus_writes(cut: float) -> dict:
+    """{src: bus 写条数}。行动型角色（devops/coordinator）的产出是动作不是文件：
+    只数落盘会把它们判成空转 —— 2026-10-22 实测 24h devops 0 行产物、却写了 12 条 bus。"""
+    import sqlite3
+    p = os.path.expanduser("~/.hermes/sister_bus/blackboard.db")
+    try:
+        return dict(sqlite3.connect("file:" + p + "?mode=ro", uri=True).execute(
+            "SELECT src, COUNT(*) FROM facts WHERE ts >= ? GROUP BY src", (cut,)))
+    except sqlite3.Error:      # bus 不可读不该把整份报告拖死
+        return {}
+
+
+def _lookup(d: dict, role: str) -> int:
+    """角色名两套写法互查：转录目录用连字符，工作区/bus 用下划线，混用也要能命中。
+    不归一就是整列 0 —— 这个坑第一版踩过一次，留 assert 钉住。"""
+    key = role.replace("_", "-")
+    for k in (key, key.replace("-", "_")):
+        if k in d:
+            return d[k]
+    return 0
 
 
 def measure(cut: float, pattern=None):
@@ -241,11 +267,12 @@ def self_check():
             os.utime(p, (0, 0))
     art = _artifact_lines(1.0, os.path.join(td, "ws"))
     assert art["role_x"] == 2, art       # 去重后 1 份 2 行；跳过 CLAUDE.md 与旧 mtime
+    assert _lookup({"product_architect": 5}, "product-architect") == 5   # 名字归一（真实一对）
     print("self-check PASS", dict(t), "artifacts=2")
 
 
-def _report(hours, cut: float, s, art=None) -> None:
-    art = art or {}
+def _report(hours, cut: float, s, art=None, bus=None) -> None:
+    art, bus = art or {}, bus or {}
     tot = Counter()
     for r in s.values():
         tot.update(r)
@@ -272,18 +299,11 @@ def _report(hours, cut: float, s, art=None) -> None:
     print("产物行（落盘、按内容去重）= {}  行/千回合={:.0f}".format(
         _art_tot, 1000.0 * _art_tot / max(1, rt)))
 
-    # 角色名两套写法：转录目录用连字符（product-architect），工作区目录用下划线
-    # （product_architect）。不互相兜底时整列全是 0 —— 第一版就这么错过一次。
-    def _art_for(role):
-        for k in (role, role.replace("-", "_"), role.replace("_", "-")):
-            if k in art:
-                return art[k]
-        return 0
-
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
-        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f}".format(
+        print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d} 产物={:5d} 行/千回合={:6.0f} bus={:4d}".format(
             role, _n_turns(r), r["zero"], r["final"], r["no_evidence"],
-            _art_for(role), 1000.0 * _art_for(role) / max(1, _n_turns(r))))
+            _lookup(art, role), 1000.0 * _lookup(art, role) / max(1, _n_turns(r)),
+            _lookup(bus, role)))
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -302,4 +322,4 @@ if __name__ == "__main__":
         s, ndirs = measure(c)
         if not ndirs:
             raise SystemExit("找不到角色转录目录 —— 判据基准错了，不看 0 结果")
-        _report("{}h".format(h) if h else "custom", c, s, _artifact_lines(c))
+        _report("{}h".format(h) if h else "custom", c, s, _artifact_lines(c), _bus_writes(c))
