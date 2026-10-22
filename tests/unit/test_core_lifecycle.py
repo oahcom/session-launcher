@@ -94,7 +94,11 @@ class TestCoreLifecycle:
         mock_is_alive.assert_called_once()
         mock_check_memory.assert_called_once_with("qa")
         mock_workspace_create.assert_called_once()
-        mock_subprocess_run.assert_called()  # tmux new-session called
+        # 只断言"调用过 subprocess"等于没断言：session 名写错、漏 -c 也会绿。
+        _argv = next((c.args[0] for c in mock_subprocess_run.call_args_list
+                      if c.args[0][:2] == ["tmux", "new-session"]), None)
+        assert _argv, "没有 tmux new-session 调用"
+        assert "ccs-qa" in _argv, f"session 名错: {_argv}"
 
     @patch("core._is_alive")
     def test_start_existing_session_returns_false(self, mock_is_alive):

@@ -246,7 +246,10 @@ def _role_is_busy(tmux_name: str, pane: str | None = None) -> bool:
     升级路径：claude CLI 若暴露状态接口则改用协议查询。
     """
     pane = _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL) if pane is None else pane
-    return "esc to interrupt" in pane or "Retrying attempt" in pane
+    # 截取移进函数：调用方可能传整屏（_deliver_once 要 60 行判 TUI 就绪），
+    # 整屏里只要有角色自己打印过的 "esc to interrupt" 就会被永久判忙。
+    bar = "\n".join(pane.splitlines()[-_BUSY_SCAN_TAIL:])
+    return "esc to interrupt" in bar or "Retrying attempt" in bar
 
 
 def _proc_start_time(pid: int) -> float:
@@ -464,10 +467,7 @@ def _deliver_once(tmux_name: str, message: str):
     # 一次 capture 同时判忙和判 TUI 就绪：两者都要看 pane，分两次取会多付
     # 一次 tmux 调用（实测单次 0.1~5s）。
     pane = _tmux_output(tmux_name, tail=max(_BUSY_SCAN_TAIL, 60))
-    # 忙判据只看最后 _BUSY_SCAN_TAIL 行（状态栏）：capture-pane 取的是整个视口，
-    # 全量喂进去会让"esc to interrupt"这几个字只要出现在屏幕任何位置就被当成在
-    # 生成中（角色自己打印/讨论这句话就能触发）→ 空闲角色永远投不进消息。
-    if _role_is_busy(tmux_name, "\n".join(pane.splitlines()[-_BUSY_SCAN_TAIL:])) is True:
+    if _role_is_busy(tmux_name, pane) is True:
         logging.getLogger("tmux_ops").info(
             "tmux send 跳过（角色思考中）: %s", tmux_name)
         return "busy"

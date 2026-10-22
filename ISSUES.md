@@ -7,7 +7,7 @@
 |------|--------|-----------|
 | L1 | feed_listener 把 `Enter` 当字面文本 | 已修：拆成两次 send-keys，`feed_listener.py:120-127` |
 | L2 | persona workgroup 覆盖内置 `"*"` 通配 | 已修：`matrix.setdefault(name, set()).update(roles)`，`src/routing/gatekeeper.py:148` |
-| L3 | `_tmux_send` 吞异常、调用方仍报成功 | 已修：失败返回 False + `error("tmux send 重试耗尽…")`，`src/tmux_ops.py:418-450` |
+| L3 | `_tmux_send` 吞异常、调用方仍报成功 | 已修：失败返回 False + `error("tmux send 重试耗尽…")`，`src/tmux_ops.py:421-451` |
 | L4 | ondemand 哨兵 `tmux_session=""` 判为存活 | 已修：空串直接 False，`src/tmux_ops.py:215-218` |
 | L5 | feed_listener 跨进程不回收、孤儿常驻 | 已修：pidfile `~/.hermes/run/feed_listeners/<tmux>.pid`，`core.py:1282`、`feed_listener.py:144-169` |
 | L6 | 限流把绿/黄消息一并计入 | 已修：SQL 只数 `sensitivity='red'`，`gatekeeper.py:296` |

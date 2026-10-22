@@ -186,14 +186,19 @@ class TestLoadRoles:
             assert result == []
 
     def test_corrupted_json_skipped(self, roles_tmpdir):
-        """P2d: 损坏 JSON 文件被跳过（mock 模拟 filtered 结果）"""
+        """P2d: 损坏 JSON 被跳过 —— 走真实 fallback 分支，不 mock 过滤结果。
+
+        旧写法 patch 掉 _sl_load_roles 直接返回过滤后的列表，把「损坏文件要
+        容忍」这段被测逻辑整段替掉：删掉 fallback 里的 JSONDecodeError 分支
+        仍会绿。现在让 shared_loader 抛错触发 glob 回退，真读两个文件。
+        """
         import routing.roles as _roles
-        ok_role = {"name": "ok", "system_prompt": "", "eval_criteria": [],
-                   "input_signals": [], "output_targets": []}
-        with patch.object(_roles, '_sl_load_roles', return_value=[ok_role]):
+        d = roles_tmpdir["personas_dir"]
+        (d / "persona_01_ok.json").write_text(json.dumps(_sample_role("ok")))
+        (d / "persona_02_bad.json").write_text("{")
+        with patch.object(_roles, "_sl_load_roles", side_effect=RuntimeError("down")):
             result = _roles.load_roles()
-            assert len(result) == 1
-            assert result[0]["name"] == "ok"
+        assert [r["name"] for r in result] == ["ok"]
 
     def test_shared_loader_called_once_on_first_load(self, roles_tmpdir):
         """P2e: 首次 load 调用 shared_loader 验证，后续不再调用"""
