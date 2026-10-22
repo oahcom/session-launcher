@@ -70,7 +70,7 @@ def main():
     p_start.add_argument("--workspace", default="",
                          help="工作空间名（默认同 role），设置后 tmux 在对应 ~/ccs-workspaces/<name>/ 启动")
     p_start.add_argument("--drive", default="",
-                         help="驱动方式: loop / feed / ondemand（默认从 persona JSON 读取）")
+                         help="驱动配置: cron / goal / infinite / ondemand（默认从 persona JSON 读取）")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
     p_start.add_argument("--instance-id", type=int, default=0,
@@ -263,7 +263,7 @@ def main():
                     bus_track=args.bus_track,
                     bus_timeout=args.bus_timeout,
                     drive=args.drive,
-                        workspace=args.workspace,
+                    workspace=args.workspace,
                     no_auto_send=args.no_auto_send,
                     instance_id=i,
                 ))
@@ -340,8 +340,7 @@ def main():
         print(output(args.role, tail=args.tail, instance_id=args.instance_id))
 
     elif args.command == "health":
-        result = health_check(args.role)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(health_check(args.role), ensure_ascii=False, indent=2))
 
     elif args.command == "dashboard":
         from core import dashboard

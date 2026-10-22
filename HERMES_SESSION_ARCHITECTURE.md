@@ -1,6 +1,6 @@
 # Hermes Session 协作架构设计 V2
 
-> 版本: 2.0 | 日期: 2026-07-07 | 状态: 已实施（2026-10-22 按代码复核：Phase 2-4 已落地；数字类指标为当时实测，不可复验）
+> 版本: 2.0 | 日期: 2026-07-07 | 状态: 部分实施（2026-10-22 按代码复核：Phase 2 完成、Phase 3 完成但协作参数已退场、Phase 1 差 feed push、Phase 4 部分——见文末清单勾选状态；数字类指标为当时实测，不可复验）
 
 ---
 
@@ -60,8 +60,8 @@
 ├──────────────────────────────────────────────────────────────┤
 │  第二层：工作空间（~/ccs-workspaces/<role>/）                 │
 │  禁令 + 权限 + 工作方式 + 上下文                              │
-│  系统级 CCS：独立 CLAUDE.md                                   │
-│  普通级 CCS：全局 ~/.claude/CLAUDE.md                        │
+│  每次 ccs start 都建 workspace 并注入 WORKSPACE_SYS 块         │
+│  全局 ~/.claude/CLAUDE.md 只是被继承的底稿，不是身份来源         │
 ├──────────────────────────────────────────────────────────────┤
 │  第三层：驱动机制（session-launcher + session-pipeline）       │
 │  包装循环 + ccs-send + feed push                             │
@@ -77,15 +77,15 @@
 | 工作空间 | "我能做什么、禁止做什么" | 架构变更 | `~/ccs-workspaces/<role>/CLAUDE.md` |
 | 驱动机制 | "怎么执行、何时触发" | 系统优化 | session-launcher + session-pipeline |
 
-### CLAUDE.md 内容对比
+### CLAUDE.md 两层关系（2026-10-22 实测）
 
-| 内容 | 系统级 CLAUDE.md | 普通级 CLAUDE.md |
-|------|-----------------|-----------------|
-| 位置 | `~/ccs-workspaces/<role>/CLAUDE.md` | `~/.claude/CLAUDE.md` |
-| 角色定义 | ✅ 独立 | ✅ 共享 |
-| 权限/禁令 | ✅ 独立（如"不调 LLM"） | ✅ 共享（全局） |
-| 工作方式 | ✅ 独立（如"每 30s 巡检"） | ✅ 共享（bus 协议） |
-| 上下文 | ✅ 独立（监控历史） | ✅ 共享 |
+`core.py:490-508` 每次 start 都 `workspace_create` + `inject_role_knowledge_into_workspace`，
+`ops/workspace.py:57-78` 写 WORKSPACE_SYS 块 —— 每个角色都有一份独立的
+`~/ccs-workspaces/<role>/CLAUDE.md`（目录数现算 `ls ~/ccs-workspaces | wc -l`；2026-10-22 为 47）。所谓"系统级/普通级"在代码里
+**没有分支**：区别只是角色卡内容不同，注入路径完全相同。
+
+全局 `~/.claude/CLAUDE.md` 会被 claude 当作 cwd 上层继承，属于底稿；角色身份以
+workspace 那份为准（后注入覆盖）。
 
 ---
 
@@ -113,7 +113,7 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 |------|------|
 | 角色定义 | `persona_*.json: input_signals: ["bus cat=task @ccs-role"]` |
 | 消息路由 | `session-pipeline/src/routing/router.py:get_consumers` → 决定谁该收 |
-| 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（无 `ccs_send` 脚本） |
+| 消息推送 | `session-launcher/src/ccs.py send <role> "消息"` → tmux send-keys（`~/.local/bin/ccs-send` 是它的 exec 包装） |
 | 执行 | claude 收到消息 → 处理 → 回复 |
 
 ### 4.3 feed push 实时
@@ -260,27 +260,29 @@ persona_*.json  → 专业领域 + prompt
 
 ## 九、实施路径
 
-### Phase 1：架构落地（当前）
+### Phase 1：架构落地（部分：feed push 未实现）
 - [ ] bus_protocol.py feed push（**未实现**：写入只落 SQLite，`grep -rn _notify_feed ~/.hermes/scripts` 零命中，见 §4.3）
 - [x] socket_server.py feed agent
 - [x] feed_listener.py 实时监听
 - [x] watchdog 线程（`daemon=True`，`ops/watchdog.py` 的 `start_watchdog`）
 - [x] turn_tracker 线程（daemon=True，tracker.py 的 `start_tracker`）
 - [x] sentinel 健康字段
-- [x] 三方三轮审查
+- [ ] 三方三轮审查（src/ 无承载代码，只有流程约定，不可勾）
 
 ### Phase 2：CLAUDE.md 独立化（完成）
 - [x] 工作空间目录 `~/ccs-workspaces/`（`ccs workspace create/list`）
 - [x] ccs-monitor CLAUDE.md 存在：`~/ccs-workspaces/ccs-monitor/CLAUDE.md`
-- [x] `--workspace` 参数（`src/ccs.py:70`）；`ccs_start.py` 已删（`2e2af8b`），入口是 `ccs.py`
+- [x] `--workspace` 参数（`src/ccs.py` 的 p_start.add_argument，行号随改动漂，按 grep 定位）；`ccs_start.py` 已删（`2e2af8b`），入口是 `ccs.py`
 - [x] 启动时注入角色知识块（`routing/roles.py`）
 
-### Phase 3：三驱动统一封装（完成）
-- [x] 统一 API：`ccs.py start --drive … --partner … --bus-track …`
+### Phase 3：三驱动统一封装（完成，但协作参数已退场）
+- [x] 统一 API：`ccs.py start --drive …`（`--partner/--bus-track/--auto-restart` 仍在 argparse
+  里，但守护线程随 CLI 进程退出，协作已收编到 pipeline 模板——见 `src/ccs.py` 的 --help）
 - [x] pipeline 侧 `session-pipeline/src/routing/router.py:get_consumers` 自动路由
-- [x] feed listener 随 `start` 自动拉起（`core.py:_start_feed_subprocess`）
+- [x] feed listener 随 `start` 自动拉起——**仅 drive≠ondemand**（`_start_monitoring_threads`；
+  19 个 persona 里 12 个是 ondemand，它们没有 listener）
 
 ### Phase 4：LLM 驾驭工程（部分）
-- [x] ccs-monitor CLAUDE.md 决策树
-- [ ] 审计 bus cat=monitor_audit（未验证：无独立消费者）
+- [ ] ccs-monitor CLAUDE.md 决策树（真实文件无此章节，只有身份/职责/禁令段）
+- [ ] 审计 bus cat=monitor_audit（写入已实现：`watchdog.py:77`、`tracker.py:55`；缺消费者）
 - [x] 降级策略：watchdog/tracker 不依赖 LLM

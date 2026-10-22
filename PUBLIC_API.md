@@ -62,7 +62,7 @@ cancel, confirm, templates, my, ls, kanban, cleanup, stats。
 
 ## CCSClient（`ccs_socket.py:34`）
 
-SUBSCRIBE/PUBLISH/PING/STATS，JSON-over-newline。**无认证**：同机进程可任意 PUBLISH。
+SUBSCRIBE/PUBLISH（PING/STATS 仅在服务端 `socket_server.py` 实现），JSON-over-newline。**无认证**：同机进程可任意 PUBLISH。
 原 `stream` 方法已删（`be758a1`）；要 tail 用 `ccs.py output --tail`。
 
 ## 已不存在，勿引用

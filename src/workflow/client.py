@@ -33,10 +33,9 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     此时改用 context.reason（"连续6分钟无活跃工作流" 这类真实原因写在那里）。
     分类规则按生产日志实际文案反推，见 tests/unit/test_wf_stats_cause.py。
     """
-    text = (detail or "").strip()
-    # 父链死了被级联取消，不是角色或引擎的错，单列一桶
+    text = str(detail or "").strip()   # SQLite 动态类型：detail 可能是数字/list
     # 两种"调用方给了理由"的包装：reason=... 与 workflow cancelled (...)。
-    # 不剥壳会让里的"重复派发/误路由"永远落进 other。
+    # 不剥壳会让里面的"重复派发/误路由"永远落进 other。
     by_caller = False
     if text.startswith("workflow cancelled"):
         # 只剥一层外壳括号；strip("()") 会把 reason 里的右括号也吃掉
@@ -58,12 +57,15 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
             return "zombie_row_mismatch"
         # 责任线索：queued 是「角色忙/未就绪时等待的空转 tick 数」（≈10s/tick，
         # engine.py 的 busy 分支每次 +1），不是派单被拒次数——被拒另有
-        # delivery_fail_count（这 147 例全是 0）。queued>0 说明卡在「等角色腾手」，
-        # 是系统侧；queued=0 才可能是角色侧，但它在子链接管父步时会被清零
-        # （wf_lifecycle.py 926/1045/1071），所以 queued=0 不等于从未排队。
-        m = re.search(r"queued=(\d+)", text)
+        # delivery_fail_count（这批步骤里根本没有该键，读到的是默认 0）。
+        # queued>0 说明卡在「等角色腾手」，是系统侧；queued=0 才可能是角色侧，
+        # 但子链接管父步时会被清零（wf_lifecycle 的 adopt 路径），所以 =0 ≠ 从未排队。
+        # 左边界：requeued=5 / total_queued=96 不是这个字段
+        m = re.search(r"(?<![A-Za-z_])queued=(\d+)", text)
         if not m:
-            return "zombie_stall"        # 旧日志没有 queued 字段
+            # 三种格式落这里：旧版文案（未埋点）、条件1 超时耗尽、条件2 模板预算，
+            # 都没有 queued 字段——不能当成「角色没动」的证据。
+            return "zombie_stall"
         # 名字不叫 silent：抽读 10 例 queued=0 的回收，10/10 的角色在窗口内一直在调工具
         # （57~141 条 assistant 消息），是「干了活没按契约回传」而不是没动。这里只敢说
         # 「没有等待角色的信号」。真静默要用转录探针判（见 production_audit_monitor）。

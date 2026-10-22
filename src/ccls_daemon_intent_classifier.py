@@ -506,10 +506,6 @@ class IntentReminderDaemon:
                 _rt = re.search(r"req_ts=([\d.]+)", _body)
                 try:
                     ts = float(_rt.group(1)) if _rt else float(f.get("timestamp") or 0.0)
-                    # 未签名的未来 req_ts 会赢下 max-ts 竞争并让该角色永久静默
-                    # （TTL 永不生效）。夹到当前时间+60s：允许时钟小幅漂移，不允许穿越
-                    # （审查 P2-2，实测 no-sig 远未来事实可永久压住合法痕迹）。
-                    ts = min(ts, time.time() + 60)
                 except (TypeError, ValueError):
                     # 脏 req_ts（1.2.3 / 空值）不得整条丢弃：丢一条 = 该角色静默零
                     # 提醒。退回 facts 时间戳，再失败才跳过（独立审查 T7）。
@@ -517,6 +513,18 @@ class IntentReminderDaemon:
                         ts = float(f.get("timestamp") or 0.0)
                     except (TypeError, ValueError):
                         continue
+                if ts > time.time() + 60:
+                    # 未来 req_ts 不允许"穿越"（审查 P2-2：会让该角色永久静默）。
+                    # 但旧写法 `ts = min(ts, now+60)` 夹出来的是一个**每 tick 都变**的值：
+                    # 下一段的 `req != st.request_ts` 于是每 tick 成立 → 提醒预算每 tick 重置
+                    # （上限 3 失效），TTL 也永不生效；同时它对 max-ts 竞争恒胜，把真实痕迹
+                    # 永久压住。退回 facts 时间戳（真实写入时刻）：不穿越，也不每 tick 装新。
+                    # 现状（2026-10-22 复核）：core._trace_evidence 用 time.time()，
+                    # 正常写入方不会产生未来值，所以这是给同 uid 写入方/时钟漂移留的护栏，
+                    # 不是已发生故障的止血点 —— qa 的 250 条「已完成，无新动作」另有主因。
+                    # 天花板：facts.ts 自身异常时仍可能为未来值；bus 的 ts 由写入侧提供，
+                    # 能改它的人本来就能改标题，不在此处再加复杂度。
+                    ts = float(f.get("timestamp") or 0.0)
                 # 请求正文（core.send 写入，见 core._req_digest）：无此字段的
                 # 旧痕迹 → ""，调用方据此跳过注入。
                 # 前缀匹配足够：所有字段都取自 _body，sig 之后的字节不参与解析。

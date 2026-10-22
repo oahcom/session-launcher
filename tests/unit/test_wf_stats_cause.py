@@ -44,6 +44,11 @@ CASES = [
     (None, None, "no_log"),                        # 同上：detail 缺失
     ("workflow cancelled", "连续6分钟无活跃工作流", "starvation"),  # 默认文案 → 回退 reason
     ("s1: 角色不响应自动取消", "任何理由都不改桶", "role_unresponsive"),  # detail 优先
+    # 左边界与类型：requeued / 小数 / 非字符串 detail 都不能误判
+    ("running 状态 s1 requeued=5 无推进记录", None, "other"),
+    ("僵尸回收: running 状态 s1 无推进记录 (timeout_count=0, queued=0.5)", None, "zombie_stall_no_wait"),
+    ("僵尸回收: running 状态 s1 无推进记录 (timeout_count=0, total_queued=96)", None, "zombie_stall"),
+    (123, None, "other"),   # 非字符串 detail 不该打崩 stats，归 other
     ("cascade from parent wf_sub_abc", None, "cascade"),  # 父链级联，不是角色问题
     ("reason=zombie cleanup", None, "zombie_stall"),      # launcher 自己的清理传英文
 ]

@@ -454,6 +454,29 @@ class TestRequestLookup(unittest.TestCase):
             {"qa": (999.0, Intent.TASK, "")})
 
     @patch("ccls_daemon_intent_classifier.subprocess.run")
+    def test_future_req_ts_falls_back_to_fact_ts(self, mock_run):
+        """未來 req_ts 不許夾成「剛發生」：那會把預算與 TTL 一起廢掉。
+
+        舊寫法 `ts = min(ts, now+60)` 夾出的值每 tick 都變 →
+        `req != st.request_ts` 每 tick 成立 → 上限 3 形同不存在、TTL 永不生效，
+        且對 max-ts 競爭恆勝（審查 P2-2 的「永久靜默」正由此而來）。
+        判據：未來值退回 facts 時間戳，且**兩次讀取得到同一個值**（不再漂移）。
+        注：正常寫入方（core._trace_evidence 用 time.time()）不產生未來值，
+        這是給同 uid 寫入方/時鐘漂移留的護欄，不是已發生故障的止血點。
+        """
+        import json
+        mock_run.return_value = MagicMock(
+            spec=CompletedProcess, returncode=0,
+            stdout=json.dumps({"facts": [
+                {"title": "[user_intent_reminder] 已注入意图提醒 → qa",
+                 "timestamp": 111.0,
+                 "evidence": "source=user role=qa req_ts=9999999999.0 intent=task"}]}))
+        first = IntentReminderDaemon._read_request_traces()
+        self.assertEqual(first, {"qa": (111.0, Intent.TASK, "")})
+        self.assertEqual(IntentReminderDaemon._read_request_traces(), first,
+                         "未來 req_ts 不得讓 request 時刻每 tick 漂移（預算會每 tick 重置）")
+
+    @patch("ccls_daemon_intent_classifier.subprocess.run")
     def test_keeps_latest_per_role(self, mock_run):
         """同角色多條痕跡 → 取最新（舊請求不應覆蓋新請求）。"""
         import json

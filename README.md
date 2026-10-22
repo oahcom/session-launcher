@@ -112,6 +112,7 @@ src/                                   （ls src 实测）
   ├── gateway_guard.py      红线 1：拦截 gateway 重启指令
   ├── user_intent_reminder.py + ccls_daemon_intent_classifier.py  意图提醒与守护
   └── file_size_audit.py    文件大小审计
+  scripts/dialogue_quality.py  角色对话质量口径（按回合统计；见「验证」）
 ```
 
 ---
@@ -163,15 +164,33 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 }
 ```
 
-### 4. 协作模式
+### 4. 协作模式（已退场）
 
-| 模式 | 命令 | 说明 |
+`--partner` / `--bus-track` / `--auto-restart` 仍被接受，但守护线程与 tracker 是
+**CLI 进程内的 daemon 线程**：`ccs start` 返回后进程退出，二者随之消失
+（`src/ccs.py:35-47` 的 --help 自己写着“已废弃，由 workflow 引擎取代”）。
+角色间协作改由 session-pipeline 的 workflow 模板承担；launcher 只剩单角色生命周期。
+
+| 仍在用 | 命令 | 说明 |
 |------|------|------|
-| 主从 | `--partner <role> --auto-restart` | 守护伙伴存活，挂了自动重启 |
-| 对等 | `--bus-track <category>` | 追踪 bus 轮次，超时发死锁提醒 |
-| 仲裁 | `--partner A --partner B --bus-track X` | 同时守护 + 追踪 |
+| 直连 | `send-direct <from> <to> <msg>` | 接口保留，**当前无监听**（见 §5 现状） |
 
-### 4. Bus Push 实时推送
+### 5. 直接通信 Socket
+
+```
+ccs.py send-direct alice bob "hi"
+  └─ CCSClient("alice").connect()
+       └─ SUBSCRIBE → /tmp/sister_bus_ccs.sock
+            └─ PUBLISH → bob (<1ms)
+```
+
+**协议**：JSON-over-newline。客户端（`ccs_socket.py`）只发 SUBSCRIBE / PUBLISH；PING / STATS 只在服务端（`~/.hermes/scripts/hermes_bus/socket_server.py`）实现
+
+**认证**：无——socket 不读任何令牌，同机进程可任意 PUBLISH。
+
+**现状（2026-10-22 实测）**：`ls /tmp/sister_bus_*` 只有 `cron/dkk/feed/ssk` 四条，没有 `_ccs.sock`，也没有进程监听它 —— `send-direct` 目前不可用；pipeline 侧口径一致（`session-pipeline/docs/SYSTEM_LANDSCAPE.md`「无单一 `_ccs.sock`」）。上面的链路是设计形态，不是现役。
+
+### 6. Bus Push 实时推送
 
 ```
 bus_client.py write debate "消息"
@@ -196,13 +215,15 @@ SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
+发消息的是 `session-pipeline/src/routing/routes.py:route_to_ccs` 里那个内嵌的 `_send()`（第 444 行）：
+
 ```
-session-pipeline/src/routing/routes.py:send_to_role → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
+subprocess.run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
 ```
 
-**注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
+**注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；现查子命令：`start` / `stop` / `send` / `status-role`（`python3 src/ccs.py --help` 为准；`partner`、`check-wake` 已不存在）。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
 
-`CCS_CLI` 定义在 `src/paths.py:45`（`SESSION_LAUNCHER_SRC / "ccs.py"`，本地定义，非从 `hermes_bus.config` 导入）；pipeline 侧另有自己的 `CCS_CLI`。
+`CCS_CLI` 定义在 `src/paths.py` 的 `CCS_CLI = SESSION_LAUNCHER_SRC / "ccs.py"`（本地定义，非从 `hermes_bus.config` 导入；行号会漂，按符号 grep）；pipeline 侧另有自己的 `CCS_CLI`。
 
 **`wf complete <wf_id> --summary` 是角色与引擎的唯一一次性交接**：抽查过大量 completed 步骤，其中相当一部分连 `exit_messages` 都没有（要引用就现查，别抄比例），`--summary` 默认 `done` 会被引擎当成该步的全部产出。摘要里带证据（命令 + 输出摘要 / 路径 / exit code），否则下游只能拍脑袋判「做完了还是建成即盖戳」。
 
@@ -226,7 +247,13 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 python3 -m pytest tests/ -q          # 全 passed 即基线（数量不写死：并发改动会增减）
 python3 src/ecosystem_health.py --json   # 全 true 即健康；兄弟仓改代码期间失败项集中在 pipeline 侧 import
 python3 src/ccs.py health
+python3 scripts/dialogue_quality.py --self-check   # 判据自证（能区分过渡句/收尾/网关错误）
+python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合/零工具率/无证据收尾，按注入类别分层
 ```
+
+读法：**收尾块里网关错误要单列**（API Error 不算角色偷懒）；零工具率必须按注入类别分层看，
+24h 实测类别间差距极大（`reminder` 74% vs `api_nudge` 4%）—— 混在一起算出来的数会把
+「注入噪音」读成「角色不干活」。
 
 `tests/test_wl_selfcheck.py` 断言的是本仓 `src/workflow/client.py` 里的 `kanban_board` /
 `_validate_create_task`（2026-10-22 修：原断言去已不存在的 `pipeline_workflow/client.py` 找，

@@ -10,12 +10,12 @@ CCS 创建/停止/检测/注入，worktree 管理，哨兵系统，跨角色协�
 
 ```
 ccs.py start <role>  → 读取 persona JSON + prompt 模板
-                     → 创建 tmux session（ccs-<role>）
+                     → 创建 tmux session（ccs-<role>；instance_id>0 时 ccs-<role>-<id>）
                      → 创建 ccs-workspaces/<role>/ 目录
                      → inject_role_knowledge_into_workspace() 写入角色知识
                      → tmux send 发送初始任务指令
                      → 写入哨兵
-                     → 启动 watchdog/turn_tracker
+                     → 启动 watchdog/turn_tracker（CLI 进程内 daemon 线程：start 返回即消失）（CLI 进程内 daemon 线程：start 返回即消失）
 ```
 
 ## 关键路径
@@ -25,10 +25,11 @@ ccs.py start <role>  → 读取 persona JSON + prompt 模板
          ↓ 继承
 ~/.claude/CLAUDE.md（全球身份）
          ↓ 叠加 WORKSPACE_SYS marker
-ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块）
-         ↓ 叠加 SESSION_ROLE marker
-主项目 ~/CLAUDE.md（运行时注入，legacy）
+ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块 = 最终身份层）
 ```
+
+SESSION_ROLE marker 与 ~/CLAUDE.md 运行时注入已退场：`routing/roles.py:113-117` 只剩
+常量定义，全仓无写入调用。
 
 ## 关键规则
 
@@ -42,5 +43,6 @@ python3 src/ccs.py start <role> --partner x   # 带伙伴
 ### 服务检查
 ```bash
 python3 src/ccs.py status          # 不带参数；单角色用 status-role <role>
-python3 src/ecosystem_health.py --json                # 实测 115/115 全 pass、exit=0（2026-10-22）
+python3 src/ecosystem_health.py --json                # 只打 summary（当前 114/115，wf:engine 随 pipeline 侧 import 抖动）
+python3 src/ecosystem_health.py --ci                  # 要门禁 exit code 用这个
 ```

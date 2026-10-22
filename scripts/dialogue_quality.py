@@ -82,13 +82,16 @@ def measure(cut: float, pattern=None):
                 t0 = _ts(recs[0])
                 if t0 is None or t0 < cut:
                     continue
-                r0, tools, tail, tail_err = s[role], 0, None, False
+                r0, tools, tail, tail_err, model = s[role], 0, None, False, ""
                 for r in recs:
                     if r.get("type") != "assistant":
                         continue
                     c = (r.get("message") or {}).get("content")
                     if not isinstance(c, list):
                         continue
+                    _m = (r.get("message") or {}).get("model") or ""
+                    if _m and "synthetic" not in _m:
+                        model = _m
                     has = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in c)
                     texts = [b.get("text") or "" for b in c
                              if isinstance(b, dict) and b.get("type") == "text"]
@@ -120,6 +123,13 @@ def measure(cut: float, pattern=None):
                     continue
                 if tail_err:      # 判据在上面按"最后一块"算好了，这里不再看整串行首
                     r0["api_error"] += 1
+                    # 端点归因：只知道"网络不好"没法处置。2026-10-22 实测 24h 的 429
+                    # 全部来自 ollama/gpt-oss:120b —— 换模型即可解，不必查网关。
+                    _ek = ("429" if "429" in tail else
+                           "conn_lost" if "connection lost" in tail.lower() else "other")
+                    _tag = re.search(r"\[([^\]]{3,40})\]", tail)
+                    _who = (_tag.group(1) if _tag else model or "?").split("/")[-1][:28]
+                    r0["err:%s:%s" % (_ek, _who)] += 1
                 else:
                     r0["final"] += 1
                     if not _EVID.search(tail):
@@ -209,6 +219,9 @@ if __name__ == "__main__":
     print("按注入类别（零工具率）：" + "  ".join(
         "{}={}({:.0f}%)".format(k, tot["k:" + k], 100 * tot["k:" + k + ":zero"] / max(1, tot["k:" + k]))
         for k in kinds))
+    errs = sorted(((k, v) for k, v in tot.items() if k.startswith("err:")), key=lambda kv: -kv[1])
+    if errs:
+        print("网关错误按端点: " + "  ".join("{}={}".format(k[4:], v) for k, v in errs[:6]))
     for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero"])[:8]:
         print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
             role, sum(v for k, v in r.items() if k.startswith("k:") and not k.endswith(":zero")

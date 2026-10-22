@@ -15,7 +15,7 @@ Session 生态的执行层：起 CCS（Claude Code Session）进程、管生命�
 ```
 src/
 ├── ccs.py                    # CLI（子命令见 --help）
-├── core.py                   # 生命周期编排（1332 行）
+├── core.py                   # 生命周期编排（行数现算：wc -l src/core.py）
 ├── tmux_ops.py               # tmux 底层 + 内存闸门 + 忙判据
 ├── ccs_socket.py             # CCSClient（Unix Socket 直连）
 ├── codex_ops.py              # Codex session
@@ -48,7 +48,7 @@ p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-kno
 等提示符 → 发初始 prompt → 写哨兵 → 起 watchdog/tracker/feed 子进程。
 
 **stop()**：回收 watchdog/tracker 线程、按 pidfile 杀 feed_listener、kill tmux session、删哨兵；
-`--dry-run` 只返回计划（`core.py:835-839`）。`output`/`health` **没有** `--dry-run`：那两个参数
+`--dry-run` 只返回计划（`core.py` 的 `if dry_run:` 预检块，行号随改动漂，按 grep 定位）。`output`/`health` **没有** `--dry-run`：那两个参数
 2026-10-22 已删——旧实现收下参数照常真执行，只是把输出换成 JSON，传它现在直接 argparse 报错。
 
 **验证标准注入**（`routing/roles.py`）：persona 的 `eval_criteria` 只取**前 3 条**写进 workspace
@@ -70,7 +70,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 ### 3.4 ops/sentinel.py — 哨兵
 
-**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，实测 12~17 波动），
+**会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，现算 `ls ~/.hermes/run/ccs-sentinels | wc -l`），
 健康字段另落 `~/.hermes/run/ccs-health/<role>.json`。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
 bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 tmux + 角色 JSON 派生，不读这两个目录。
@@ -103,14 +103,14 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 `--json` 输出 `summary` 与逐项 `checks`；`--ci` 异常时 exit 1。覆盖三项目目录、模块导入、语法、
 角色校验、路由表、硬编码路径、CCS 会话数、工作空间数。实测全 pass、exit=0（条数随运行态变化，别引用具体数）。
 
-## 4. 协作模式
+## 4. 协作模式（参数保留，能力已退场）
 
 | 模式 | CLI | 说明 |
 |------|-----|------|
-| 主从 | `--partner role --auto-restart` | 守护伙伴，挂了自动重启 |
-| 对等 | `--bus-track category` | 追踪 bus 轮次，超时提醒 |
-| 仲裁 | `--partner A --partner B --bus-track X` | 守护 + 追踪 |
-| 直连 | `send-direct from to msg` | 不走 bus，Unix Socket |
+| 主从 | `--partner role --auto-restart` | 参数仍被接受，但 watchdog 是 CLI 进程内的 daemon 线程：`start()` 返回即消失 |
+| 对等 | `--bus-track category` | 同上（tracker 线程），轮次追踪实际由 pipeline 模板的 exit_condition 承担 |
+| 仲裁 | `--partner A --partner B --bus-track X` | 同上 |
+| 直连 | `send-direct from to msg` | 需要 `/tmp/sister_bus_ccs.sock`，当前无监听（见 §5） |
 
 ## 5. 工作流
 
