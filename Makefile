@@ -1,4 +1,4 @@
-.PHONY: all test lint check doccheck clean
+.PHONY: all test lint check doccheck quality clean
 
 all: test lint check doccheck
 
@@ -17,6 +17,12 @@ doccheck:
 	@if [ -f ../session-pipeline/scripts/doccheck.py ]; then \
 		python3 ../session-pipeline/scripts/doccheck.py --root . ; \
 	else echo 'SKIP doccheck: 缺 ../session-pipeline/scripts/doccheck.py'; fi
+
+# 对话质量的唯一口径（按回合，不按消息块）。不写进 all：它读的是生产转录、数秒起步，
+# 而且数字每天变，不该当门禁。
+quality:
+	@python3 scripts/dialogue_quality.py --self-check
+	@python3 scripts/dialogue_quality.py --hours 24
 
 clean:
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

@@ -112,6 +112,7 @@ src/                                   （ls src 实测）
   ├── gateway_guard.py      红线 1：拦截 gateway 重启指令
   ├── user_intent_reminder.py + ccls_daemon_intent_classifier.py  意图提醒与守护
   └── file_size_audit.py    文件大小审计
+  scripts/dialogue_quality.py  角色对话质量口径（按回合统计；见「验证」）
 ```
 
 ---
@@ -246,7 +247,13 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 python3 -m pytest tests/ -q          # 全 passed 即基线（数量不写死：并发改动会增减）
 python3 src/ecosystem_health.py --json   # 全 true 即健康；兄弟仓改代码期间失败项集中在 pipeline 侧 import
 python3 src/ccs.py health
+python3 scripts/dialogue_quality.py --self-check   # 判据自证（能区分过渡句/收尾/网关错误）
+python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合/零工具率/无证据收尾，按注入类别分层
 ```
+
+读法：**收尾块里网关错误要单列**（API Error 不算角色偷懒）；零工具率必须按注入类别分层看，
+24h 实测类别间差距极大（`reminder` 74% vs `api_nudge` 4%）—— 混在一起算出来的数会把
+「注入噪音」读成「角色不干活」。
 
 `tests/test_wl_selfcheck.py` 断言的是本仓 `src/workflow/client.py` 里的 `kanban_board` /
 `_validate_create_task`（2026-10-22 修：原断言去已不存在的 `pipeline_workflow/client.py` 找，

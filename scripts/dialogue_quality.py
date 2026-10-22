@@ -23,6 +23,18 @@ import re
 from collections import Counter, defaultdict
 
 _ERR = re.compile(r"^\s*(API Error|upstream connection lost)")
+# 注入类别（回合质量必须按「喂了什么」分层看：2026-10-22 实测类别间差距 2.9%~91.9%）
+_KINDS = (("api_nudge", "API 错误中断"), ("reminder", "【用户意图提醒"),
+          ("notice", "[notice"), ("workflow", "[workflow]"),
+          ("banner", "## "), ("continuation", "This session is being continued"))
+
+
+def _kind(head: str) -> str:
+    h = head.strip()
+    for k, pat in _KINDS:
+        if h.startswith(pat) or pat in h[:40]:
+            return k
+    return "task/other"
 _EVID = re.compile(r"~/|/home/|\.\w{1,4}\b|:[0-9]{1,4}\b|git |pytest|sqlite3|"
                    r"journalctl|#\d{5,}|wf_[0-9a-f]{6,}|\bPASS\b|\bFAIL\b")
 PAT = os.path.expanduser("~/.claude/projects/-home-administrator-ccs-workspaces-*")
@@ -80,6 +92,10 @@ def measure(cut, pattern=PAT):
                     blocks.append((has, txt))
                 if not tools:
                     r0["zero_tool_turns"] += 1
+                k = _kind(head)
+                r0["kind:" + k] += 1
+                if not tools:
+                    r0["kind:" + k + ":zero"] += 1
                 r0["turn_tools"] += tools
                 tail = None
                 for has, txt in blocks:
@@ -151,6 +167,13 @@ if __name__ == "__main__":
             cut, tot["turns"], tot["zero_tool_turns"],
             100 * tot["zero_tool_turns"] / max(1, tot["turns"]),
             tot["final_text"], tot["final_no_evidence"], tot["final_api_error"]))
+        kinds = sorted({kk[5:] for r in s.values() for kk in r
+                        if kk.startswith("kind:") and not kk.endswith(":zero")},
+                       key=lambda kk: -tot["kind:" + kk])
+        print("按注入类别（零工具回合率）：" + "  ".join(
+            "{}={}({:.0f}%)".format(kk, tot["kind:" + kk],
+                                    100 * tot["kind:" + kk + ":zero"] / max(1, tot["kind:" + kk]))
+            for kk in kinds))
         for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero_tool_turns"])[:8]:
             print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
                 role, r["turns"], r["zero_tool_turns"], r["final_text"], r["final_no_evidence"]))
