@@ -172,7 +172,7 @@ python3 src/ccs.py register <role> <tmux> # 注册手动 tmux 为 CCS
 
 | 仍在用 | 命令 | 说明 |
 |------|------|------|
-| 直连 | `send-direct <from> <to> <msg>` | 不走 bus，<1ms Unix Socket |
+| 直连 | `send-direct <from> <to> <msg>` | 接口保留，**当前无监听**（见 §5 现状） |
 
 ### 5. 直接通信 Socket
 
