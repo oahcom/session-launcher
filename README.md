@@ -248,8 +248,8 @@ launcher 在启动 CCS 时为每个角色写独立的 `.claude/settings.json`，
 python3 -m pytest tests/ -q          # 全 passed 即基线（数量不写死：并发改动会增减）
 python3 src/ecosystem_health.py --json   # 全 true 即健康；兄弟仓改代码期间失败项集中在 pipeline 侧 import
 python3 src/ccs.py health
-python3 scripts/dialogue_quality.py --self-check   # 判据自证（能区分过渡句/收尾/网关错误）
-python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合/零工具率/无证据收尾/产物行，按注入类别分层
+python3 scripts/dialogue_quality.py --self-check   # 判据自证（过渡句/收尾/网关错误 + 产物行去重与名字归一）
+python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合/零工具率/无证据收尾/产物行/bus 写条数，按注入类别分层
 ```
 
 读法：**收尾块里网关错误要单列**（API Error 不算角色偷懒）；零工具率必须按注入类别分层看，
