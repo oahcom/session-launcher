@@ -100,7 +100,7 @@ workspace CLAUDE.md 指令 → 包装循环起 claude → 本轮结束即重启�
 | 层次 | 实现 |
 |------|------|
 | 角色定义 | `persona_*.json: drive`（实测取值 `infinite`/`ondemand`/`cron`，无 `loop`） |
-| 启动包装 | `ccs.py start` 起 `bash -c "while true; do claude …; done"`（`core.py` 的启动包装处），**不发 `/loop`**（`grep -rn '/loop' src/` = 0） |
+| 启动包装 | `ccs.py start` 起 `bash -c "while true; do claude …; done"`（`core.py` 的启动包装处），**不发 `/loop`**（`grep -rn '/loop' src/` = 0）。**例外 `--drive ondemand`**：`core.py:357-374` 写 workspace + 哨兵即 return，不建 tmux、不起 claude、不起 feed（persona 12/19 是 ondemand） |
 | 执行 | 每轮 claude 由 workspace `CLAUDE.md` 驱动，轮间由包装循环重启 |
 
 ### 4.2 ccs-send 外驱

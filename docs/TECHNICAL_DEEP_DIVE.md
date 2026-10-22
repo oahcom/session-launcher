@@ -71,10 +71,12 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 ### 3.4 ops/sentinel.py — 哨兵
 
 **会落盘**（旧文档说不落盘是错的）：`~/.hermes/run/ccs-sentinels/<role>.json`（文件数 = 当时运行的角色数，现算 `ls ~/.hermes/run/ccs-sentinels | wc -l`），
-健康字段写在**同一个**哨兵文件的 `health` 对象里（`ops/sentinel.py:97`），不是另落一处；
-`~/.hermes/run/ccs-health/<role>.json` 是 pipeline `survival_monitor` 写的存活探针（键只有 `survival_*`）。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
+健康字段**两处都写**：哨兵文件的 `health` 对象（`ops/sentinel.py:97`），以及
+`~/.hermes/run/ccs-health/<role>.json`（`update_health` 写、`watchdog.py:128` 与 `tracker.py:86` 调，见 `ops/sentinel.py:380`；
+pipeline `survival_monitor` 也往同一目录写 `survival_*`）。只看哨兵里的 `health` 会把没更新的默认值当真实健康状态。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
-bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 tmux + 角色 JSON 派生，不读这两个目录。
+bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（`core.py:868` 的 `list_sentinels()`），alive 才按 tmux 现查：输出条数 = 目录里的
+哨兵文件数（含已死 session），不是存活数（实测同一时刻两者都是 11）。
 
 ### 3.5 ops/watchdog.py — 伙伴存活守护
 
@@ -112,6 +114,7 @@ bus_timeout / session_id / engine / health。`ccs status` 的实时视图才从 
 - 自愈：12:53:47–12:54:26 按需重建 11 个会话并刷新哨兵，中断约 1.5 分钟。`systemctl --user is-active` 全程无感 —— 只查 systemd 抓不到这类事故。
 - 巡检一行：`time tmux list-sessions >/dev/null; tmux ls | wc -l`（>1s 或会话数骤降 = 风暴/重启）。
 - 结论：`status-role` 超时是 tmux 卡死的症状，不是 launcher 的 bug；调大探测超时只会拉长停滞。要减的是「每角色一次 tmux 往返」的调用量（批量化/缓存），不是超时值。
+- pipeline 侧按同一结论做了减法：`_check_and_start_role` / `_wait_for_role_ready` 里并存的 `tmux has-session` 全部删除，判据统一为 `liveness.tmux_snapshot()` 的 pane 快照（一处 `list-panes -a` 服务全部角色），两条调用点各少一次往返。见 `~/session-pipeline/docs/TECHNICAL_DEEP_DIVE.md` §8。
 - 已删：`resolve()` 的 `last_active_sec` —— 它恒为 `0.0`/`-1.0`、全仓无消费者，却每次探测多花一次 `capture-pane`（tmux 卡死时就是 5s）。字段与 `_output` 包装一并删除，`status-role` 少一次 tmux 往返。
 
 ### 3.11 对话质量口径（`scripts/dialogue_quality.py`）

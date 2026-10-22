@@ -39,7 +39,9 @@ Session 生态的**执行层**——创建 CCS（Claude Code Session）进程、
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-注意：**实际关系不是三层流水线**。session-roles（定义层）同时被 launcher 和 pipeline 独立消费。pipeline 不直接调 launcher 的 API，而是通过 `subprocess` 执行 `ccs.py send`。pipeline 和 launcher 之间无直接通信。
+注意：**实际关系不是三层流水线**。session-roles（定义层）同时被 launcher 和 pipeline 独立消费。pipeline 不直接调 launcher 的 API，而是通过 `subprocess` 执行 `ccs.py` 的子命令
+（`send` / `start` / `stop` / `status-role`；子命令清单现查 `python3 src/ccs.py --help`）。
+pipeline 和 launcher 之间无直接通信。
 
 ---
 
@@ -271,9 +273,9 @@ python3 scripts/dialogue_quality.py --hours 24     # 角色对话质量：回合
 网关错误**不是**单轮输出过大（错误收尾的工具结果 median 17.4KB vs 正常 14.1KB，>50KB 占比 23% vs 23%）、
 **不是**回合太长（366s vs 341s）、**不是**并发太高（按并发分带的错误率 0.5%（8+ 角色）vs 0.9%（5-7 角色），高并发反而更低）。
 
-`tests/test_wl_selfcheck.py` 断言的是本仓 `src/workflow/client.py` 里的 `kanban_board` /
-`_validate_create_task`（2026-10-22 修：原断言去已不存在的 `pipeline_workflow/client.py` 找，
-4 条全假失败；Gate 已内联为 `_validate_create_task`）。
+`tests/test_wl_selfcheck.py` 检查 `kanban_board` / `_validate_create_task`（Gate 已内联）——但
+`SRC` 写死 `Path.home()/"session-launcher/src"`（`tests/test_wl_selfcheck.py:10`），**在 feature worktree 里
+它查的是生产克隆**：worktree 改了这条测试照样绿（假覆盖）。改本仓代码后要么把 `SRC` 指向本仓，要么两处都跑。
 
 ## 提示词生效方式
 

@@ -7,7 +7,8 @@
 
 session-pipeline → **session-launcher** → hermes-session-roles（定义层只读）。
 
-launcher → pipeline 是已知的反向引用，全部是路径常量，不是业务调用：
+launcher → pipeline 是已知的反向引用，**第三条是业务依赖**（改 pipeline 模板注册表直接影响
+`wf templates`，不是纯路径）：
 - `paths.py` 的 `SESSION_PIPELINE_SRC = ~/session-pipeline/src`
 - `ecosystem_health.py` **不用**它：自己定义 `PIPELINE = HOME / "session-pipeline"`（按名检索 `PIPELINE =`）
 - `wf.py` 的 `templates` 子命令 `from template_registry import TemplateRegistry`

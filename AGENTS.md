@@ -12,8 +12,9 @@ hermes-session-roles (定义层) ──→ 读取角色 JSON
         ▼                                ▼
   session-launcher (执行层) ← 本项目    session-pipeline (路由+执行层)
         │                                 │
-        │  pipeline→launcher 唯一调用:     │
-        │  subprocess ccs.py send         │
+        │  pipeline→launcher 调用面:      │
+        │  ccs.py send/start/stop/       │
+        │  status-role（子命令现查 help）│
         │                                 │
         └─────────→ Sister Bus ←──────────┘
 ```
@@ -84,7 +85,9 @@ cd ~/session-launcher && python3 src/ccs.py health
 检查以下退化信号并修复：
 - 测试数量是否减少（目标：每周增加而非减少）
 - 是否有新的硬编码路径（`grep -r "/home/administrator" src/`）
-- 是否有新的第三方依赖（`grep -r "^import \|^from " src/ | grep -v stdlib`）
+- 是否有新的第三方依赖（旧写法 `grep -v stdlib` 一行都过滤不掉，标准库会全列出来。现用
+  `python3 -c "import pathlib,re,sys;std=set(sys.stdlib_module_names);loc={p.stem for p in pathlib.Path('src').rglob('*.py')}|{p.name for p in pathlib.Path('src').iterdir() if p.is_dir()};print(sorted({m.group(1) for f in pathlib.Path('src').rglob('*.py') for m in re.finditer(r'^(?:from|import)[ ]+([A-Za-z_]\\w*)',f.read_text(),re.M) if m.group(1) not in std|loc}))"`
+  —— 只输出非标准库且非本仓的顶层名，当前应只有跨仓的 `hermes_bus` / `shared_loader`）
 - README 是否仍然准确（对比实际 CLI 输出）
 
 ### 5. 产出标准
