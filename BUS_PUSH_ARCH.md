@@ -24,7 +24,7 @@ hermes_bus/client.py:43 publish(to_agent, ...)
 | `AGENT_NAMES = (dkk, ssk, cron, feed)` | 属实，见 `hermes_bus/socket_server.py:44` |
 
 结论：**写入不会自动推送**。要推送必须有人显式 `publish('feed', …)`，当前没有调用方
-（`ss -xp | grep feed` 能看到 5 个 LISTEN/ESTAB 的订阅者，说明订阅端活着，但不证明有消息）。
+（`ss -xp | grep feed` 能看到多条 ESTAB 订阅者连接，说明订阅端活着，但不证明有消息；条数随进程重启变化，别写死）。
 
 ## 组件
 

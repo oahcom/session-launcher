@@ -108,6 +108,26 @@ class TestTmuxSendDoesNotInterrupt:
         assert any("C-u" in argv for argv in sent), \
             f"未清输入行，上一条未提交的残留会粘在新消息前: {sent}"
 
+    def test_booting_pane_skips_ctrl_u(self):
+        """TUI 还没画出输入框时不能发 C-u。
+
+        CLI 启动阶段 C-u 不被行编辑器吃掉，0x15 留在 tty 输入队列并粘在
+        首条 prompt 前（实测 195 个会话 43 个首条提示以 \x15 开头）。
+        输入框不存在 = 没有残留要清，跳过不丢功能，消息仍要发出去。
+        """
+        import tmux_ops
+        from unittest.mock import patch
+        with patch("tmux_ops.subprocess.run") as m, \
+             patch("tmux_ops._tmux_output", return_value="booting...\nno composer here"):
+            m.return_value.returncode = 0
+            # 直接打 _deliver_once：_tmux_send 会进 _ensure_submitted，输入框
+            # 缺席时它要空转 12×0.6s，单用例从毫秒级变成 7s（codex P3）。
+            tmux_ops._deliver_once("ccs-probe", "hello")
+        sent = [c.args[0] for c in m.call_args_list]
+        assert not any("C-u" in argv for argv in sent), \
+            f"TUI 未就绪仍发 C-u，0x15 会粘进首条 prompt: {sent}"
+        assert any("-l" in argv for argv in sent), "消息本身仍必须投递"
+
     def test_message_sent_literal(self):
         """-l 必须存在，否则 payload 内的按键名会被 tmux 解释执行。"""
         import tmux_ops
@@ -170,12 +190,12 @@ class TestRoleIsBusy:
 # ── 启动前的内存闸门 ──
 
 class TestMemoryShortage:
-    """主判据是 pipeline cgroup 的 memory.current/high，宿主机 swap/avail 只作兜底。
+    """唯一判据是宿主机 swap_free + MemAvailable（cgroup 闸门 2026-10-22 已删）。
 
     两条现场互斥、都得钉住：
-    2026-10-16 swap_free=0 但 avail 6.1GB 也起不来（撞 cgroup high → 不可中断睡眠）；
-    2026-10-21 swap_free=0/avail=2291MB 却正常起来（cgroup 有余量），当时旧判据
-    挡住了 archivist、角色停摆 10 分钟。
+    2026-10-16 swap_free=0 但 avail 6.1GB 也起不来（当时归因 cgroup high，
+    后查实闸门读的 unit 从不存在、上线起没生效过一次）；
+    2026-10-21 swap_free=0/avail=2291MB 却正常起来，旧判据挡住 archivist 10 分钟。
     """
 
     def _meminfo(self, avail_mb, swap_total_mb, swap_free_mb):
@@ -222,19 +242,11 @@ class TestMemoryShortage:
         assert self._check(avail_mb=1010, swap_total_mb=8191, swap_free_mb=128,
                            cgroup=(5000 * 2**20, 6144 * 2**20)) is None
 
-    def test_cgroup_high_blocks_with_plenty_of_host_ram(self):
-        """2026-10-16 的形状：宿主机还富余，但 cgroup 撞 high → 必须拦。"""
-        err = self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169,
-                          cgroup=(6144 * 2**20 * 96 // 100, 6144 * 2**20))
-        assert err and "cgroup" in err
-
-    def test_cgroup_below_threshold_allowed(self):
+    def test_cgroup_high_no_longer_blocks(self):
+        """cgroup 闸门已删（2026-10-22）：它读的 unit 从不存在，且 hermes.slice 长期
+        ≥95% —— 修对路径会拒掉每一次启动。这里钉住"高水位不再拦"，防它被加回来。"""
         assert self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169,
-                           cgroup=(5000 * 2**20, 6144 * 2**20)) is None
-
-    def test_cgroup_unreadable_falls_back_to_host_checks(self):
-        """cgroup 不可见时不抛异常，退回宿主机判据（本例宿主机宽松 → 放行）。"""
-        assert self._check(avail_mb=6969, swap_total_mb=8191, swap_free_mb=4169) is None
+                           cgroup=(6144 * 2**20 * 96 // 100, 6144 * 2**20)) is None
 
 
 # ── --restart-idle 重启判据 ──
@@ -448,8 +460,9 @@ class TestTmuxSendBusyHandling:
              patch("tmux_ops.subprocess.run") as m:
             m.return_value.returncode = 0
             assert tmux_ops._tmux_send("ccs-probe", "hello") == "busy"
-        assert m.call_args_list == [], \
-            f"忙时不得有任何 tmux 按键: {[c.args[0] for c in m.call_args_list]}"
+        keys = [c.args[0] for c in m.call_args_list
+                if c.args[0][:3] != ["tmux", "capture-pane", "-p"]]
+        assert keys == [], f"忙时不得有任何 tmux 按键: {keys}"
 
     def test_idle_role_clears_input_line(self):
         import tmux_ops

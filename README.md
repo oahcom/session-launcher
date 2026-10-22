@@ -102,7 +102,7 @@ src/                                   （ls src 实测）
   ├── workflow/client.py    WorkflowClient（wf.py 的实现在此）
   ├── workflow/db.py        DB 连接
   ├── workflow/schema.py    Schema
-  ├── workflow/state.py      chain_state（client.py:377 引用）
+  ├── workflow/state.py      chain_state（`workflow/client.py` 从这里 import）
   ├── wf.py                 wf CLI（check/create/complete/confirm/…）
   ├── workflow_client.py    薄包装：re-export + check()
   │
@@ -197,7 +197,7 @@ SQLite 写入与 socket 推送彼此独立：push 不可用不影响写入。
 session-launcher 被 session-pipeline 通过 subprocess 调用以向 CCS 发消息：
 
 ```
-session-pipeline/src/routing/routes.py:446 → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
+session-pipeline/src/routing/routes.py:send_to_role → subprocess run([sys.executable, CCS_CLI, "send", "--from", "pipeline", role, message])
 ```
 
 **注意**：pipeline→launcher 不只 send —— 现查 `grep -rn '_CCS_CLI' ~/session-pipeline/src` 列全部调用点；子命令有 start/stop/send/status-role/partner check-wake。改 `ccs.py` 任一子命令的入参形态，波及面是整套，不只是 send。launcher 不反向调用 pipeline。
@@ -256,7 +256,7 @@ claude 内部是否缓存该文件——不要当成通用结论，要重测再�
 cd ~/session-launcher
 # 1 复核空闲：必须 0 命中
 tmux capture-pane -p -J -t ccs-<R> | tail -8 | grep -c "esc to interrupt\|Retrying attempt"
-# 2 内存闸门：MemAvailable > 1000MB（tmux_ops.py:110 _MEM_FREE_MIN_MB）
+# 2 内存闸门：MemAvailable > 阈值（tmux_ops.py:_MEM_FREE_MIN_MB）
 free -m
 # 3 找该角色的 claude pid（role = cwd basename）
 for p in $(pgrep -x claude); do [ "$(basename "$(readlink /proc/$p/cwd)")" = "<R>" ] && pid=$p; done

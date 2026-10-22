@@ -108,13 +108,14 @@ CODEX_SESSION_MAX = 5
 CODEX_READY_INTERVAL = 0.5
 
 _MEM_FREE_MIN_MB = 1000  # 启动新 CCS 前可用内存至少需要 1000MB
-# 2026-10-16 的事故（4 个 claude 停在 Dl+ 不可中断、pane 空白，而 MemAvailable
-# 还有 6.1GB）不是宿主机内存不足，是**角色所在 cgroup 撞到 memory.high**：
-# 撞限时内核在 __mem_cgroup_handle_over_high 里同步回收，表现为不可中断睡眠。
-# 所以这里先看 cgroup 水位，宿主机 swap/avail 只作兜底——只看 /proc/meminfo
-# 的判据对 cgroup 侧回收完全无感。
-_PIPELINE_CGROUP = Path("/sys/fs/cgroup/system.slice/session-pipeline.service")
-_CGROUP_HIGH_PCT = 95  # memory.current 达到 memory.high 的这个百分比就拒启
+# 曾有一道「pipeline cgroup 达 memory.high 95% 就拒启」的闸门，2026-10-22 删除：
+# ① 它读的 system.slice/session-pipeline.service 从来不存在（引擎在
+#    user.slice/…/hermes.slice/workflow-engine.service），OSError 被 except 吞掉
+#    → 这道闸门从上线起没生效过一次，只是给了「已有防护」的错觉；
+# ② 把路径修对也不成立：hermes.slice 的 memory.current/memory.high 长期 ≥95%
+#    （实测 6.13/6.44GB），闸门会拒掉每一次启动 —— 撞 high 在这台机器是稳态。
+# 2026-10-16「4 个 claude 卡在 Dl+」的判据是 pane/进程状态（liveness + 对话监控），
+# 不是水位百分比。下面只留宿主机 swap/avail 兜底。
 _SWAP_FREE_MIN_MB = 128
 _SWAP_LOW_AVAIL_MB = 1024  # 兜底判据：swap 见底且宿主机可用内存也紧才拦
 
@@ -124,15 +125,7 @@ _last_ccs_launch_ts: float = 0.0
 
 
 def _memory_shortage(role: str) -> str | None:
-    """cgroup 水位或宿主机内存不足时返回拒启原因，否则 None。"""
-    try:
-        cur = int((_PIPELINE_CGROUP / "memory.current").read_text())
-        high = int((_PIPELINE_CGROUP / "memory.high").read_text())
-        if 0 < high < (1 << 62) and cur * 100 // high >= _CGROUP_HIGH_PCT:
-            return (f"pipeline cgroup 已用 {cur // 2**20}MB / high {high // 2**20}MB"
-                    f"（{cur * 100 // high}%），跳过 {role} 启动：会卡在 cgroup 回收")
-    except (OSError, ValueError):
-        pass  # cgroup 不可见（容器外/权限不足）时退回宿主机判据
+    """宿主机内存/swap 不足时返回拒启原因，否则 None。"""
     try:
         # /proc/meminfo 里 MemAvailable 排在 SwapTotal/SwapFree 之前，逐个
         # startswith 判并 break 会让 swap 读不到 → 先整体解析，再判断。
@@ -149,7 +142,7 @@ def _memory_shortage(role: str) -> str | None:
         swap_free_mb = fields.get("SwapFree", 0) // 1024
         # 兜底：swap 见底只在宿主机内存也紧时才是风险（实测 2026-10-21：
         # swap_free=0/avail=2291MB 时新 claude 正常起来；当时单看 swap 的旧判据
-        # 把 archivist 挡在门外、角色停摆）。cgroup 才是主判据，见函数开头。
+        # 把 archivist 挡在门外、角色停摆）。
         if swap_total_mb > 0 and swap_free_mb < _SWAP_FREE_MIN_MB \
                 and avail_mb < _SWAP_LOW_AVAIL_MB:
             return (f"swap 仅剩 {swap_free_mb}MB 且可用内存仅 {avail_mb}MB"
@@ -242,14 +235,14 @@ def _is_alive(tmux_name: str) -> bool:
 _BUSY_SCAN_TAIL = 8  # 状态栏在最底部
 
 
-def _role_is_busy(tmux_name: str) -> bool:
+def _role_is_busy(tmux_name: str, pane: str | None = None) -> bool:
     """检测 pane 是否处于生成中（Claude CLI 状态栏 esc-to-interrupt 提示）。
 
     ponytail: 天花板——依赖状态栏文案，Claude Code 改版换措辞即失配（降级为
     视为空闲 → 照发 C-u。C-u 不中断生成，故失配无害，仅是失去清行能力）。
     升级路径：claude CLI 若暴露状态接口则改用协议查询。
     """
-    pane = _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL)
+    pane = _tmux_output(tmux_name, tail=_BUSY_SCAN_TAIL) if pane is None else pane
     return "esc to interrupt" in pane or "Retrying attempt" in pane
 
 
@@ -465,17 +458,30 @@ def _deliver_once(tmux_name: str, message: str):
     探测失败（None）视为空闲：宁可发出去，也不因探测失灵把所有消息饿死
     （参见 2026-10-17 假忙导致的全链停摆）。
     """
-    if _role_is_busy(tmux_name) is True:
+    # 一次 capture 同时判忙和判 TUI 就绪：两者都要看 pane，分两次取会多付
+    # 一次 tmux 调用（实测单次 0.1~5s）。
+    pane = _tmux_output(tmux_name, tail=max(_BUSY_SCAN_TAIL, 60))
+    # 忙判据只看最后 _BUSY_SCAN_TAIL 行（状态栏）：capture-pane 取的是整个视口，
+    # 全量喂进去会让"esc to interrupt"这几个字只要出现在屏幕任何位置就被当成在
+    # 生成中（角色自己打印/讨论这句话就能触发）→ 空闲角色永远投不进消息。
+    if _role_is_busy(tmux_name, "\n".join(pane.splitlines()[-_BUSY_SCAN_TAIL:])) is True:
         logging.getLogger("tmux_ops").info(
             "tmux send 跳过（角色思考中）: %s", tmux_name)
         return "busy"
     # C-u 清输入行，不中断生成。不可用 C-c：它在 Claude CLI 生成中等于
     # 「中断当前推理」（transcript 留下 [Request interrupted by user]）。
     # 退 pager 不是投递的职责——角色卡在 pager 归 watchdog 管。
-    subprocess.run(
-        ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
-        capture_output=True, timeout=_send_timeout(),
-    )
+    #
+    # 只在 TUI 已画出输入框时发：CLI 启动阶段（输入框还没画出来）发出去的
+    # C-u 不会被行编辑器吃掉，0x15 会留在 tty 输入队列，变成首条 prompt 的
+    # 第一个字节。实测 195 个会话首条提示 43 个以 \x15 开头（22%），55 个
+    # 污染样本里 43 个正是会话第 1 条 prompt —— 角色读到的是「控制字符 +
+    # 就绪横幅」。输入框不存在时也没有残留要清，跳过不丢功能。
+    if _composer_text(pane) is not None:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
+            capture_output=True, timeout=_send_timeout(),
+        )
     _paste(tmux_name, message)
     r = subprocess.run(
         ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "Enter"],

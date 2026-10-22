@@ -55,9 +55,12 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 
 ### 3.3 内存闸门（tmux_ops.py 的 `_memory_shortage`）
 
-主判据是 pipeline cgroup 的 `memory.current / memory.high ≥ 95%`（撞限时内核同步回收，
-表现为 `Dl+` 卡死，宿主机 MemAvailable 看不出来）；兜底才是 `MemAvailable < 1000MB`，
-以及 `swap_free < 128MB 且 avail < 1024MB`。连续启动间隔 8s。
+只有宿主机判据：`MemAvailable < 1000MB`，或 `swap_free < 128MB 且 avail < 1024MB`。连续启动间隔 8s。
+
+> cgroup 闸门（`memory.current/memory.high ≥ 95%`）已于 2026-10-22 **删除**：它读的
+> `system.slice/session-pipeline.service` 从来不存在（引擎在 `hermes.slice/workflow-engine.service`），
+> OSError 被静默吞掉，从未生效；而把路径修对后 hermes.slice 长期 ≥95%（实测 6.13/6.44GB），
+> 会拒掉每一次启动。`Dl+` 卡死的判据是 pane/进程状态（liveness + 对话监控），不是水位百分比。
 
 ### 3.4 ops/sentinel.py — 哨兵
 
