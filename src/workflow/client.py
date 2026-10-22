@@ -1,6 +1,7 @@
 """workflow/client.py — CCS 角色使用的工作流客户端。"""
 
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -51,13 +52,19 @@ def _cancel_cause(detail: str | None, reason: str | None) -> str:
     if text.startswith("cascade from parent"):
         return "cascade"
     if "僵尸回收" in text or "zombie" in text.lower():
-        if "24h全局阈值" in text:
-            return "zombie_24h"
-        if "72h全局阈值" in text:
-            return "zombie_72h"
+        if "全局阈值" in text:
+            return "zombie_global"       # 实例超龄硬上限（2h/4h/24h/72h 各模板不同）
         if "行级仍 running" in text:
             return "zombie_row_mismatch"
-        return "zombie_stall"
+        # 责任线索：queued 是「角色忙/未就绪时等待的空转 tick 数」（≈10s/tick，
+        # engine.py 的 busy 分支每次 +1），不是派单被拒次数——被拒另有
+        # delivery_fail_count（这 147 例全是 0）。queued>0 说明卡在「等角色腾手」，
+        # 是系统侧；queued=0 才可能是角色侧，但它在子链接管父步时会被清零
+        # （wf_lifecycle.py 926/1045/1071），所以 queued=0 不等于从未排队。
+        m = re.search(r"queued=(\d+)", text)
+        if not m:
+            return "zombie_stall"        # 旧日志没有 queued 字段
+        return "zombie_stall_queue" if int(m.group(1)) > 0 else "zombie_stall_silent"
     if "无活跃工作流" in text:
         return "starvation"
     if "角色不响应" in text:

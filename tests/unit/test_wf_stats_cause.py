@@ -16,10 +16,16 @@ from workflow.client import WorkflowClient, _cancel_cause  # noqa: E402
 CASES = [
     # (detail, reason, 期望桶)
     ("僵尸回收: running 状态 s1 无推进记录 4.1h (timeout_count=0)", None, "zombie_stall"),
-    ("僵尸回收: running 运行24h > 24h全局阈值", None, "zombie_24h"),
-    ("僵尸回收: running 运行1271h > 72h全局阈值", None, "zombie_72h"),
+    ("僵尸回收: running 运行24h > 24h全局阈值", None, "zombie_global"),
+    ("僵尸回收: running 运行4h > 4h全局阈值", None, "zombie_global"),
     ("僵尸回收: 当前步骤 s4 已终态(cancelled)但行级仍 running", None,
      "zombie_row_mismatch"),
+    # 责任线索：queued 是角色忙时等待的空转 tick 数（系统侧）；=0 才可能是角色侧
+    ("僵尸回收: running 状态 s1 无推进记录 步骤停滞 1.3h / 实例 1.3h (timeout_count=0, queued=96)",
+     None, "zombie_stall_queue"),
+    ("僵尸回收: running 状态 s1 无推进记录 步骤停滞 0.4h / 实例 1.4h (timeout_count=2, queued=0)",
+     None, "zombie_stall_silent"),
+    ("僵尸回收: running 状态 s1 无推进记录 1.0h (timeout_count=0)", None, "zombie_stall"),
     ("无活跃工作流", None, "starvation"),
     ("角色不响应自动取消", None, "role_unresponsive"),
     ("workflow delivery_blocked", None, "delivery_blocked"),
@@ -73,7 +79,7 @@ def test_cancelled_by_cause_uses_last_cancel_family_log():
     wf = object.__new__(WorkflowClient)   # 只借方法，不走 __init__ 的真库
     wf._conn = conn
     try:
-        assert wf._cancelled_by_cause() == {"starvation": 1, "zombie_24h": 1, "zombie_stall": 1}
+        assert wf._cancelled_by_cause() == {"starvation": 1, "zombie_global": 1, "zombie_stall": 1}
     finally:
         conn.close()
 
