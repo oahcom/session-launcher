@@ -68,7 +68,7 @@ Cron 的 CLAUDE.md:
 | 禁止行为 | 后果 | 检测方法 |
 |---------|------|---------|
 | PG 的 CLAUDE.md 出现 Cron 指令 | PG 上下文被稀释 | 抓指定角色的 CLAUDE.md 检查内容纯度 |
-| 一个角色的 system_prompt 小于 100 行 | 提示词密度不够 | 检查各角色 prompt 行数 |
+| prompt_refs 指向的 md 缺失或为空 | 角色拿不到实际提示词 | 检查 personas 的 prompt_refs 文件存在且非空 |
 | prompt 中包含协作逻辑 | AI 会自由解释协作规则 | 扫描 prompt 中 key words 是否含协作相关 |
 
 ---
@@ -102,6 +102,7 @@ src/                                   （ls src 实测）
   ├── workflow/client.py    WorkflowClient（wf.py 的实现在此）
   ├── workflow/db.py        DB 连接
   ├── workflow/schema.py    Schema
+  ├── workflow/state.py      chain_state（client.py:364 引用）
   ├── wf.py                 wf CLI（check/create/complete/confirm/…）
   ├── workflow_client.py    薄包装：re-export + check()
   │
