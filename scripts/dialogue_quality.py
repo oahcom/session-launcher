@@ -97,7 +97,12 @@ def measure(cut, pattern=PAT):
                 if not tools:
                     r0["kind:" + k + ":zero"] += 1
                 r0["turn_tools"] += tools
-                tail = None
+                tail, _model = None, ""
+                for _r in recs:
+                    if _r.get("type") == "assistant":
+                        _m = (_r.get("message") or {}).get("model") or ""
+                        if _m and "synthetic" not in _m:
+                            _model = _m
                 for has, txt in blocks:
                     if txt and not has:
                         tail = txt
@@ -107,6 +112,13 @@ def measure(cut, pattern=PAT):
                     continue
                 if _ERR.search(tail):
                     r0["final_api_error"] += 1
+                    # 网关错误必须带端点：不定位到模型，等于只知道"网络不好"
+                    # （2026-10-22 实测 24h：429 全部来自 ollama/gpt-oss:120b）。
+                    _ek = ("429" if "429" in tail else
+                           "conn_lost" if "connection lost" in tail else "other")
+                    _tag = re.search(r"\[([^\]]{3,40})\]", tail)
+                    _who = (_tag.group(1) if _tag else _model or "?").split("/")[-1][:28]
+                    r0["err:%s:%s" % (_ek, _who)] += 1
                     continue
                 r0["final_text"] += 1
                 if not _EVID.search(tail):
@@ -174,6 +186,14 @@ if __name__ == "__main__":
             "{}={}({:.0f}%)".format(kk, tot["kind:" + kk],
                                     100 * tot["kind:" + kk + ":zero"] / max(1, tot["kind:" + kk]))
             for kk in kinds))
+        errs = Counter()
+        for r in s.values():
+            for k, v in r.items():
+                if k.startswith("err:"):
+                    errs[k[4:]] += v      # 同一端点在多个角色下重复出现，必须先跨角色合并
+        if errs:
+            print("网关错误按端点: " + "  ".join("{}={}".format(k, v)
+                                              for k, v in errs.most_common(6)))
         for role, r in sorted(s.items(), key=lambda kv: -kv[1]["zero_tool_turns"])[:8]:
             print("  {:20s} 回合={:4d} 零工具={:3d} 收尾={:3d} 无证据={:3d}".format(
                 role, r["turns"], r["zero_tool_turns"], r["final_text"], r["final_no_evidence"]))
