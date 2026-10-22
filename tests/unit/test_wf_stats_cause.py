@@ -20,11 +20,12 @@ CASES = [
     ("僵尸回收: running 运行4h > 4h全局阈值", None, "zombie_global"),
     ("僵尸回收: 当前步骤 s4 已终态(cancelled)但行级仍 running", None,
      "zombie_row_mismatch"),
-    # 责任线索：queued 是角色忙时等待的空转 tick 数（系统侧）；=0 才可能是角色侧
+    # 责任线索：queued 是角色忙时等待的空转 tick 数（系统侧）；
+    # =0 只说明"没有等待信号"，实测 10/10 的角色当时都在干活——别读成沉默
     ("僵尸回收: running 状态 s1 无推进记录 步骤停滞 1.3h / 实例 1.3h (timeout_count=0, queued=96)",
      None, "zombie_stall_queue"),
     ("僵尸回收: running 状态 s1 无推进记录 步骤停滞 0.4h / 实例 1.4h (timeout_count=2, queued=0)",
-     None, "zombie_stall_silent"),
+     None, "zombie_stall_no_wait"),
     ("僵尸回收: running 状态 s1 无推进记录 1.0h (timeout_count=0)", None, "zombie_stall"),
     ("无活跃工作流", None, "starvation"),
     ("角色不响应自动取消", None, "role_unresponsive"),
