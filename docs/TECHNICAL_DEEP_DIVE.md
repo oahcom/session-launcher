@@ -141,7 +141,7 @@ bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（
 - 权限：`_WAKE_PERMISSION_MAP["*"]` 加 `reaper`。没有这一位时真实首跑返回 `权限不足: reaper 无权启动 ccs-monitor` —— 唤醒门禁对**所有**非 coordinator/lr 主体关闭，包括 pipeline 自己。
 - 实测产出（2026-10-23 12:54 只读测量，30 天窗口）：死角色 7 个、定向未消费 40 条（ccs-monitor 26 / devops 14），**其中落在 [10min,6h] 的 0 条** —— 阈值在当前数据上不咬人，它是安全网不是清道夫；40/40 都已被别的 consumer 标记 consume（广播式 claim ≠ 送达），老账最老 6 天。放宽到 24h 只多 1 个角色，收益近零。
 - 实战 2026-10-22 22:30：`ccs reap` 真跑 → 启动 `ccs-monitor`（1 条 220min 未消费派单，该派单已被 pipeline claim 未投递）→ pane 建立 + cooldown 落盘 + bus `#443579`。该 pane 在 02:20–05:19 的批量重启中被换掉（现网 12 个 pane 全部创建于该时段），不是唤醒链路的问题。
-- 自触发与回滚：`ccs-reap.timer`（15 分钟，`OnBootSec=5min` + `OnUnitActiveSec=15min`）跑 `ccs-reap.service`（`ExecStart=%h/session-launcher/src/ccs.py reap`，即 `ccs` 包装脚本指向的那个生产 checkout）。回滚 = `systemctl --user disable --now ccs-reap.timer` + 删 `~/.hermes/run/wake_cooldown.json`；只 revert 代码停不掉唤醒，因为触发在仓库外的 user unit 里。
+- 自触发与回滚：`ccs-reap.timer`（15 分钟，`OnBootSec=5min` + `OnUnitActiveSec=15min`）跑 `ccs-reap.service`（`ExecStart=%h/session-launcher/src/ccs.py reap`，即 `ccs` 包装脚本指向的那个生产 checkout）。回滚 = `systemctl --user disable --now ccs-reap.timer`；**先 disable 再 revert**，因为旧版 `ccs.py` 没有 `reap` 子命令，argparse 会以 exit=2 每 15 分钟 failed 刷屏（实测 96 次/天）。unit 只写死路径不写版本，所以「切分支 = 换二进制」是唯一隐性耦合；cooldown 文件不用删（无候选时根本不读它之后就不再写）。实测 3h 内 11 次触发、0 次 failed，无候选时只写 journal 的 `[]`，不写 bus。
 
 ## 4. 协作模式（参数保留，能力已退场）
 
