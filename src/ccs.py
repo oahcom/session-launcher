@@ -186,6 +186,10 @@ def main():
     p_wake.add_argument("--by-role", required=True, help="调用方角色")
     p_wake.add_argument("--context", default="", help="唤醒附带上下文")
 
+    # ── reap ──
+    p_reap = sub.add_parser("reap", help="唤起有定向派单但 pane 不在的角色")
+    p_reap.add_argument("--dry-run", action="store_true", help="只报告不唤醒")
+
     # ── status-role ──
     p_sr = sub.add_parser("status-role", help="查询单个角色状态")
     p_sr.add_argument("role", help="角色名")
@@ -225,7 +229,8 @@ def main():
     # 条虚构实例告警，转录累计 169 处）。用 pytest 自设的 env 判定，与测试树是否隔离、
     # 是否旧 worktree 无关；rc=0 保持调用方的「已送达」语义，测试自洽。
     if os.environ.get("PYTEST_CURRENT_TEST") and args.command in (
-            "start", "stop", "send", "send-safe", "send-direct", "wake", "reload-knowledge"):
+            "start", "stop", "send", "send-safe", "send-direct", "wake",
+            "reap", "reload-knowledge"):
         print(json.dumps({"success": True, "reason": "suppressed-under-pytest"}))
         return
 
@@ -392,6 +397,11 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("success"):
             sys.exit(1)
+
+    elif args.command == "reap":
+        from role_reaper import reap
+        result = reap(dry_run=args.dry_run)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif args.command == "status-role":
         from routing.partner import PartnerClient

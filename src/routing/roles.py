@@ -93,8 +93,10 @@ _FORBIDDEN_DISPLAY = {
     "write_code": "写代码", "write_other_workspace": "写其他角色 workspace",
 }
 
+# reaper 是系统唤醒器（ccs reap）：只按「pane 不在 + 有新鲜定向派单」启动角色，
+# 不投递任何内容、不改角色状态；不给它这个位，ondemand 角色死 pane 就没人拉起。
 _WAKE_PERMISSION_MAP: dict[str, list[str]] = {
-    "*": ["coordinator", "lr"],
+    "*": ["coordinator", "lr", "reaper"],
     "pg": ["qa", "pm", "reviewer", "product_architect"],
     "qa": ["pm", "reviewer"],
 }

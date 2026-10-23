@@ -129,6 +129,16 @@ bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（
 - 读法边界（2026-10-22 实测）：同 cut 40 分钟内容量摆动 ±7%，所以**只比同一角色、同长度窗口、幅度 >15% 的差异**；不同角色之间不可横比（跳过清单对不同角色影响差 70%）。表只列零工具回合最多的 8 个角色，未列角色约占产物行 43%，别把「没出现在表里」读成没产出。
 - 数字随运行态变化，引用必须带 `--hours`/`--cut`，不要抄本节或别处的具体值。
 
+### 3.12 死角色按定向派单唤醒（`ccs reap` / `src/role_reaper.py`）
+
+- 缺口：派单只投**已运行**的 pane（`route_to_ccs`），系统类派单不 mint workflow，而 `ccs start` 死 pane 的唯一调用者是工作流引擎 → `ondemand` 角色 pane 一死就再无派单可投。2026-10-22 实测 `devops` 死 10.5h，43 条 `@devops` 未消费（17 条 task_spec）。
+- 三条判据同时成立才唤醒：pane 不在（`list_roles` 的 `alive`）+ 收到过定向派单 + 该派单年龄在 **[10min, 6h]**。更老的唤醒只会让角色面对过时指令（复述，不是处理），老账另算。
+- **收件人 = 首行头部前缀里的 @**（`@devops …` 首 token，或 `[@a→@b] …` 方括号链）。正文里的 @ 是提及不是派单：「[@pipeline/@engineer] 5 条 @devops 派单丢失」「[@all] devops 0 行落盘」两条都不算 —— pipeline 的 `_is_for_me` 用全文 @（宁多投），唤醒要起进程，精度优先，不能照抄。
+- 读未消费必须 `bb.unconsumed(consumer=role, limit=0)`：该查询按 `ts DESC` 建序，加 `LIMIT` 会让近期广播（实测 >100 条）把真正等待唤醒的旧派单挤出窗口。回归测试用「120 条新广播 + 1 条 5h 派单」钉住。
+- 预算：单轮最多唤醒 2 个、按积压条数降序（cap 只该挡「凑巧靠前」的）、同角色 30min 冷却（`~/.hermes/run/wake_cooldown.json`）。每次成功唤醒写一条 `monitor_audit`，成为可核对的痕迹。
+- 权限：`_WAKE_PERMISSION_MAP["*"]` 加 `reaper`。没有这一位时真实首跑返回 `权限不足: reaper 无权启动 ccs-monitor` —— 唤醒门禁对**所有**非 coordinator/lr 主体关闭，包括 pipeline 自己。
+- 实战 2026-10-22 22:30：`ccs reap` 真跑 → 唤起 `ccs-monitor`（1 条 220min 未消费派单，该派单已被 pipeline claim 未投递）→ pane 建立 + cooldown 落盘 + bus `#443579`。pane 在 02:20–05:19 的批量重启中被换掉（现网 12 个 pane 全部创建于该时段），不是唤醒链路的问题。
+
 ## 4. 协作模式（参数保留，能力已退场）
 
 | 模式 | CLI | 说明 |
