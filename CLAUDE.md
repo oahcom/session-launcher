@@ -28,7 +28,7 @@ ccs.py start <role>  → 读取 persona JSON + prompt 模板
 ccs-workspaces/<role>/CLAUDE.md（角色身份：<!-- KNOWLEDGE:START --> 块 = 最终身份层）
 ```
 
-SESSION_ROLE marker 与 ~/CLAUDE.md 运行时注入已退场：`routing/roles.py:113-117` 只剩
+SESSION_ROLE marker 与 ~/CLAUDE.md 运行时注入已退场：`src/routing/roles.py:113-117` 只剩
 常量定义，全仓无写入调用。
 
 ## 关键规则
