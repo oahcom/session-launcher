@@ -402,6 +402,8 @@ def main():
         from role_reaper import reap
         result = reap(dry_run=args.dry_run)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if any(r.get("action") == "start_failed" for r in result):
+            sys.exit(1)  # 让 systemd 把「起不来」记成 failed，而不是每 15 分钟绿一次
 
     elif args.command == "status-role":
         from routing.partner import PartnerClient
