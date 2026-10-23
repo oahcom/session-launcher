@@ -17,10 +17,12 @@ class _Fact:
 
 
 class _Bus:
-    def __init__(self, facts):
-        self.facts, self.written = facts, []
+    def __init__(self, facts, fail=False):
+        self.facts, self.written, self.fail = facts, [], fail
 
     def unconsumed(self, consumer=None, limit=0, **_):
+        if self.fail:
+            raise RuntimeError("bus locked")
         # 复刻生产 SQL 的 ORDER BY ts DESC + LIMIT：否则「旧派单被新广播挤掉」
         # 这条回归测不出来（真实 Blackboard.unconsumed 先排序再截断）。
         rows = sorted(self.facts.get(consumer, []), key=lambda f: f.ts, reverse=True)
@@ -30,8 +32,8 @@ class _Bus:
         self.written.append((cat, text))
 
 
-def _wire(monkeypatch, tmp_path, roles, facts, wake=None):
-    bus = _Bus(facts)
+def _wire(monkeypatch, tmp_path, roles, facts, wake=None, bus_fail=False):
+    bus = _Bus(facts, fail=bus_fail)
     monkeypatch.setattr(role_reaper, "COOLDOWN_FILE", str(tmp_path / "cd.json"))
     monkeypatch.setitem(sys.modules, "bus_protocol",
                         types.SimpleNamespace(Blackboard=lambda: bus))
@@ -180,6 +182,22 @@ def test_fact_beyond_newest_100_is_still_found(monkeypatch, tmp_path):
                      {"devops": noise + [_Fact("@devops 五小时前的派单", 5 * 3600)]})
     assert [r["action"] for r in role_reaper.reap()] == ["started"]
     assert calls == ["devops"]
+
+
+def test_fact_without_ts_is_not_a_reason(monkeypatch, tmp_path):
+    """ts 为空时按「刚写」处理：不能抛 TypeError，也不能被当成陈旧派单。"""
+    fact = _Fact("@devops 无时间戳", 0)
+    fact.ts = None
+    _, calls = _wire(monkeypatch, tmp_path, _roles("devops"), {"devops": [fact]})
+    assert role_reaper.reap() == [] and calls == []
+
+
+def test_bus_error_is_reported_not_fatal(monkeypatch, tmp_path):
+    """一个角色的 bus 读失败不该中断整轮，也不该把它当死角色启动。"""
+    _, calls = _wire(monkeypatch, tmp_path, _roles("devops"), {}, bus_fail=True)
+    rep = role_reaper.reap()
+    assert [r["action"] for r in rep] == ["bus_error"] and calls == []
+    assert "bus locked" in rep[0]["error"]
 
 
 def test_dry_run_reports_without_starting(monkeypatch, tmp_path):
