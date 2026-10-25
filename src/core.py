@@ -128,6 +128,7 @@ import tempfile
 import subprocess
 import sys
 import time
+import socket
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -547,11 +548,19 @@ _ROUTER_PORTS = ("20127", "20128")
 
 
 def _router_alive(base_url: str) -> bool:
-    """探测 9Router Base URL 是否可达。"""
+    """探测 9Router 端口是否可连。
+
+    用 TCP connect，不用 HTTP：`/v1/models` 实测 10.0s / 4.2s（模型列表要加载），
+    1s 超时下探测恒 False（2026-10-26 三次实测 10.03s / 4.16s / 0.0006s）——
+    于是 `_live_router_base_url` 每次都走"全部不可达"兜底，主端口一挂就会把角色
+    指向死端口（claude 卡 /login）。端口通不通与"能不能连上"等价，代价 1ms。
+    """
     try:
-        urllib.request.urlopen(f"{base_url}/models", timeout=1).close()
-        return True
-    except Exception:
+        parsed = urllib.parse.urlparse(base_url)
+        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 80),
+                                      timeout=0.5):
+            return True
+    except (OSError, ValueError):
         return False
 
 
