@@ -85,11 +85,16 @@ class TestLiveRouterBaseUrl:
         mock_alive.return_value = False
         assert _live_router_base_url() == "http://localhost:20127/v1"
 
-    @patch("core.urllib.request.urlopen")
-    def test_probe_failure_counts_as_down(self, mock_open):
-        mock_open.side_effect = OSError("conn refused")
+    @patch("core.socket.create_connection")
+    def test_probe_failure_counts_as_down(self, mock_conn):
+        mock_conn.side_effect = OSError("conn refused")
         assert _router_alive("http://localhost:20127/v1") is False
-        mock_open.assert_called_once()
+        mock_conn.assert_called_once()
+
+    @patch("core.socket.create_connection")
+    def test_probe_success_counts_as_up(self, mock_conn):
+        assert _router_alive("http://localhost:20128/v1") is True
+        assert mock_conn.call_args[0][0] == ("localhost", 20128)
 
 
 class TestLaunchTmuxInjectsEnv:
