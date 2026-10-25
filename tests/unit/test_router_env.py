@@ -108,6 +108,13 @@ class TestLiveRouterBaseUrl:
         assert _router_alive("http://localhost:20127/v1") is False
 
     @patch("core.urllib.request.urlopen")
+    def test_unexpected_exception_never_escapes(self, mock_open):
+        """白名单外的异常也必须吞掉：start() 无 try，逃逸即 traceback 而非 launch_err。"""
+        mock_open.side_effect = RuntimeError("boom")
+        assert _router_alive("http://localhost:20127/v1") is False
+        assert _live_router_base_url() == "http://localhost:20127/v1"
+
+    @patch("core.urllib.request.urlopen")
     def test_probe_success_counts_as_up(self, mock_open):
         assert _router_alive("http://localhost:20128/v1") is True
         assert mock_open.call_args[0][0] == "http://localhost:20128/"  # 探源站根，不探 /v1

@@ -570,6 +570,11 @@ def _router_alive(base_url: str) -> bool:
         return True
     except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         return False
+    except Exception as e:  # 探针契约：永不抛。白名单外的类型（MemoryError 在 swap 吃紧时现实可触发）
+        # 会一路穿透 _live_router_base_url → _router_env → start()（三者都无 try），
+        # 把"启动失败"变成 traceback。仍要 warning+exc_info，别把代码 bug 静默成"路由器挂了"。
+        _log.warning("9Router 探测异常 %s: %s", base_url, e, exc_info=True)
+        return False
 
 
 def _live_router_base_url() -> str:
