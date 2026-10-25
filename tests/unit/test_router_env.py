@@ -1,3 +1,5 @@
+import urllib.error
+
 import core
 from core import _router_env, _router_alive, _live_router_base_url, _launch_tmux
 """护栏测试：确保 CCS 角色 claude 启动时必须带 9Router 路由 env。
@@ -85,16 +87,23 @@ class TestLiveRouterBaseUrl:
         mock_alive.return_value = False
         assert _live_router_base_url() == "http://localhost:20127/v1"
 
-    @patch("core.socket.create_connection")
-    def test_probe_failure_counts_as_down(self, mock_conn):
-        mock_conn.side_effect = OSError("conn refused")
+    @patch("core._PROBE_OPENER")
+    def test_probe_failure_counts_as_down(self, mock_opener):
+        mock_opener.open.side_effect = urllib.error.URLError("conn refused")
         assert _router_alive("http://localhost:20127/v1") is False
-        mock_conn.assert_called_once()
+        mock_opener.open.assert_called_once()
 
-    @patch("core.socket.create_connection")
-    def test_probe_success_counts_as_up(self, mock_conn):
+    @patch("core._PROBE_OPENER")
+    def test_probe_http_error_counts_as_up(self, mock_opener):
+        # 307/404 同样证明端口后面有人讲 HTTP；跟随重定向才会拖到超时
+        mock_opener.open.side_effect = urllib.error.HTTPError(
+            "http://localhost:20127/", 307, "redirect", {}, None)
+        assert _router_alive("http://localhost:20127/v1") is True
+
+    @patch("core._PROBE_OPENER")
+    def test_probe_success_counts_as_up(self, mock_opener):
         assert _router_alive("http://localhost:20128/v1") is True
-        assert mock_conn.call_args[0][0] == ("localhost", 20128)
+        assert mock_opener.open.call_args[0][0] == "http://localhost:20128/"  # 探源站根，不探 /v1
 
 
 class TestLaunchTmuxInjectsEnv:

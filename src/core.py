@@ -128,8 +128,9 @@ import tempfile
 import subprocess
 import sys
 import time
-import socket
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass
@@ -547,20 +548,32 @@ _ROUTER_ENV_RE = re.compile(r'^export\s+(ANTHROPIC_(?:BASE_URL|API_KEY))=("?)(.*
 _ROUTER_PORTS = ("20127", "20128")
 
 
-def _router_alive(base_url: str) -> bool:
-    """探测 9Router 端口是否可连。
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """不跟随重定向：`/` 307 到 `/dashboard` 是 chunked 长连接，跟随会拖到超时。"""
 
-    用 TCP connect，不用 HTTP：`/v1/models` 实测 10.0s / 4.2s（模型列表要加载），
-    1s 超时下探测恒 False（2026-10-26 三次实测 10.03s / 4.16s / 0.0006s）——
-    于是 `_live_router_base_url` 每次都走"全部不可达"兜底，主端口一挂就会把角色
-    指向死端口（claude 卡 /login）。端口通不通与"能不能连上"等价，代价 1ms。
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_PROBE_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _router_alive(base_url: str) -> bool:
+    """探测 9Router 是否在跑（HTTP 层，探根路径，不跟随重定向）。
+
+    不探 `/v1/models`：实测 10.0s / 4.2s（要加载模型列表），1s 超时下恒 False
+    （2026-10-26 三次实测 10.03s / 4.16s / 0.0006s）→ `_live_router_base_url`
+    每次都走"全部不可达"兜底，主端口一挂就把角色指向死端口（claude 卡 /login）。
+    `/` 1.4ms 回 307；HTTP 错误码（含 307 被拒跟随时抛的 HTTPError）同样证明
+    "有人在说 HTTP"，算活 —— 纯 TCP connect 会把任何监听该端口的进程当成 9Router。
     """
     try:
-        parsed = urllib.parse.urlparse(base_url)
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 80),
-                                      timeout=0.5):
-            return True
-    except (OSError, ValueError):
+        _p = urlsplit(base_url)
+        _PROBE_OPENER.open(f"{_p.scheme}://{_p.netloc}/", timeout=1.5).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
         return False
 
 
