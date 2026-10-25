@@ -602,8 +602,12 @@ def _router_env() -> dict[str, str]:
 
 def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
-    # 权限由 workspace settings.json permissions.allow 控制
-    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "")
+    # 权限：workspace settings.json 的 permissions.defaultMode=bypassPermissions 在
+    # 目录未受信/设置未被读取时不生效（实测 2026-10-26 02:51 那批 pane：settings.json
+    # 里写着 bypassPermissions，pane 却卡在 "Do you want to create pm_contract_recheck.py?"
+    # 上等人工按 1；同期 24h 真实角色产出只有 7 条）。argv 里显式给同义 flag，
+    # 不依赖 settings 解析路径。CLAUDECODE_PERM_FLAGS 仍可覆盖。
+    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "--permission-mode bypassPermissions")
     # 不带 --bare：bare 模式只暴露 Bash/Edit/Read 三个工具（实测 init 事件
     # "tools":["Bash","Edit","Read"]），Task/Agent、WebSearch、Write、Skill 全部没有
     # ——而 prompt 一直在要求角色联网检索、写产出、按任务开子代理，这些在 bare 下
