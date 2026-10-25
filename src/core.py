@@ -128,6 +128,7 @@ import tempfile
 import subprocess
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -548,32 +549,26 @@ _ROUTER_ENV_RE = re.compile(r'^export\s+(ANTHROPIC_(?:BASE_URL|API_KEY))=("?)(.*
 _ROUTER_PORTS = ("20127", "20128")
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """不跟随重定向：`/` 307 到 `/dashboard` 是 chunked 长连接，跟随会拖到超时。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_PROBE_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
 def _router_alive(base_url: str) -> bool:
-    """探测 9Router 是否在跑（HTTP 层，探根路径，不跟随重定向）。
+    """探测 9Router 是否在跑（HTTP 层，探源站根）。
 
     不探 `/v1/models`：实测 10.0s / 4.2s（要加载模型列表），1s 超时下恒 False
     （2026-10-26 三次实测 10.03s / 4.16s / 0.0006s）→ `_live_router_base_url`
     每次都走"全部不可达"兜底，主端口一挂就把角色指向死端口（claude 卡 /login）。
-    `/` 1.4ms 回 307；HTTP 错误码（含 307 被拒跟随时抛的 HTTPError）同样证明
-    "有人在说 HTTP"，算活 —— 纯 TCP connect 会把任何监听该端口的进程当成 9Router。
+    根路径 1.4ms（跟随 307 到 /login 也只要 9ms），任何 HTTP 响应码都算"有人在说
+    HTTP"——纯 TCP connect 会把任意监听者当成 9Router。
+
+    必须吞 `http.client.HTTPException`：端口被非 HTTP 服务占用时（实测 20197 跑
+    SSH banner），`h.getresponse()` 直接抛 BadStatusLine，它不继承 OSError，
+    漏掉会一路穿透到 launch()（_router_env 不在 try 内），本该 False 兜底却崩启动。
     """
     try:
         _p = urlsplit(base_url)
-        _PROBE_OPENER.open(f"{_p.scheme}://{_p.netloc}/", timeout=1.5).close()
+        urllib.request.urlopen(f"{_p.scheme}://{_p.netloc}/", timeout=1.5).close()
         return True
     except urllib.error.HTTPError:
         return True
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         return False
 
 

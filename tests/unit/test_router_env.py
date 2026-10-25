@@ -1,3 +1,4 @@
+import http.client
 import urllib.error
 
 import core
@@ -87,23 +88,29 @@ class TestLiveRouterBaseUrl:
         mock_alive.return_value = False
         assert _live_router_base_url() == "http://localhost:20127/v1"
 
-    @patch("core._PROBE_OPENER")
-    def test_probe_failure_counts_as_down(self, mock_opener):
-        mock_opener.open.side_effect = urllib.error.URLError("conn refused")
+    @patch("core.urllib.request.urlopen")
+    def test_probe_failure_counts_as_down(self, mock_open):
+        mock_open.side_effect = urllib.error.URLError("conn refused")
         assert _router_alive("http://localhost:20127/v1") is False
-        mock_opener.open.assert_called_once()
+        mock_open.assert_called_once()
 
-    @patch("core._PROBE_OPENER")
-    def test_probe_http_error_counts_as_up(self, mock_opener):
-        # 307/404 同样证明端口后面有人讲 HTTP；跟随重定向才会拖到超时
-        mock_opener.open.side_effect = urllib.error.HTTPError(
+    @patch("core.urllib.request.urlopen")
+    def test_probe_http_error_counts_as_up(self, mock_open):
+        # 307/404 同样证明端口后面有人讲 HTTP
+        mock_open.side_effect = urllib.error.HTTPError(
             "http://localhost:20127/", 307, "redirect", {}, None)
         assert _router_alive("http://localhost:20127/v1") is True
 
-    @patch("core._PROBE_OPENER")
-    def test_probe_success_counts_as_up(self, mock_opener):
+    @patch("core.urllib.request.urlopen")
+    def test_probe_non_http_listener_counts_as_down(self, mock_open):
+        # 端口被 SSH banner 之类占用：getresponse() 抛 BadStatusLine（非 OSError）
+        mock_open.side_effect = http.client.BadStatusLine("SSH-2.0-OpenSSH_9.6")
+        assert _router_alive("http://localhost:20127/v1") is False
+
+    @patch("core.urllib.request.urlopen")
+    def test_probe_success_counts_as_up(self, mock_open):
         assert _router_alive("http://localhost:20128/v1") is True
-        assert mock_opener.open.call_args[0][0] == "http://localhost:20128/"  # 探源站根，不探 /v1
+        assert mock_open.call_args[0][0] == "http://localhost:20128/"  # 探源站根，不探 /v1
 
 
 class TestLaunchTmuxInjectsEnv:
