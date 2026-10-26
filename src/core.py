@@ -733,8 +733,14 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
     if not _ready:
-        return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内没有出现提示符，"
-                f"claude 可能已退出（检查 argv 是否被当前 CLI 支持）；pane 最近输出: {_last[-200:]!r}")
+        # 只把"有硬失败证据"当失败：CLI 不认 argv 会打印 unknown option / Usage / error。
+        # 没有这类文本 = 慢启动（重负载下 claude 首屏可能 >15s），放行并留 warning——
+        # 否则慢启动角色会被判失败，比原来的静默容忍更糟。
+        if re.search(r"unknown (option|argument)|Usage:\s+claude|error:", _last, re.I):
+            return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内没有出现提示符，"
+                    f"且 pane 报参数/启动错误；pane 最近输出: {_last[-200:]!r}")
+        _log.warning("%s %ss 内未见提示符，但无参数/启动错误文本，按慢启动放行",
+                     tmux_name, _CCS_READY_RETRIES)
     time.sleep(1)
 
     # 7. 大声自检：claude 进程必须带路由 env，否则它会静默卡在 /login 而非报错。
