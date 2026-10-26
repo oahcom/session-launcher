@@ -83,7 +83,7 @@ class TestCoreLifecycle:
         # subprocess.run for tmux new-session
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = ""
+        mock_result.stdout = "❯ "
         mock_result.stderr = ""
         mock_subprocess_run.return_value = mock_result
 
@@ -355,6 +355,7 @@ class TestCoreEdgeCases:
         
         mock_result = MagicMock()
         mock_result.returncode = 0
+        mock_result.stdout = "❯ "
         mock_subprocess_run.return_value = mock_result
 
         result = start("qa", workspace="myws", detach=True)
