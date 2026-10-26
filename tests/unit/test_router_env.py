@@ -161,6 +161,35 @@ class TestLaunchTmuxInjectsEnv:
     @patch("core.subprocess.run")
     @patch("core._find_claude_pid")
     @patch("core.time.sleep")
+    def test_launch_command_carries_permission_mode(
+        self, mock_sleep, mock_find_pid, mock_run, mock_router_env, monkeypatch
+    ):
+        """角色 pane 必须显式带 --permission-mode bypassPermissions。
+
+        只靠 workspace settings 的 defaultMode 会受"设置未被读取/目录未受信/写文件时序"影响，
+        pane 会停在 "Do you want to create X? 1.Yes 2.Yes 3.No" 等人按（实测 7 个 pane
+        里 5 个如此，24h 真实角色产出 0 条）。
+        """
+        monkeypatch.delenv("CLAUDECODE_PERM_FLAGS", raising=False)
+        mock_router_env.return_value = {"ANTHROPIC_BASE_URL": "http://x/v1",
+                                       "ANTHROPIC_API_KEY": "k"}
+        mock_find_pid.return_value = 12345
+        ok = MagicMock()
+        ok.returncode, ok.stdout, ok.stderr = 0, "", ""
+        mock_run.return_value = ok
+
+        _launch_tmux("ccs-testrole", Path("/tmp"))
+
+        cmd = " ".join(
+            " ".join(c.args[0]) for c in mock_run.call_args_list
+            if c.args and c.args[0] and c.args[0][0] == "tmux" and "new-session" in c.args[0]
+        )
+        assert "--permission-mode bypassPermissions" in cmd
+
+    @patch("core._router_env")
+    @patch("core.subprocess.run")
+    @patch("core._find_claude_pid")
+    @patch("core.time.sleep")
     def test_launch_command_keeps_agent_tool(
         self, mock_sleep, mock_find_pid, mock_run, mock_router_env
     ):

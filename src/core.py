@@ -629,7 +629,11 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 里写着 bypassPermissions，pane 却卡在 "Do you want to create pm_contract_recheck.py?"
     # 上等人工按 1；同期 24h 真实角色产出只有 7 条）。argv 里显式给同义 flag，
     # 不依赖 settings 解析路径。CLAUDECODE_PERM_FLAGS 仍可覆盖。
-    _PERM_FLAGS = os.environ.get("CLAUDECODE_PERM_FLAGS", "--permission-mode bypassPermissions")
+    # 空串要当作"未设置"：tests/test_mcp_settings.py 里 setdefault(...,"") 会把它设成空，
+    # 直接 .get(k, default) 会拿到 "" 从而静默丢掉 flag（审查实测：全量 pytest 同进程内
+    # 新 flag 根本不存在，而单跑该文件却"通过"）。
+    _PERM_FLAGS = (os.environ.get("CLAUDECODE_PERM_FLAGS")
+                   or "--permission-mode bypassPermissions")
     # 不带 --bare：bare 模式只暴露 Bash/Edit/Read 三个工具（实测 init 事件
     # "tools":["Bash","Edit","Read"]），Task/Agent、WebSearch、Write、Skill 全部没有
     # ——而 prompt 一直在要求角色联网检索、写产出、按任务开子代理，这些在 bare 下
@@ -711,7 +715,10 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     if r.returncode != 0:
         return f"tmux 启动失败: {r.stderr.strip()}"
 
-    # 6. 等 claude 就绪
+    # 6. 等 claude 就绪。**未命中要报错**：CLI 不认识某个 argv（例如降级后没有
+    # --permission-mode）时会 rc=1 立即退出，wrapper 每 3s 重拉，pane 永远没有提示符；
+    # 旧写法照样 return None（报成功），后续 prompt 注进空 pane，故障只在角色"不动"时暴露。
+    _ready, _last = False, ""
     for _ in range(_CCS_READY_RETRIES):
         time.sleep(1)
         try:
@@ -719,10 +726,15 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
                 ["tmux", "capture-pane", "-p", "-t", f"{tmux_name}:0.0", "-S-3"],
                 capture_output=True, text=True, timeout=3
             )
-            if "❯" in out.stdout or ("claude" in out.stdout.lower() and "ready" in out.stdout.lower()):
+            _last = (out.stdout or "").strip()
+            if "❯" in _last or ("claude" in _last.lower() and "ready" in _last.lower()):
+                _ready = True
                 break
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
+    if not _ready:
+        return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内没有出现提示符，"
+                f"claude 可能已退出（检查 argv 是否被当前 CLI 支持）；pane 最近输出: {_last[-200:]!r}")
     time.sleep(1)
 
     # 7. 大声自检：claude 进程必须带路由 env，否则它会静默卡在 /login 而非报错。
