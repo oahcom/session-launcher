@@ -33,6 +33,7 @@ def template_row(conn: sqlite3.Connection, template_id: str):
     254 个实例里 126 个（49.6%）因此查不到自己 → 契约 None、首步退回 s1、建链校验
     误报 template_id not found。别名解析放读侧，历史坏行一并救回。
     """
+    template_id = (template_id or "").strip() if isinstance(template_id, str) else template_id
     for tid in (template_id, f"WF-{template_id}"):
         if not tid or tid == "WF-":
             continue

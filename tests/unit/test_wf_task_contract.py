@@ -64,6 +64,18 @@ def test_missing_template_or_step_yields_none_without_raising(tmp_path):
     assert c2.get_task("t1")["progress"]["current"]["contract"] is None
 
 
+def test_step_without_id_does_not_match_null_current_step(tmp_path):
+    """current_step_id 为空时不得把"没有 step_id 的步骤"当成它的契约。"""
+    db, conn = _seed(tmp_path, json.dumps([{"target_role": "qa",
+                                            "exit_condition": {"text_contains": "ghost"}}]),
+                     "wf4.db")
+    conn.execute("UPDATE workflow_instances SET current_step_id=NULL WHERE instance_id='wf_x'")
+    conn.commit()
+    c = WorkflowClient("qa", db_path=db)
+    c._conn = conn
+    assert c.get_task("t1")["progress"]["current"]["contract"] is None
+
+
 def test_bare_subflow_template_name_resolves_to_prefixed_row(tmp_path):
     """子链行写裸名、模板只登记 WF- 前缀名 —— 契约与首步仍要查得到。
 

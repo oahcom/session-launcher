@@ -374,6 +374,8 @@ class WorkflowClient:
             row = template_row(self._conn, inst.get("template_id"))
             steps = json.loads((row["steps_json"] if row else "") or "[]")
             sid = inst.get("current_step_id")
+            if not sid:
+                return None  # 没有当前步时，"没有 id 的步骤"会被误配成它的契约
             for s in steps:
                 if (s.get("step_id") or s.get("id")) == sid:
                     return {"step": sid,
