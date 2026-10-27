@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from paths import BUS_CLIENT
-from workflow.db import create_connection
+from workflow.db import create_connection, template_row
 
 LOGGER = logging.getLogger("workflow.client")
 
@@ -144,9 +144,7 @@ class WorkflowClient:
         """Gate.validate_create_task inlined: template existence + role validation."""
         if not template_id:
             raise ValueError("template_id is required")
-        row = self._conn.execute(
-            "SELECT is_active FROM workflow_templates WHERE template_id=?", (template_id,)
-        ).fetchone()
+        row = template_row(self._conn, template_id)
         if not row:
             raise ValueError(f"template_id not found: {template_id}")
         if row["is_active"] not in (1, "1", True):
@@ -291,9 +289,7 @@ class WorkflowClient:
         路径不一致（实测 45 条 food_chain_loop 实例 23 条无 s0 键）。
         """
         try:
-            row = self._conn.execute(
-                "SELECT steps_json FROM workflow_templates WHERE template_id=?",
-                (template_id,)).fetchone()
+            row = template_row(self._conn, template_id)
             steps = json.loads((row["steps_json"] if row else "") or "[]")
             sid = (steps[0].get("step_id") or steps[0].get("id") or "") if steps else ""
             return sid or "s1"
@@ -375,9 +371,7 @@ class WorkflowClient:
         模板不存在/JSON 坏/步骤找不到一律返回 None（契约是旁路信息，不能让它挡路）。
         """
         try:
-            row = self._conn.execute(
-                "SELECT steps_json FROM workflow_templates WHERE template_id=?",
-                (inst.get("template_id"),)).fetchone()
+            row = template_row(self._conn, inst.get("template_id"))
             steps = json.loads((row["steps_json"] if row else "") or "[]")
             sid = inst.get("current_step_id")
             for s in steps:

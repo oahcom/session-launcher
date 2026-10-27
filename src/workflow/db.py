@@ -3,7 +3,7 @@
 Schema 定义从 workflow.schema 导入（单一来源）。
 
 用法:
-    from workflow.db import create_connection
+    from workflow.db import create_connection, template_row
     from workflow.schema import SCHEMA_SQL
 """
 import sqlite3
@@ -23,3 +23,21 @@ def create_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.executescript(SCHEMA_SQL)
     conn.commit()
     return conn
+
+
+def template_row(conn: sqlite3.Connection, template_id: str):
+    """按 id 取模板行；裸名再试一次 WF- 前缀。
+
+    同一模板有两种登记名：表里既有 `WF-x` 也有 `x`，而子链建行写的是步骤里的
+    裸名（pipeflow/wf_lifecycle.py 的 subflow INSERT 用 `subflow_template`）。7 天
+    254 个实例里 126 个（49.6%）因此查不到自己 → 契约 None、首步退回 s1、建链校验
+    误报 template_id not found。别名解析放读侧，历史坏行一并救回。
+    """
+    for tid in (template_id, f"WF-{template_id}"):
+        if not tid or tid == "WF-":
+            continue
+        row = conn.execute(
+            "SELECT * FROM workflow_templates WHERE template_id=?", (tid,)).fetchone()
+        if row:
+            return row
+    return None

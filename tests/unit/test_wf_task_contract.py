@@ -64,6 +64,36 @@ def test_missing_template_or_step_yields_none_without_raising(tmp_path):
     assert c2.get_task("t1")["progress"]["current"]["contract"] is None
 
 
+def test_bare_subflow_template_name_resolves_to_prefixed_row(tmp_path):
+    """子链行写裸名、模板只登记 WF- 前缀名 —— 契约与首步仍要查得到。
+
+    生产实测 7 天 254 个实例里 126 个（49.6%）是这种不匹配：pipeflow/wf_lifecycle.py
+    建子链时用步骤里的 subflow_template（裸名 architect_full_design），模板表里只有
+    WF-architect_full_design → contract=None，角色看不到 exit_condition 只能猜验收词；
+    首步也退回硬编码 s1（首步是 s0 的模板会跳过 s0）。
+    """
+    steps = [{"step_id": "s0", "target_role": "product_architect",
+              "exit_condition": {"text_contains": "s0-complete"}}]
+    db = str(tmp_path / "wf3.db")
+    conn = create_connection(db)
+    conn.execute(
+        "INSERT INTO workflow_templates (template_id,name,steps_json,created_at) "
+        "VALUES ('WF-architect_full_design','PA',?,0)", (json.dumps(steps),))
+    conn.execute(
+        "INSERT INTO tasks (task_id,title,assigner,status,created_at,updated_at) "
+        "VALUES ('t2','probe','pm','running',0,0)")
+    conn.execute(
+        "INSERT INTO workflow_instances (instance_id,template_id,task_id,assigner,assignee,"
+        "status,current_step_id,created_at) "
+        "VALUES ('wf_y','architect_full_design','t2','pm','product_architect','running','s0',0)")
+    conn.commit()
+    c = WorkflowClient("product_architect", db_path=db)
+    c._conn = conn
+    assert c._first_step_id("architect_full_design") == "s0", "首步不得退回 s1"
+    cur = c.get_task("t2")["progress"]["current"]
+    assert cur["contract"]["exit_condition"]["text_contains"] == "s0-complete"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
