@@ -381,7 +381,7 @@ class WorkflowClient:
                     return {"step": sid,
                             "exit_condition": s.get("exit_condition") or {},
                             "exit_schema": s.get("exit_schema") or {}}
-        except (json.JSONDecodeError, TypeError, KeyError, IndexError):
+        except (json.JSONDecodeError, TypeError, KeyError, IndexError, AttributeError):
             return None
         return None
 

@@ -64,6 +64,22 @@ def test_missing_template_or_step_yields_none_without_raising(tmp_path):
     assert c2.get_task("t1")["progress"]["current"]["contract"] is None
 
 
+def test_non_str_and_object_steps_json_do_not_raise(tmp_path):
+    """模板名非 str、steps_json 是对象，都不能把旁路信息变成异常。
+
+    评审 B 实测：template_row({'a':1}) 会在绑定参数时抛 ProgrammingError（打破
+    ValueError 契约）；steps_json='{"s1":1}' 时 _step_contract 的 s.get 抛
+    AttributeError 并穿透到 get_task，与"契约是旁路信息"的设计相反。
+    """
+    from workflow.db import template_row
+    db, conn = _seed(tmp_path, json.dumps({"s1": 1}), "wf5.db")
+    assert template_row(conn, {"a": 1}) is None
+    assert template_row(conn, None) is None
+    c = WorkflowClient("qa", db_path=db)
+    c._conn = conn
+    assert c._step_contract({"template_id": "T1", "current_step_id": "s1"}) is None
+
+
 def test_step_without_id_does_not_match_null_current_step(tmp_path):
     """current_step_id 为空时不得把"没有 step_id 的步骤"当成它的契约。"""
     db, conn = _seed(tmp_path, json.dumps([{"target_role": "qa",
