@@ -1,7 +1,12 @@
 # PUBLIC_API — session-launcher
 
-> 实测基准：分支 `r77-routing-daemon-whitelist`（2026-10-22）。可执行验证：
+> 实测基准：分支 `r77-routing-daemon-whitelist`（2026-10-30 复核）。可执行验证：
 > `PYTHONPATH=src python3 -c "import core, tmux_ops, codex_ops, routing.roles, routing.gatekeeper, workflow.client; print('OK')"`
+>
+> ⚠️ **import 污染脚枪**：`import core`（及其链上的 `paths.py`）会把 session-pipeline 的
+> src 插进 `sys.path`；同一进程随后 `import workflow.client` 会解析到 **pipeline 的同名模块**
+> 而不是本仓的。对码/探针必须单独进程只导 `workflow.client`（2026-10-30 实测踩中：
+> 假阳性"6 个方法不存在"，实际是解析到了 pipeline 的类）。
 
 ## Direction
 
@@ -17,7 +22,7 @@ launcher → pipeline 是已知的反向引用，**第三条是业务依赖**（
 
 ```
 src/
-├── ccs.py                       # CLI 入口（19 个顶层子命令，argparse）
+├── ccs.py                       # CLI 入口（20 个顶层子命令，argparse）
 ├── core.py                      # 生命周期编排（start/stop/status/send/health/dashboard）
 ├── tmux_ops.py                  # tmux 底层（_is_alive / _tmux_send / _role_is_busy）
 ├── ccs_socket.py                # CCSClient：Unix Socket 直连
@@ -35,9 +40,9 @@ src/
 └── workflow/                    # client db schema
 ```
 
-CLI 子命令（现取：`python3 src/ccs.py --help`）：
+CLI 子命令（现取：`python3 src/ccs.py --help`；2026-10-30 实测 20 个）：
 start, config, auto-send, roles, stop, status, send, output, dashboard, health,
-register, p0draft, workspace, send-direct, wake, status-role, send-safe, codex, reload-knowledge。
+register, p0draft, workspace, send-direct, wake, reap, status-role, send-safe, codex, reload-knowledge。
 
 wf 子命令（`src/wf.py`）：check, create, complete, fail, notify, task, state, logs,
 cancel, confirm, templates, my, ls, kanban, cleanup, stats。
