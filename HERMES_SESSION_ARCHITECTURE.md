@@ -79,7 +79,7 @@
 
 ### CLAUDE.md 两层关系（2026-10-22 实测）
 
-`core.py:490-508` 每次 start 都 `workspace_create` + `inject_role_knowledge_into_workspace`，
+`core.py:486-551` 每次 start 都 `workspace_create` + `inject_role_knowledge_into_workspace`，
 `ops/workspace.py:57-78` 写 WORKSPACE_SYS 块 —— 每个角色都有一份独立的
 `~/ccs-workspaces/<role>/CLAUDE.md`（目录数现算 `ls ~/ccs-workspaces | wc -l`；2026-10-22 为 47）。所谓"系统级/普通级"在代码里
 **没有分支**：区别只是角色卡内容不同，注入路径完全相同。

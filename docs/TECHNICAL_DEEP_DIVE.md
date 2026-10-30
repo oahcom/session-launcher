@@ -75,7 +75,7 @@ tmux 探测失败按 3 连败（键含 instance_id）才写 `[ccs_send_fallback]
 `~/.hermes/run/ccs-health/<role>.json`（`update_health` 写、`watchdog.py:128` 与 `tracker.py:86` 调，见 `ops/sentinel.py:380`；
 pipeline `survival_monitor` 也往同一目录写 `survival_*`）。只看哨兵里的 `health` 会把没更新的默认值当真实健康状态。结构见 `CcsSentinel`（`:64`）与 `CcsHealth`（`:55`），
 键包含 role / instance_id / tmux_session / pid / started_at / lifecycle / partners / bus_track / drive /
-bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（`core.py:868` 的 `list_sentinels()`），alive 才按 tmux 现查：输出条数 = 目录里的
+bus_timeout / session_id / engine / health。`ccs status` **读哨兵目录**（`ops/sentinel.py:321` 的 `list_sentinels()`），alive 才按 tmux 现查：输出条数 = 目录里的
 哨兵文件数（含已死 session），不是存活数（实测同一时刻两者都是 11）。
 
 ### 3.5 ops/watchdog.py — 伙伴存活守护
