@@ -1,4 +1,5 @@
 import http.client
+import subprocess
 import urllib.error
 
 import core
@@ -21,6 +22,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from core import _router_env, _launch_tmux
+
+# 测试用真 exec：@patch("core.subprocess.run") 改的是同一个 subprocess 模块对象，
+# 直接调 subprocess.run 会拿到 mock。
+_REAL_RUN = subprocess.run
 
 
 class TestRouterEnvSource:
@@ -193,7 +198,7 @@ class TestLaunchTmuxInjectsEnv:
     def test_relaunch_backs_off_on_fast_exit(
         self, mock_sleep, mock_find_pid, mock_run, mock_router_env, monkeypatch
     ):
-        """claude 快速退出（额度/参数错误）时不能每 3s 重拉一次。
+        """claude 快速失败时退避递增；成功退出不惩罚。
 
         实测 10-30 18:23 起 6 个角色在免费额度耗尽时反复空转；固定 sleep 3
         把一次上游故障放大成持续请求风暴。
@@ -208,12 +213,23 @@ class TestLaunchTmuxInjectsEnv:
 
         _launch_tmux("ccs-testrole", Path("/tmp"))
 
-        cmd = " ".join(
-            " ".join(c.args[0]) for c in mock_run.call_args_list
+        script = [
+            c.args[0][-1] for c in mock_run.call_args_list
             if c.args and c.args[0] and c.args[0][0] == "tmux" and "new-session" in c.args[0]
-        )
-        assert "$SECONDS -lt 60" in cmd and "sleep $s" in cmd, cmd
-        assert "$s -gt 120" in cmd, cmd
+        ][0]
+        # 真跑 wrapper：假 claude 立即退出、sleep 改为打印、只跑 4 轮。
+        probe = (script
+                 .replace("claude --model 9router_hermes", "false")
+                 .replace("sleep $s", 'echo "SLEEP=$s"')
+                 .replace("while true; do", "i=0; while [ $i -lt 4 ]; do i=$((i+1));"))
+        fail = _REAL_RUN(["bash", "-c", probe], capture_output=True,
+                         text=True, timeout=10)
+        assert ["SLEEP=%d" % s for s in (10, 20, 30, 40)] == [
+            ln for ln in fail.stdout.split() if ln.startswith("SLEEP=")]
+        # 成功退出（rc=0）不递增，保持 3s。
+        good = _REAL_RUN(["bash", "-c", probe.replace("false", "true")],
+                         capture_output=True, text=True, timeout=10)
+        assert good.stdout.count("SLEEP=3") == 4, good.stdout
 
     @patch("core._router_env")
     @patch("core.subprocess.run")

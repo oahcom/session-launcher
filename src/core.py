@@ -656,7 +656,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 固定 sleep 3 等于每 3s 打一次上游（实测 10-30 18:23 起 6 个角色反复空转）。
     # 存活 <60s 视为快速失败，连续次数 ×10s，封顶 120s；长跑后清零。
     cmd = (
-        "n=0; while true; do "
+        "n=0; while true; do t0=$SECONDS; "
         "claude --model 9router_hermes"
         f" --tools {shlex.quote(_TOOLSET)}"
         f" {_PERM_FLAGS}"
@@ -664,8 +664,10 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
         # 只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
         # 实测（2026-10-16）同一参数下 big-pickle+max→400，+high→200。
         # 回退落点与角色无关，故在源头统一降档，而非按角色配置。
-        " --effort high; "
-        "if [ $SECONDS -lt 60 ]; then n=$((n+1)); else n=0; fi; "
+        " --effort high; rc=$?; "
+        # $SECONDS 是 shell 启动至今，不是本次 claude 的存活时长 —— 必须减 t0。
+        # 只对「失败且快速退出」退避：成功退出（rc=0）不惩罚正常任务。
+        "if [ $((SECONDS-t0)) -lt 60 ] && [ $rc -ne 0 ]; then n=$((n+1)); else n=0; fi; "
         "s=$((n*10)); [ $s -gt 120 ] && s=120; [ $s -lt 3 ] && s=3; "
         "echo \"[CCS] Task completed, waiting ${s}s...\" >&2; "
         "sleep $s; "
