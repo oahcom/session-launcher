@@ -652,8 +652,11 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     # 注意：这串 argv 在 tmux session 创建时就烤进 pane 的 bash -c 里，改了参数只有重建
     # session（ccs start）才生效——只杀 claude 会让 wrapper 用旧 argv 重拉（实测 reviewer）。
     _TOOLSET = "Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill"
+    # 退出即重拉要有退避：免费车道耗尽/参数错误时 claude 会 rc≠0 立刻退出，
+    # 固定 sleep 3 等于每 3s 打一次上游（实测 10-30 18:23 起 6 个角色反复空转）。
+    # 存活 <60s 视为快速失败，连续次数 ×10s，封顶 120s；长跑后清零。
     cmd = (
-        "while true; do "
+        "n=0; while true; do "
         "claude --model 9router_hermes"
         f" --tools {shlex.quote(_TOOLSET)}"
         f" {_PERM_FLAGS}"
@@ -662,8 +665,10 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
         # 实测（2026-10-16）同一参数下 big-pickle+max→400，+high→200。
         # 回退落点与角色无关，故在源头统一降档，而非按角色配置。
         " --effort high; "
-        "echo '[CCS] Task completed, waiting for next task...' >&2; "
-        "sleep 3; "
+        "if [ $SECONDS -lt 60 ]; then n=$((n+1)); else n=0; fi; "
+        "s=$((n*10)); [ $s -gt 120 ] && s=120; [ $s -lt 3 ] && s=3; "
+        "echo \"[CCS] Task completed, waiting ${s}s...\" >&2; "
+        "sleep $s; "
         "done"
     )
     r_env = _router_env()

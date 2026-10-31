@@ -190,6 +190,35 @@ class TestLaunchTmuxInjectsEnv:
     @patch("core.subprocess.run")
     @patch("core._find_claude_pid")
     @patch("core.time.sleep")
+    def test_relaunch_backs_off_on_fast_exit(
+        self, mock_sleep, mock_find_pid, mock_run, mock_router_env, monkeypatch
+    ):
+        """claude 快速退出（额度/参数错误）时不能每 3s 重拉一次。
+
+        实测 10-30 18:23 起 6 个角色在免费额度耗尽时反复空转；固定 sleep 3
+        把一次上游故障放大成持续请求风暴。
+        """
+        monkeypatch.delenv("CLAUDECODE_PERM_FLAGS", raising=False)
+        mock_router_env.return_value = {"ANTHROPIC_BASE_URL": "http://x/v1",
+                                       "ANTHROPIC_API_KEY": "k"}
+        mock_find_pid.return_value = 12345
+        ok = MagicMock()
+        ok.returncode, ok.stdout, ok.stderr = 0, "", ""
+        mock_run.return_value = ok
+
+        _launch_tmux("ccs-testrole", Path("/tmp"))
+
+        cmd = " ".join(
+            " ".join(c.args[0]) for c in mock_run.call_args_list
+            if c.args and c.args[0] and c.args[0][0] == "tmux" and "new-session" in c.args[0]
+        )
+        assert "$SECONDS -lt 60" in cmd and "sleep $s" in cmd, cmd
+        assert "$s -gt 120" in cmd, cmd
+
+    @patch("core._router_env")
+    @patch("core.subprocess.run")
+    @patch("core._find_claude_pid")
+    @patch("core.time.sleep")
     def test_launch_command_keeps_agent_tool(
         self, mock_sleep, mock_find_pid, mock_run, mock_router_env
     ):
