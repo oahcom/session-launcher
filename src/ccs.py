@@ -138,6 +138,10 @@ def main():
     p_send.add_argument("--dry-run", action="store_true",
                          help="只打印将执行的操作，不实际执行")
 
+    # ── task ──
+    p_task = sub.add_parser("task", help="接收任务并打印执行计划")
+    p_task.add_argument("description", help="任务描述")
+
     # ── output ──
     p_out = sub.add_parser("output", help="查看 CCS 输出")
     p_out.add_argument("role", help="角色名")
@@ -340,6 +344,10 @@ def main():
             print(json.dumps(result, ensure_ascii=False, indent=2))
             if not result.get("success"):
                 sys.exit(1)
+
+    elif args.command == "task":
+        from task_runner import run_task
+        sys.exit(run_task(args.description))
 
     elif args.command == "output":
         print(output(args.role, tail=args.tail, instance_id=args.instance_id))
