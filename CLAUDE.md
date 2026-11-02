@@ -1,3 +1,15 @@
+# CCS 收缩模式宪法（2026-11-02 生效，优先级高于本文件其余内容）
+
+唯一目标：让作者每周真实使用 ccs task ≥1 次。
+
+铁律：
+1. 禁止新增角色、persona、bus 分类、工作流模板、协作模式。
+2. 禁止重构 gatekeeper、路由矩阵、哨兵、watchdog，除非当前任务明确被其阻塞。
+3. 角色白名单：scout、engineer、reviewer、closer。其他角色不启动、不派单、不修复。
+4. 每次改动不超过300行 diff，必须附真实验收命令及输出。
+5. 唯一验收路径：ccs task "样例任务" 端到端成功，产物写入 ~/ccs-output/。
+6. 禁止为未来可能的需求写代码。
+
 # session-launcher — CCS 生命周期执行层
 
 > 是本项目的操作手册，不是你运行时的身份。运行时身份由角色 workspace CLAUDE.md 定义。
