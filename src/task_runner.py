@@ -22,6 +22,10 @@ GRACE_INTERVAL = int(os.environ.get("CCS_TASK_GRACE", "180"))
 BUSY_RETRIES = 6
 BUSY_INTERVAL = 10
 POLL_INTERVAL = 10
+# 额度墙：角色 turn 被 9router 限额打断后会话静止，没人替它输入就会干等到 timeout。
+CONTINUE_SIGNATURES = ("FreeUsageLimitError", "usage limit reached", "503")
+CONTINUE_INJECTS = 3
+CONTINUE_COOLDOWN = 120
 
 # role -> (超时, 契约标题, 阶段专属要求)；字典顺序即执行顺序
 STAGES = {
@@ -89,6 +93,8 @@ def _wait_stage(
     # 到点不立刻判死：done/failed 的判定原样保留，只把「何时放弃」推到 deadline+宽限。
     grace_deadline = deadline + GRACE_INTERVAL
     announced_grace = False
+    injects = 0
+    last_inject = 0.0
     while True:
         if os.path.exists(done):
             with open(done, encoding="utf-8", errors="replace") as f:
@@ -103,6 +109,18 @@ def _wait_stage(
             if _sha256_file(artifact) != claimed:
                 return "failed"
             return "done"
+        # 额度墙自愈：命中签名就补一句「继续」，次数与间隔都封顶；判定与 deadline 不受影响。
+        if injects < CONTINUE_INJECTS and time.monotonic() - last_inject >= CONTINUE_COOLDOWN:
+            try:
+                pane = _tmux_output(make_tmux_name(role, instance_id), tail=15) or ""
+            except Exception:
+                pane = ""
+            if pane and any(sig in pane for sig in CONTINUE_SIGNATURES):
+                from core import send
+                send(role, "继续", source="cli", instance_id=instance_id)
+                injects += 1
+                last_inject = time.monotonic()
+                print(f"{role} 疑似额度墙，已注入继续（第 {injects} 次）")
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(POLL_INTERVAL, remaining))
