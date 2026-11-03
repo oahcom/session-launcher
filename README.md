@@ -326,3 +326,7 @@ PYTHONPATH=src python3 -m ccs register <R> ccs-<R>
 | SESSION_ROLES_ROOT | ~/hermes-session-roles | 角色定义目录（非此路径时注入默认拒绝） |
 | ALLOW_ROLES_WORKTREE_INJECT | (未设置) | 设为 1/true/yes 才允许从 worktree 注入生产 prompt |
 | SESSION_PIPELINE_SRC | ~/session-pipeline/src | Pipeline 源码目录 |
+
+---
+## 当前架构（按代码实测）
+`/home/administrator/session-launcher/docs/CCS-CURRENT-ARCHITECTURE.md` — 三仓库职责边界、`ccs task` 四阶段时序、数据契约、文档生死地图。凡本文与它冲突，以它为准。
