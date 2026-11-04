@@ -4,6 +4,7 @@
 同角色的其他实例也会收到广播请求，只写 done 无法区分是谁写的；只认实例名则
 done 之后的产物修改不会被发现，信号与产物可能不一致。
 """
+import fcntl
 import hashlib
 import os
 import shutil
@@ -216,6 +217,21 @@ def _run_stages(description: str, run_dir: str, instance_id: int,
 
 
 def run_task(description: str) -> int:
+    # 整个四段流程持锁：_pick_instance 只查「此刻有无存活专用实例」，查完到 start
+    # 之间任何第二个 ccs task 都会拿到同一编号、写进同一 run_dir（#477341：4 个实例
+    # 各刷一次 scout.done，下游对同一份产出验三遍）。锁必须跨越 pick 与全部阶段，
+    # 只锁 pick 的话第二个进程会在阶段之间插进来，照样串。
+    os.makedirs(OUTPUT_ROOT, exist_ok=True)
+    with open(os.path.join(OUTPUT_ROOT, ".ccs-task.lock"), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("另一个 ccs task 正在执行，本次不启动")
+            return 1
+        return _run_task_locked(description)
+
+
+def _run_task_locked(description: str) -> int:
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     run_dir = os.path.join(OUTPUT_ROOT, run_id)
     os.makedirs(run_dir, exist_ok=True)
