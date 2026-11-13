@@ -12,10 +12,5 @@
       "default": [],
       "roles": {}
     }
-  },
-  "opencode_gate": {
-    "proxy_port": 7898,
-    "rotate_socket": "/home/administrator/dkk-projects/auto-switch-ip/run/rotate.sock",
-    "rotate_token_file": "/home/administrator/dkk-projects/auto-switch-ip/run/api-token"
   }
 }

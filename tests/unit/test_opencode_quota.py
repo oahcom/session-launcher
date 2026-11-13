@@ -60,15 +60,55 @@ def test_quota_criterion_rejects_other_lines():
                'error.error="AI_RetryError: Failed after 3 attempts. Last error: '
                '[429]: free usage"')
     assert q.parse_quota_line(line_9r) is None
-    # AI_RetryError 包装的 Free usage limit 不含 AI_APICallError needle → 不命中
+    # 非 ERROR 级别不命中
+    assert q.parse_quota_line(REAL_LINE.replace("level=ERROR", "level=INFO")) is None
+
+
+# ── B2：包装形态命中 / 原生回归 / 非额度 RetryError 不误命中 ──────
+
+# 包装形态真实样例（取自 ~/.local/share/opencode/log/opencode.log 2026-10-26T13:45:49.658Z）
+REAL_LINE_WRAPPED = (
+    'timestamp=2026-10-26T13:45:49.658Z level=ERROR run=a057b827 message="stream error" '
+    'providerID=opencode modelID=deepseek-v4.1-flash-free session.id=ses_e878a548fffe7LW5n63JZfNWDB '
+    'small=true agent=title mode=primary error.error="AI_RetryError: Failed after 3 attempts. '
+    'Last error: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); '
+    'subscribe to OpenCode Go to keep going: https://opencode.ai/go"'
+)
+
+
+def test_quota_criterion_hits_wrapped_retry_form():
+    """B2：AI_RetryError 包装形态（Last error: Free usage limit reached）必须命中。"""
+    hit = q.parse_quota_line(REAL_LINE_WRAPPED)
+    assert hit is not None, "包装形态 429 行必须命中判据（B2）"
+    assert hit["session_id"] == "ses_e878a548fffe7LW5n63JZfNWDB"
+    assert hit["started_at"] == "2026-10-26T13:45:49.658Z"
+    assert hit["reason"] == "rate429"
+    assert isinstance(hit["started_at_epoch"], float) and hit["started_at_epoch"] > 1.7e9
+    # 另一真实包装形态行（旧版误判为不命中，B2 起必须命中）
     line_retry = ('timestamp=2026-10-25T17:56:34.639Z level=ERROR run=044586ef '
                   'message="stream error" providerID=opencode modelID=glm-5.3-flash-free '
                   'session.id=ses_e8bcb18fdffeMNO28MAHudf9wG small=true agent=title '
                   'mode=primary error.error="AI_RetryError: Failed after 3 attempts. '
                   'Last error: Free usage limit reached."')
-    assert q.parse_quota_line(line_retry) is None
-    # 非 ERROR 级别不命中
-    assert q.parse_quota_line(REAL_LINE.replace("level=ERROR", "level=INFO")) is None
+    assert q.parse_quota_line(line_retry) is not None
+
+
+def test_quota_criterion_still_hits_native_form():
+    """B2 回归：原生 AI_APICallError 形态在判据改造后必须照旧命中。"""
+    hit = q.parse_quota_line(REAL_LINE)
+    assert hit is not None, "原生形态 429 行必须照旧命中（B2 回归）"
+    assert hit["session_id"] == "ses_e8bdaa045ffeluQYva2bN4QICR"
+    assert hit["reason"] == "rate429"
+
+
+def test_quota_criterion_ignores_non_quota_retry_error():
+    """B2：不含 Free usage limit reached 的 AI_RetryError（如 token 过期）不得误命中。"""
+    line_token = ('timestamp=2026-10-26T14:02:11.123Z level=ERROR run=9f00aa11 '
+                  'message="stream error" providerID=opencode modelID=deepseek-v4.1-flash-free '
+                  'session.id=ses_e878a548fffe7LW5n63JZfNWDB small=true agent=title mode=primary '
+                  'error.error="AI_RetryError: Failed after 3 attempts. Last error: '
+                  'AI_APICallError: OAuth token expired, please re-authenticate"')
+    assert q.parse_quota_line(line_token) is None
 
 
 # ── ④ 归属失败：不唤醒但换 IP ───────────────────────────────────

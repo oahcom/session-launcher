@@ -4,8 +4,8 @@
 watchdog 周期调用 check_once()：
 
 1. tail `~/.local/share/opencode/log/opencode.log`，命中 C2 判据
-   （行内同时含 `level=ERROR`、`providerID=opencode`、
-   `error.error="AI_APICallError: Free usage limit reached`）；
+   （行内同时含 `level=ERROR`、`providerID=opencode`、`Free usage limit reached`，
+   且 error.error= 含 AI_APICallError 原生形态或 AI_RetryError 包装形态之一）；
 2. 经 `opencode.db`（**只读**）`session.id → directory` 归属 ccs 工作区/角色；
 3. 调 asip rotate 换出口 IP（C1：POST /rotate-opencode-gate over Unix Socket，
    头 X-Asip-Token）——归属失败也换（只换 IP 不唤醒，宁可漏唤醒不误唤醒）；
@@ -47,13 +47,22 @@ WS_ROOT = Path.home() / "ccs-workspaces"
 WAKE_MSG = ("上一轮 API 错误中断（0 产出）。继续：重发被中断的那次请求，"
             "不要重新规划，不要写自检报告。")
 
-# C2 判据 needle：error.error="AI_APICallError: Free usage limit reached
-# （按前缀匹配，容忍真实日志里该值后继续接 ". Free models work in OpenCode…"；
-#   含收尾引号的完整 needle 在真实日志上命中数为 0，见 REPORT）
-_NEEDLES = (
+# C2 判据 needle（两组，B2 修复后覆盖原生 + 包装两种真实形态）：
+# 公共组（全部命中）：level=ERROR + providerID=opencode + Free usage limit reached；
+# 错误形态组（任一命中）：error.error= 含 AI_APICallError（原生：额度错误直接暴露）
+#   或 AI_RetryError（包装：Failed after N attempts. Last error: Free usage limit reached）。
+# 分两组的理由：一行日志只含一种错误形态，两条形态 needle 若塞进同一 all() 元组，
+#   两种形态会同时匹配不到；公共组的 Free usage limit reached 保证非额度 AI_RetryError
+#   （如 token 过期）不误命中。形态 needle 按前缀匹配，容忍真实日志里该值后继续接
+#   ". Free models work in OpenCode…"（含收尾引号的完整 needle 在真实日志上命中数为 0）。
+_COMMON_NEEDLES = (
     "level=ERROR",
     "providerID=opencode",
-    'error.error="AI_APICallError: Free usage limit reached',
+    "Free usage limit reached",
+)
+_ERROR_FORM_NEEDLES = (
+    'error.error="AI_APICallError',
+    'error.error="AI_RetryError',
 )
 
 _TS_RE = re.compile(r"\btimestamp=(\S+)")
@@ -284,15 +293,19 @@ def _parse_ts(started_at: str) -> float | None:
 
 
 def parse_quota_line(line: str) -> dict | None:
-    """C2 判据：行内同时含 level=ERROR / providerID=opencode /
-    error.error="AI_APICallError: Free usage limit reached → 提取命中信息。
+    """C2 判据（B2 修复：原生 AI_APICallError 与包装 AI_RetryError 两种形态都命中）：
+    行内含 level=ERROR / providerID=opencode / Free usage limit reached，
+    且 error.error= 含 AI_APICallError 或 AI_RetryError 之一 → 提取命中信息。
 
-    reason 按 asip 白名单传 rate429（只认 rate429|abuse403|transport|proactive）；
-    started_at_epoch 为数值时间戳（asip 侧 request_started_at 只收数）。
+    reason 按 asip 白名单传 rate429（只认 rate429|abuse403|transport|proactive）——
+    两种形态同为免费额度 429 语义，统一传 rate429；started_at_epoch 为数值时间戳
+    （asip 侧 request_started_at 只收数）。
     命中但无 session.id 时返回 session_id="" 的命中（handle_hit 跳过并留痕）：
     无 session.id 就没有 req_id 可传，不能只凭空 rotate。
     """
-    if not all(n in line for n in _NEEDLES):
+    if not all(n in line for n in _COMMON_NEEDLES):
+        return None
+    if not any(n in line for n in _ERROR_FORM_NEEDLES):
         return None
     m_sid = _SID_RE.search(line)
     m_ts = _TS_RE.search(line)
