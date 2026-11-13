@@ -410,6 +410,72 @@ def _write_opencode_mcp(ws_path: Path, role_def: dict | None) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     _log.info("写入 %s mcp_servers=%s", path, list(conv.keys()))
 
+
+# ── opencode 全局 provider 落盘（契约 C4：oc-native 原生直连）──
+# 目标是全局 ~/.config/opencode/opencode.jsonc（不是 workspace 的 opencode.json）。
+# 只合并 `provider.oc-native` 一个键：provider.9router 段与用户手写键原样保留
+# （用户裁决 D2：9router 段不许改写、不许删）；JSON 坏了不覆盖只告警。
+_OPENCODE_GLOBAL_JSON = Path("~/.config/opencode/opencode.jsonc").expanduser()
+
+
+def _oc_native_provider() -> dict:
+    """契约 C4 的 provider.oc-native 段（字段名/值一字不差）。"""
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "OpenCode Native",
+        "options": {"baseURL": "https://api.opencode.ai/v1"},
+        "models": {
+            "deepseek-v4.1-flash-free": {
+                "name": "DSv4.1 Flash Free",
+                "limit": {"context": 200000, "output": 32000},
+            }
+        },
+    }
+
+
+def _write_opencode_provider(path: Path | None = None) -> bool:
+    """写全局 opencode.jsonc 的 `provider.oc-native` 键（契约 C4）。
+
+    与 _write_opencode_mcp 同一合并策略：只覆盖 provider.oc-native 一个键，
+    保留文件里其它键（provider.9router 段与用户手写配置）。
+    JSON 解析失败不覆盖只告警。返回 True=已写入，False=未动文件。
+    """
+    p = Path(path) if path is not None else _OPENCODE_GLOBAL_JSON
+    data: dict = {}
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            _log.warning("解析 %s 失败，保留原文件不覆盖: %s", p, e)
+            return False
+        if not isinstance(data, dict):
+            _log.warning("%s 顶层不是对象，保留原文件不覆盖", p)
+            return False
+    provider = data.get("provider")
+    if provider is None:
+        provider = {}
+    elif not isinstance(provider, dict):
+        _log.warning("%s provider 不是对象，保留原文件不覆盖", p)
+        return False
+    provider["oc-native"] = _oc_native_provider()
+    data["provider"] = provider
+    data.setdefault("$schema", _OPENCODE_SCHEMA)
+    # 原子写：并发起多个 opencode 会话时不撕裂文件
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(p.parent), prefix=p.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False))
+        os.replace(tmp_name, p)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    _log.info("写入 %s provider.oc-native（9router 与其它键保留）", p)
+    return True
+
 @validate_role
 def start(role: StartOptions | str, title: str = "", detach: bool = False,
           init_prompt: str = "", partners: list[str] = None,
@@ -739,6 +805,8 @@ def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
     # opencode 不读 .claude/settings.json，需另写项目根 opencode.json。
     if engine == "opencode":
         _write_opencode_mcp(ws_path, role_def)
+        # 全局 provider 段（契约 C4）：oc-native 原生直连；9router 段原样保留（D2）。
+        _write_opencode_provider()
     return role_def, drive, init_prompt, bus_track
 
 
@@ -877,14 +945,47 @@ def _ccs_inner_cmd() -> str:
             " --effort high")
 
 
+def _opencode_gate_port() -> int | None:
+    """opencode 闸口 HTTP 代理端口：env OPENCODE_GATE_PORT → config opencode_gate.proxy_port。
+
+    读不到/非法返回 None —— 调用方必须显式降级为不注入并告警，
+    不许静默指向不存在的端口。
+    """
+    raw = os.environ.get("OPENCODE_GATE_PORT") or _cfg_get_value("opencode_gate.proxy_port")
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        _log.warning("opencode 闸口端口非法: %r，降级为不注入 HTTPS_PROXY", raw)
+        return None
+    if not (1 <= port <= 65535):
+        _log.warning("opencode 闸口端口越界: %r，降级为不注入 HTTPS_PROXY", port)
+        return None
+    return port
+
+
 def _opencode_inner_cmd() -> str:
     """opencode 行启动配方（契约 4.3/D3）：工作区 cwd 直接拉 TUI-in-tmux。
 
     不注入 ANTHROPIC_*：opencode.jsonc 已自配 provider（9router →
     localhost:20127/v1 + 9router_hermes，实测状态栏 "Build · 9Router Hermes"）。
     二进制不在 PATH，用绝对路径（~/.opencode/bin/opencode）。
+    专属闸口出口：HTTPS_PROXY/HTTP_PROXY 指向 opencode 闸口端口、NO_PROXY
+    放行本地回环（9router 在 127.0.0.1，不得被闸口代理劫持）。端口可配置
+    （env OPENCODE_GATE_PORT → config opencode_gate.proxy_port）；读不到时
+    显式降级为不注入并告警（不许静默指向不存在的端口）。
     """
-    return str(Path.home() / ".opencode" / "bin" / "opencode")
+    exe = str(Path.home() / ".opencode" / "bin" / "opencode")
+    port = _opencode_gate_port()
+    if not port:
+        _log.warning("opencode 闸口端口未配置（env OPENCODE_GATE_PORT / "
+                     "config opencode_gate.proxy_port 均无），显式降级：不注入 "
+                     "HTTPS_PROXY/HTTP_PROXY")
+        return exe
+    proxy = f"http://127.0.0.1:{port}"
+    return (f"HTTPS_PROXY={shlex.quote(proxy)} HTTP_PROXY={shlex.quote(proxy)} "
+            f"NO_PROXY=127.0.0.1,localhost {exe}")
 
 
 _ENGINE_REGISTRY: dict[str, dict] = {
