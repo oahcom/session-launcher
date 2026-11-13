@@ -15,6 +15,13 @@ watchdog 周期调用 check_once()：
 rotate 的 socket/token 路径读 config（opencode_gate.rotate_socket /
 opencode_gate.rotate_token_file，env OPENCODE_GATE_ROTATE_SOCK /
 OPENCODE_GATE_TOKEN_FILE 覆盖），缺配置显式降级（告警 + 跳过 rotate）。
+
+与 asip 侧（impl-gate 2026-11-14 回复）对齐的语义：
+- reason 只认 rate429|abuse403|transport|proactive 白名单 → 本监测器恒传 rate429；
+- request_started_at 传数值时间戳（epoch 秒，非数 asip 侧按 None 丢弃）；
+- 回包 switched=false 且 reason∈{no_healthy_node, borrowed_skip} → 不唤醒
+  （防在同 IP 上烧重试），60s 冷却即退避；reason=coalesced 视为可安全同端口重试。
+  borrowed 可选字段不传（本监测器无法识别非本闸口会话，按常规报障处理）。
 """
 
 import http.client
@@ -94,13 +101,15 @@ def _cfg_or_env(env_name: str, cfg_key: str) -> str | None:
     return None
 
 
-def rotate_gate(session_id: str, reason: str, request_started_at: str = "",
-                retry_after_ms: int | None = None) -> bool:
+def rotate_gate(session_id: str, reason: str, request_started_at: float | None = None,
+                retry_after_ms: int | None = None) -> dict:
     """C1：POST /rotate-opencode-gate over Unix Socket，头 X-Asip-Token。
 
     socket/token 路径读 config（opencode_gate.rotate_socket /
     opencode_gate.rotate_token_file），缺任一 → 显式降级（告警 + 不换 IP）。
     req_id 传 session.id（契约 C1）。
+    返回 {"ok", "switched", "reason"}：switched=False 且 reason∈{no_healthy_node,
+    borrowed_skip} 时调用方不得唤醒（同 IP 上重试只会再撞 429）。
     """
     sock_path = _cfg_or_env("OPENCODE_GATE_ROTATE_SOCK", "opencode_gate.rotate_socket")
     token_file = _cfg_or_env("OPENCODE_GATE_TOKEN_FILE", "opencode_gate.rotate_token_file")
@@ -108,15 +117,15 @@ def rotate_gate(session_id: str, reason: str, request_started_at: str = "",
         _log.warning("rotate 配置缺失（opencode_gate.rotate_socket/rotate_token_file"
                      " 或 OPENCODE_GATE_ROTATE_SOCK/OPENCODE_GATE_TOKEN_FILE），"
                      "显式降级：本轮不换 IP session=%s", session_id)
-        return False
+        return {"ok": False, "switched": None, "reason": "config_missing"}
     try:
         token = Path(token_file).read_text(encoding="utf-8").strip()
     except OSError as e:
         _log.warning("读取 asip token 失败 %s: %s，不换 IP", token_file, e)
-        return False
+        return {"ok": False, "switched": None, "reason": "token_unreadable"}
     if not token:
         _log.warning("asip token 为空（%s），不换 IP", token_file)
-        return False
+        return {"ok": False, "switched": None, "reason": "token_empty"}
     body = json.dumps({
         "req_id": session_id,
         "reason": reason,
@@ -131,17 +140,69 @@ def rotate_gate(session_id: str, reason: str, request_started_at: str = "",
                      headers={"X-Asip-Token": token,
                               "Content-Type": "application/json"})
         resp = conn.getresponse()
-        resp.read()
-        if 200 <= resp.status < 300:
-            _log.info("rotate-opencode-gate 成功 session=%s", session_id)
-            return True
-        _log.warning("rotate-opencode-gate HTTP %s session=%s", resp.status, session_id)
-        return False
+        raw = resp.read()
+        if not (200 <= resp.status < 300):
+            _log.warning("rotate-opencode-gate HTTP %s session=%s", resp.status, session_id)
+            return {"ok": False, "switched": None, "reason": f"http_{resp.status}"}
+        switched: bool | None = None
+        reason_val = ""
+        try:
+            data = json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
+            if isinstance(data, dict):
+                if isinstance(data.get("switched"), bool):
+                    switched = data["switched"]
+                reason_val = str(data.get("reason") or "")
+        except (ValueError, TypeError):
+            pass  # 回包非 JSON：按已换成功处理（HTTP 2xx）
+        _log.info("rotate-opencode-gate 成功 session=%s switched=%s reason=%s",
+                  session_id, switched, reason_val)
+        return {"ok": True, "switched": switched, "reason": reason_val}
     except OSError as e:
         _log.warning("rotate-opencode-gate 连接失败 %s: %s", sock_path, e)
-        return False
+        return {"ok": False, "switched": None, "reason": "transport_error"}
     finally:
         conn.close()
+
+
+def discover_gate_port() -> int | None:
+    """GET /slots（同一 UDS + token）取 kind=="opencode" 那条的 port。
+
+    impl-gate 建议的端口发现方式：opencode 闸口端口随 slot 编号顺延
+    （默认 7898 只是 slot-8 的当前值），写死会随 consumer_slots/slots 变更失效。
+    发现不到/端点未上线 → None（调用方显式降级为不注入）。
+    """
+    sock_path = _cfg_or_env("OPENCODE_GATE_ROTATE_SOCK", "opencode_gate.rotate_socket")
+    token_file = _cfg_or_env("OPENCODE_GATE_TOKEN_FILE", "opencode_gate.rotate_token_file")
+    if not sock_path or not token_file:
+        return None
+    try:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not token:
+        return None
+    conn = _UnixHTTPConnection(sock_path, timeout=3.0)
+    try:
+        conn.request("GET", "/slots", headers={"X-Asip-Token": token})
+        resp = conn.getresponse()
+        raw = resp.read()
+        if not (200 <= resp.status < 300):
+            return None
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except (OSError, ValueError, TypeError):
+        return None
+    finally:
+        conn.close()
+    items = data if isinstance(data, list) else (
+        data.get("slots") if isinstance(data, dict) else None)
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if isinstance(item, dict) and item.get("kind") == "opencode":
+            port = item.get("port")
+            if isinstance(port, int) and 1 <= port <= 65535:
+                return port
+    return None
 
 
 # ── 归属（契约 C2：session.id → directory → 角色）────────────────
@@ -209,10 +270,25 @@ def wake_role(role: str, instance_id: int = 0) -> dict:
 
 # ── 日志 tail + 判据 ────────────────────────────────────────────
 
+def _parse_ts(started_at: str) -> float | None:
+    """ISO 日志时间戳 → epoch 秒（供 _fresh 与 request_started_at 数值传递）。"""
+    if not started_at:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            dt = datetime.strptime(started_at, fmt)
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 def parse_quota_line(line: str) -> dict | None:
     """C2 判据：行内同时含 level=ERROR / providerID=opencode /
     error.error="AI_APICallError: Free usage limit reached → 提取命中信息。
 
+    reason 按 asip 白名单传 rate429（只认 rate429|abuse403|transport|proactive）；
+    started_at_epoch 为数值时间戳（asip 侧 request_started_at 只收数）。
     命中但无 session.id 时返回 session_id="" 的命中（handle_hit 跳过并留痕）：
     无 session.id 就没有 req_id 可传，不能只凭空 rotate。
     """
@@ -224,23 +300,16 @@ def parse_quota_line(line: str) -> dict | None:
     return {
         "session_id": m_sid.group(1) if m_sid else "",
         "started_at": started_at,
-        "reason": "AI_APICallError: Free usage limit reached",
+        "started_at_epoch": _parse_ts(started_at),
+        "reason": "rate429",
     }
 
 
 def _fresh(started_at: str) -> bool:
-    if not started_at:
+    ts = _parse_ts(started_at)
+    if ts is None:
         return False
-    dt = None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            dt = datetime.strptime(started_at, fmt)
-            break
-        except ValueError:
-            continue
-    if dt is None:
-        return False
-    age = time.time() - dt.replace(tzinfo=timezone.utc).timestamp()
+    age = time.time() - ts
     return -30.0 <= age <= _FRESH_SEC
 
 
@@ -283,8 +352,16 @@ def handle_hit(hit: dict) -> dict:
         if last is not None and now - last < COOLDOWN_SEC:
             return {"action": "suppressed", "session_id": sid}
         _last_handled[sid] = now
-    rotated = rotate_gate(sid, reason=hit.get("reason", ""),
-                          request_started_at=hit.get("started_at", ""))
+    rotated = rotate_gate(sid, reason=hit.get("reason", "rate429"),
+                          request_started_at=hit.get("started_at_epoch"))
+    if (isinstance(rotated, dict) and rotated.get("switched") is False
+            and rotated.get("reason") in ("no_healthy_node", "borrowed_skip")):
+        # asip 语义：switched=false 时同端口重试只会再撞 429（no_healthy_node
+        # 按 60s 冷却退避）。不唤醒防烧重试。
+        _log.warning("session %s rotate 未换节点（%s），不唤醒防烧重试",
+                     sid, rotated.get("reason"))
+        return {"action": "rotate_only", "session_id": sid, "rotated": rotated,
+                "wake_skipped": rotated.get("reason")}
     directory = session_directory(sid)
     target = attribute_session(directory)
     if target is None:

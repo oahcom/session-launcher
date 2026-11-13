@@ -946,23 +946,29 @@ def _ccs_inner_cmd() -> str:
 
 
 def _opencode_gate_port() -> int | None:
-    """opencode 闸口 HTTP 代理端口：env OPENCODE_GATE_PORT → config opencode_gate.proxy_port。
+    """opencode 闸口 HTTP 代理端口：env OPENCODE_GATE_PORT → config opencode_gate.proxy_port
+    → GET /slots 动态发现（kind=="opencode" 的 port；端口随 slot 编号顺延，不写死）。
 
-    读不到/非法返回 None —— 调用方必须显式降级为不注入并告警，
+    都拿不到/非法返回 None —— 调用方必须显式降级为不注入并告警，
     不许静默指向不存在的端口。
     """
     raw = os.environ.get("OPENCODE_GATE_PORT") or _cfg_get_value("opencode_gate.proxy_port")
-    if raw is None or not str(raw).strip():
-        return None
+    if raw is not None and str(raw).strip():
+        try:
+            port = int(raw)
+            if 1 <= port <= 65535:
+                return port
+            _log.warning("opencode 闸口端口越界: %r", raw)
+        except (TypeError, ValueError):
+            _log.warning("opencode 闸口端口非法: %r", raw)
     try:
-        port = int(raw)
-    except (TypeError, ValueError):
-        _log.warning("opencode 闸口端口非法: %r，降级为不注入 HTTPS_PROXY", raw)
-        return None
-    if not (1 <= port <= 65535):
-        _log.warning("opencode 闸口端口越界: %r，降级为不注入 HTTPS_PROXY", port)
-        return None
-    return port
+        from ops.opencode_quota import discover_gate_port
+        port = discover_gate_port()
+        if port:
+            return port
+    except Exception as e:  # noqa: BLE001 — 发现失败走显式降级
+        _log.debug("opencode 闸口端口动态发现失败: %s", e)
+    return None
 
 
 def _opencode_inner_cmd() -> str:

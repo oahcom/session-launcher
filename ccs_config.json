@@ -1,6 +1,10 @@
 {
   "version": 1,
   "description": "CCS 全局配置 — session-launcher 的中央配置中心",
+  "opencode_gate": {
+    "rotate_socket": "/home/administrator/dkk-projects/auto-switch-ip/run/rotate.sock",
+    "rotate_token_file": "/home/administrator/dkk-projects/auto-switch-ip/run/api-token"
+  },
   "auto_send": {
     "enabled": true,
     "interval_sec": 2.0,
@@ -8,5 +12,10 @@
       "default": [],
       "roles": {}
     }
+  },
+  "opencode_gate": {
+    "proxy_port": 7898,
+    "rotate_socket": "/home/administrator/dkk-projects/auto-switch-ip/run/rotate.sock",
+    "rotate_token_file": "/home/administrator/dkk-projects/auto-switch-ip/run/api-token"
   }
 }

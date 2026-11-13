@@ -36,7 +36,8 @@ _C3 = ("上一轮 API 错误中断（0 产出）。继续：重发被中断的�
 
 def _fresh_hit(sid="ses_test001"):
     return {"session_id": sid, "started_at": "2099-01-01T00:00:00.000Z",
-            "reason": "AI_APICallError: Free usage limit reached"}
+            "started_at_epoch": 4070908800.0,
+            "reason": "rate429"}
 
 
 # ── ③ 429 判据命中（真实形态日志）────────────────────────────────
@@ -46,6 +47,9 @@ def test_quota_criterion_hits_real_form_line():
     assert hit is not None, "真实形态 429 行必须命中判据"
     assert hit["session_id"] == "ses_e8bdaa045ffeluQYva2bN4QICR"
     assert hit["started_at"] == "2026-10-25T18:00:10.492Z"
+    # asip 白名单 reason + 数值时间戳（request_started_at 只收数）
+    assert hit["reason"] == "rate429"
+    assert isinstance(hit["started_at_epoch"], float) and hit["started_at_epoch"] > 1.7e9
 
 
 def test_quota_criterion_rejects_other_lines():
@@ -72,8 +76,12 @@ def test_quota_criterion_rejects_other_lines():
 def test_attribution_failure_rotates_without_wake(monkeypatch):
     q._last_handled.clear()
     calls = {"rotate": 0, "wake": 0}
-    monkeypatch.setattr(q, "rotate_gate",
-                        lambda sid, **kw: calls.__setitem__("rotate", calls["rotate"] + 1) or True)
+
+    def _rot(sid, **kw):
+        calls["rotate"] += 1
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
     monkeypatch.setattr(q, "session_directory",
                         lambda sid: "/home/administrator")  # 非 ccs 工作区 → 归属失败
     monkeypatch.setattr(q, "wake_role",
@@ -87,8 +95,12 @@ def test_attribution_failure_rotates_without_wake(monkeypatch):
 def test_attribution_failure_when_session_missing(monkeypatch):
     q._last_handled.clear()
     calls = {"rotate": 0, "wake": 0}
-    monkeypatch.setattr(q, "rotate_gate",
-                        lambda sid, **kw: calls.__setitem__("rotate", calls["rotate"] + 1) or True)
+
+    def _rot(sid, **kw):
+        calls["rotate"] += 1
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
     monkeypatch.setattr(q, "session_directory", lambda sid: None)  # db 查不到
     monkeypatch.setattr(q, "wake_role",
                         lambda *a, **k: calls.__setitem__("wake", calls["wake"] + 1) or {})
@@ -102,8 +114,13 @@ def test_attribution_failure_when_session_missing(monkeypatch):
 def test_attribution_success_rotates_and_wakes(monkeypatch):
     q._last_handled.clear()
     seen = {}
-    monkeypatch.setattr(q, "rotate_gate",
-                        lambda sid, **kw: seen.setdefault("rotated", sid) and True)
+
+    def _rot(sid, **kw):
+        seen["rotated"] = sid
+        seen["rotate_kwargs"] = kw
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
     monkeypatch.setattr(q, "session_directory",
                         lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
     monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
@@ -122,8 +139,12 @@ def test_attribution_success_rotates_and_wakes(monkeypatch):
 def test_cooldown_suppresses_repeat_rotate_and_wake(monkeypatch):
     q._last_handled.clear()
     calls = {"rotate": 0, "wake": 0}
-    monkeypatch.setattr(q, "rotate_gate",
-                        lambda sid, **kw: calls.__setitem__("rotate", calls["rotate"] + 1) or True)
+
+    def _rot(sid, **kw):
+        calls["rotate"] += 1
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
     monkeypatch.setattr(q, "session_directory", lambda sid: "/home/administrator")
     monkeypatch.setattr(q, "wake_role",
                         lambda *a, **k: calls.__setitem__("wake", calls["wake"] + 1) or {})
@@ -138,8 +159,44 @@ def test_cooldown_suppresses_repeat_rotate_and_wake(monkeypatch):
     assert calls["rotate"] == 2
 
 
+# ── no_healthy_node：不唤醒防烧重试（impl-gate 语义）──────────────
+
+def test_no_healthy_node_skips_wake(monkeypatch):
+    q._last_handled.clear()
+    calls = {"wake": 0}
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda sid, **kw: {"ok": True, "switched": False,
+                                           "reason": "no_healthy_node"})
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "wake_role",
+                        lambda *a, **k: calls.__setitem__("wake", calls["wake"] + 1) or {})
+    res = q.handle_hit(_fresh_hit("ses_nohp01"))
+    assert calls["wake"] == 0, "no_healthy_node 不许唤醒（同 IP 重试只会再撞 429）"
+    assert res["action"] == "rotate_only"
+    assert res["wake_skipped"] == "no_healthy_node"
+
+
+# ── rotate 载荷：reason=rate429 + 数值时间戳（asip 白名单/类型）────
+
+def test_hit_carries_rate429_and_numeric_timestamp(monkeypatch):
+    q._last_handled.clear()
+    seen = {}
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda sid, **kw: seen.setdefault("kw", kw) or
+                        {"ok": True, "switched": True, "reason": ""})
+    monkeypatch.setattr(q, "session_directory", lambda sid: None)
+    q.handle_hit(_fresh_hit("ses_pl01"))
+    assert seen["kw"]["reason"] == "rate429", "reason 必须是 asip 白名单值"
+    ts = seen["kw"]["request_started_at"]
+    assert ts is None or isinstance(ts, (int, float)), "request_started_at 只收数值"
+
+
 # ── rotate 配置缺失：显式降级不换 IP ─────────────────────────────
 
 def test_rotate_degrades_when_config_missing(monkeypatch):
     monkeypatch.setattr(q, "_cfg_or_env", lambda *a: None)
-    assert q.rotate_gate("ses_x", "reason") is False, "缺配置必须显式降级（不硬编码）"
+    res = q.rotate_gate("ses_x", "rate429")
+    assert res["ok"] is False, "缺配置必须显式降级（不硬编码）"
+    assert res["reason"] == "config_missing"
