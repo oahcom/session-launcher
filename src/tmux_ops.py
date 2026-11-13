@@ -433,15 +433,17 @@ def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
         ok = False
     if not ok:
         return False
-    # 忙判据未标定（codex）不得让整条陈旧重启链路炸掉：降级为「视为空闲」，
-    # 由下方 _looks_stuck 兜底（pane 不动 + CPU 不走仍判卡死）。方向同 _deliver_once：
-    # 宁可多一次重启，也不让未标定引擎永远拿不到新 prompt。
+    # 忙判据未标定（codex）不得让整条陈旧重启链路炸掉：降级为「视为忙」，
+    # 重启必须由下方 _looks_stuck 正向证明卡死（pane 不动 + CPU 不走）才放行。
+    # 方向与投递链相反是有意的：投递误判空闲只是多投一次，重启误判空闲会杀掉
+    # 生成中的进程——两条链误判代价不对等，故重启链宁可漏一次重启。
     try:
         busy = _role_is_busy(tmux_name, engine=eng)
     except RuntimeError as e:
         logging.getLogger("tmux_ops").warning(
-            "%s 忙判据不可用，陈旧重启降级视为空闲: %s", tmux_name, e)
-        busy = False
+            "%s 忙判据不可用，陈旧重启降级视为忙（须 _looks_stuck 证明卡死才重启）: %s",
+            tmux_name, e)
+        busy = True
     if busy and not _looks_stuck(tmux_name, pid):
         return False
     if _proc_start_time(pid) >= prompt_file.stat().st_mtime:

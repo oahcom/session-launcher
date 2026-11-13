@@ -422,6 +422,45 @@ class TestRestartIfStale:
             assert tmux_ops._restart_if_stale("ccs-probe", md) is False
         kill.assert_not_called()
 
+    def test_restart_if_stale_uncalibrated_busy_does_not_kill(self, tmp_path):
+        """忙判据未标定（codex）降级必须视为「忙」：仅 _looks_stuck 证明卡死才重启。
+
+        投递链降级「视为空闲」是为了不丢消息；重启链方向必须相反——误判空闲
+        会 kill 掉生成中的进程。旧实现 busy=False 让 `busy and not _looks_stuck(...)`
+        被 and 短路、_looks_stuck 永不执行，陈旧进程会直接落进 mtime 判断被 kill。
+        """
+        import tmux_ops
+        from unittest.mock import patch
+        md = tmp_path / "AGENTS.md"
+        md.write_text("x", encoding="utf-8")
+        with patch("tmux_ops._is_alive", return_value=True), \
+             patch("tmux_ops._engine_of", return_value="codex"), \
+             patch("tmux_ops._looks_stuck", return_value=False), \
+             patch("tmux_ops._tmux_output", return_value="❯ "), \
+             patch("tmux_ops._find_engine_pid", return_value=4242), \
+             patch("tmux_ops._proc_start_time", return_value=0.0), \
+             patch("pathlib.Path.read_text", return_value="codex\n"), \
+             patch("tmux_ops._kill") as kill:
+            assert tmux_ops._restart_if_stale("cdx-probe", md) is False
+        kill.assert_not_called()
+
+
+# ── 引擎双注册表一致性 ──
+
+def test_engine_registries_have_same_keys():
+    """core._ENGINE_REGISTRY 与 tmux_ops._ENGINE_SPECS 是两份并行注册表。
+
+    一份新增引擎时另一份漏加 = 「启动认得、判活认不得」的半接入：启动面接受
+    该 engine 取值，_engine_spec 却抛 ValueError，而现有测试全绿。
+    """
+    import core
+    import tmux_ops
+    start_side = set(core._ENGINE_REGISTRY)
+    live_side = set(tmux_ops._ENGINE_SPECS)
+    assert start_side == live_side, (
+        f"仅 core 有: {sorted(start_side - live_side)}；"
+        f"仅 tmux_ops 有: {sorted(live_side - start_side)}")
+
 
 # ── 忙时投递策略 ──
 
