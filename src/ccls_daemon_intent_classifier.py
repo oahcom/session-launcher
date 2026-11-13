@@ -132,6 +132,52 @@ def _transcript_mtime(session: str) -> float:
         return 0.0
 
 
+# ── 会话承载引擎（契约 4.1/4.2/4.5）────────────────────────────────────
+# 事实源 = 哨兵文件；取值域 {"ccs","opencode","codex"}，ccs 是 claude 承载引擎
+# 的历史名（沿用，零改动）。路径与 ops.sentinel.SENTINEL_DIR、
+# paths.LIFECYCLE_SENTINEL_DIR 同值同源（~/.hermes/run/ccs-sentinels），此处不从
+# 那两个模块 import：`ops/__init__` 会连带拉起 tracker/watchdog（整条 launcher 依赖
+# 进这个常驻 daemon），`paths` 会在 import 期拉 hermes_bus.config（失败即 daemon 起不来）。
+# 本模块既有 HERMES_HOME 口径（见文件头 PID_FILE/STATE_FILE），systemd 单元里
+# 显式 Environment=HERMES_HOME=<HOME>/.hermes，与本路径一致。
+SENTINEL_DIR = Path(HERMES_HOME) / "run" / "ccs-sentinels"
+ENGINE_CCS = "ccs"
+# 来源标注（与 core._engine_with_source / ccs.py status-role 的 engine_source 同口径）：
+# 推断值不得冒充事实（契约 4.2「不许静默编造」）。
+ENGINE_SRC_SENTINEL = "sentinel"                 # 哨兵文件里有显式 engine 键 = 事实
+ENGINE_SRC_PREFIX = "tmux-prefix-fallback"       # 文件缺失/无 engine 键 = 按前缀兜底
+_MAX_ENGINE_LOG = 64                             # 引擎留痕去重键长度上限（防御脏值）
+
+
+def _engine_with_source(session: str) -> tuple[str, str]:
+    """tmux 会话名 → (该会话的承载引擎, 来源)。
+
+    只读一次哨兵 JSON，**不做 tmux 回退子进程**：本函数每 tick 每会话各调一次，
+    ops.sentinel.read_sentinel 的 tmux has-session 回退会变成 O(会话数)/tick 的
+    子进程（3s 超时 × N，与文件里反复记录的 `tmux ls` 超时同源风险）。语义与
+    core._engine_with_source 一致：显式 engine 键才算事实，否则按 cdx- 前缀反推
+    （本 daemon 只枚举 ccs-*，故兜底恒为 ccs → 走旧行为路径）并标注来源。
+    """
+    role, inst = "", 0
+    try:
+        role, inst = parse_tmux_name(session)
+    except Exception:
+        pass  # 解析不可用：下面按前缀兜底（宁可走旧路径，也不猜引擎）
+    if role:
+        key = f"{role}-{inst}" if inst else role
+        try:
+            data = json.loads((SENTINEL_DIR / f"{key}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None  # 缺失/损坏同待遇：都是"没有事实"，不是 ccs
+        if isinstance(data, dict):
+            _eng = data.get("engine")
+            if isinstance(_eng, str) and _eng.strip():
+                # 小写化只为比对（写侧取值域已冻结）；未知取值不归一化成 ccs——
+                # 未知引擎的转录同样不在 claude 布局，必须走显式降级。
+                return _eng.strip().lower(), ENGINE_SRC_SENTINEL
+    return ("codex" if session.startswith("cdx-") else ENGINE_CCS), ENGINE_SRC_PREFIX
+
+
 @dataclass
 class _SessionState:
     """Per-session reminder state."""
@@ -152,6 +198,31 @@ class _SessionState:
     # 都会把 deferred_logged 清回 False，共用会让这条"只报一次"的日志每 10s 刷一行
     # （审查 P2#7 实测 5 tick → 5 行）。
     no_digest_logged: bool = False
+    # 上次留痕过的「引擎/来源」判定（去重用）。引擎只在重启时可变，故按值变化留痕
+    # 一条即可；逐 tick 打是 50 会话 × 6 行/分的噪音（同 deferred_logged 的既定风格）。
+    # 不持久化：_save_states 只写 request_ts/remind_count/last_remind_epoch。
+    engine_logged: str = ""
+
+
+def _note_engine(st: _SessionState, session: str, engine: str, source: str) -> None:
+    """就「本会话的引擎判定」留一行可观测记录（值不变则不重复打）。
+
+    留痕是降级的**组成部分**而非可选项：非 ccs 会话的转录 mtime 恒读 0.0，
+    若只降级不留痕，"提醒为什么只发了一次"在 journald 侧无从解释，
+    与"daemon 读不到转录"无法区分（正是本轨要修的静默失真）。
+    """
+    marker = f"{engine}/{source}"[:_MAX_ENGINE_LOG]
+    if st.engine_logged == marker:
+        return
+    st.engine_logged = marker
+    if engine != ENGINE_CCS:
+        print(f"[ccls_daemon] {session} 转录守卫显式降级：引擎={engine}"
+              f"（来源={source}）claude 转录布局不适用 → 视为已回复，不再重复提醒",
+              file=sys.stderr, flush=True)
+    elif source != ENGINE_SRC_SENTINEL:
+        # 老会话（哨兵文件缺失）：如实说明这是**旧行为路径**而非事实源结论。
+        print(f"[ccls_daemon] {session} 转录守卫：引擎={engine}（来源={source}，"
+              f"哨兵不可用→按 ccs 旧行为判定）", file=sys.stderr, flush=True)
 
 
 def _load_states() -> dict[str, _SessionState]:
@@ -644,11 +715,32 @@ class IntentReminderDaemon:
             st.intent = req_intent  # 每轮刷新：措辞跟随最近一次请求的意图
             if st.remind_count >= self._MAX_REMINDERS:
                 continue  # 同请求预算耗尽：角色选择空闲而非卡住，转静默
-            if st.last_remind_epoch and _transcript_mtime(sess) > st.last_remind_epoch:
+            if st.last_remind_epoch:
                 # 提醒后角色已经回过一轮 → 不再催。第 1 次没让它动手时，
                 # 第 2、3 次只会催出复述（实测 qa 2h 34 条零动作回复里 33 条
                 # 由此产生）。转录 mtime 一次 stat 即可，不解析内容。
-                continue
+                #
+                # 但转录面是 claude 私有布局：非 ccs 引擎（opencode/codex/未知取值）
+                # 的转录不在 ~/.claude/projects/… → _transcript_mtime 恒返回 0.0 →
+                # 守卫恒假 → 角色已应答仍被催到预算耗尽。「读不到」与「没回复」
+                # 在旧实现里不可区分，正是本条要除掉的静默失真：故先取事实源引擎
+                # （哨兵，契约 4.2/4.5），非 ccs **显式降级**为「视为已回复」。
+                _engine, _esrc = _engine_with_source(sess)
+                _note_engine(st, sess, _engine, _esrc)
+                if _engine == ENGINE_CCS:
+                    _replied = _transcript_mtime(sess) > st.last_remind_epoch
+                else:
+                    # 保守方向 = 不再重复提醒：本文件实测结论是"第 1 次没能让它
+                    # 动手时，第 2、3 次只会催出复述"，即多催的那几次只有成本
+                    # （各消耗一个完整 LLM 回合）而无收益；首次提醒不受本守卫
+                    # 影响（last_remind_epoch==0 时整块不进），故降级后仍是
+                    # 「该催的那一次照发，多催的几次不发」——不是把功能关掉。
+                    # 反向选择（维持恒假=照旧催满 3 次）会把已知有害的行为当成
+                    # 默认值；二期接通 opencode 转录时只替换本行的判据来源，
+                    # 本分支保留为未知引擎兜底（调用语义不动）。
+                    _replied = True
+                if _replied:
+                    continue
             if self._push_reminder(sess, st.remind_count + 1, st.intent, req_text):
                 pushed += 1
                 if st.remind_count == self._MAX_REMINDERS:
