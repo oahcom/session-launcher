@@ -25,9 +25,12 @@ __all__ = [
     '_FORBIDDEN_DISPLAY',
     '_WAKE_PERMISSION_MAP',
     '_CLAUDE_MD',
+    '_CONTEXT_FILENAME_BY_ENGINE',
+    '_engine_for_injection',
 ]
 
 import json
+import logging
 import threading
 import os
 import re
@@ -117,6 +120,33 @@ SESSION_MARKER_END = "<!-- SESSION_ROLE:END -->"
 
 _CLAUDE_MD = Path(os.environ.get("CLAUDE_MD_PATH",
                   "~/.claude/projects/-home-administrator/CLAUDE.md")).expanduser()
+
+# 工作区指令文件按引擎取文件名（契约 4.3）：内容同源只生成一份，差别仅在目标文件名。
+# codex 故意不在表内——孤岛本期不接上下文落盘，显式拒绝，绝不静默按 CLAUDE.md 写。
+_CONTEXT_FILENAME_BY_ENGINE: dict[str, str] = {
+    "ccs": "CLAUDE.md",
+    "opencode": "AGENTS.md",
+}
+
+
+def _engine_for_injection(engine: str | None, role_name: str) -> str:
+    """注入用引擎取数：显式参数优先 → 哨兵事实源 → 历史默认 "ccs"。
+
+    哨兵是契约 4.2 的身份事实源（ops/sentinel.py read_sentinel，纯读无副作用）。
+    参数与哨兵都缺时取 "ccs"：与本次改造前的行为逐字一致（存量 claude 零回归）。
+    取值合法性不在本函数兜底：调用方（core.start / reload-knowledge）先行校验，
+    未知值由 inject 侧显式报错，不做「猜」。
+    """
+    if engine:
+        return engine
+    try:
+        from ops.sentinel import read_sentinel
+        _s = read_sentinel(role_name)
+        if _s is not None and getattr(_s, "engine", ""):
+            return _s.engine
+    except Exception as _e:  # 哨兵不可读不阻塞注入：退回默认=改造前行为
+        logging.getLogger("roles").debug("inject engine 读哨兵失败 %s: %s", role_name, _e)
+    return "ccs"
 
 _lock = threading.Lock()
 
@@ -417,9 +447,12 @@ def _strip_stale_prompt_prefix(prefix: str) -> str:
     return ("\n\n".join(kept) + "\n\n") if kept else prefix
 
 
-def inject_role_knowledge_into_workspace(role: dict) -> str:
-    """将角色契约 + base.md 通用红线写入 workspace 级 CLAUDE.md（KNOWLEDGE 块）。
+def inject_role_knowledge_into_workspace(role: dict, engine: str | None = None) -> str:
+    """将角色契约 + base.md 通用红线写入 workspace 级指令文件（KNOWLEDGE 块）。
 
+    目标文件名按引擎取（契约 4.3）：ccs→CLAUDE.md（路径解析与内容逐字不变），
+    opencode→AGENTS.md（同一工作区根，即 A 轨启动配方的 cwd）。内容只生成一份、
+    只换落盘文件名，两引擎拿到的角色知识因此逐字同源（防双份漂移）。
     base.md 内容通过 role_assembler 编译注入（含角色职责红线、Git 规范、自审查指令等）。
     原有硬编码的 sec_redlines/git_rules/review_rules 已由 base.md 覆盖，移除冗余。
     """
@@ -431,6 +464,17 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     if _root != _canonical and os.environ.get("ALLOW_ROLES_WORKTREE_INJECT", "").strip().lower() not in ("1", "true", "yes"):
         return f"refused (SESSION_ROLES_ROOT={_root} != {_canonical}; 设 ALLOW_ROLES_WORKTREE_INJECT=1 才放行)"
     name = role.get("name", "")
+
+    # 定向到引擎的指令文件；不认识的引擎一律不写盘（写错文件比不写更危险）。
+    _engine = _engine_for_injection(engine, name)
+    _filename = _CONTEXT_FILENAME_BY_ENGINE.get(_engine)
+    if _filename is None:
+        if _engine == "codex":
+            return ("refused (engine='codex' 不接工作区指令落盘：codex 走孤岛入口，"
+                    "P6 保持零改动；不静默按 CLAUDE.md 写)")
+        raise ValueError(
+            f"未知 engine: {_engine!r}（取值域 {sorted(_CONTEXT_FILENAME_BY_ENGINE)}；"
+            "未知值不得静默当 ccs）")
 
     # 读取 role TASKS.md 的 negative 教训，注入 KNOWLEDGE 块（评分信号回写闭环补全）
     # WHY: task_evidence 负向评分回写 TASKS.md，此处把教训注入 KNOWLEDGE 块随 role prompt 下发，
@@ -467,6 +511,9 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
     ws_paths = _resolve_ws_paths(name)
     if not ws_paths:
         return "skipped (no workspace)"
+    # 目录解析（含 ccs- 别名的归属判定）完全沿用 claude 现行为，只把目标文件名换成
+    # 引擎约定名：同一批目录、同一份内容，落盘文件不同。
+    targets = [p.with_name(_filename) for p in ws_paths]
 
     # 优先使用 role_assembler 输出（含 base.md + 角色 prompt + driver mixin）
     assembled = _role_assembler_output(name, role)
@@ -498,8 +545,13 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         )
 
     injected = 0
-    for claude_md in ws_paths:
-        content = claude_md.read_text(encoding="utf-8")
+    for target in targets:
+        try:
+            content = target.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # opencode 首次落盘：AGENTS.md 尚不存在，由本函数按同源内容创建。
+            # ccs 侧走不到这里（_resolve_ws_paths 只返回已存在的 CLAUDE.md）。
+            content = ""
         _orig = content  # 判定是否删过块外内容（.bak 只在真的删且真要写盘时留一份）
 
         # 移除旧 KNOWLEDGE 块（如有），总是注入最新的
@@ -543,10 +595,10 @@ def inject_role_knowledge_into_workspace(role: dict) -> str:
         # 让 code-checksum-* 与新鲜度判据全部失去意义。
         if new_content != content:
             # 真删过块外内容且真要写盘才留 .bak（首次），避免"不写盘却留了备份"
-            _bak = claude_md.with_name(claude_md.name + ".bak")
+            _bak = target.with_name(target.name + ".bak")
             if content != _orig and not _bak.exists():
                 _bak.write_text(_orig, encoding="utf-8")
-            claude_md.write_text(new_content, encoding="utf-8")
+            target.write_text(new_content, encoding="utf-8")
             injected += 1
 
     return f"injected ({injected} workspace(s))"
