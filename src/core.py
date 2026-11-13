@@ -485,7 +485,8 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
     # 见 ~/session-launcher/scripts/deploy_role_skills.sh
 
     # 7-7.5 注入 prompt + auto_send 批量发送
-    _inject_prompt_and_autosend(tmux_name, o.role, role_def, init_prompt, o.no_auto_send)
+    _inject_prompt_and_autosend(tmux_name, o.role, role_def, init_prompt,
+                                o.no_auto_send, engine=engine)
 
     # 8. 写哨兵（engine=启动编排收尾落盘的身份事实源，契约 4.2）
     _pid_finder = _ENGINE_REGISTRY[engine].get("pid_finder")
@@ -1074,11 +1075,16 @@ def _auto_send_msgs_from_signals(role_def: dict | None) -> list[str]:
     return msgs
 
 def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None,
-                                init_prompt: str, no_auto_send: bool) -> None:
-    """步骤 7-7.5：注入 prompt + auto_send 批量发送。"""
+                                init_prompt: str, no_auto_send: bool,
+                                engine: str | None = None) -> None:
+    """步骤 7-7.5：注入 prompt + auto_send 批量发送。
+
+    engine 必须由调用方给出：此刻哨兵尚未落盘（第 8 步才写），投递链若反查
+    哨兵会回退成 ccs → 拿错输入框几何 → opencode 首条 prompt 判滞留空转。
+    """
     # 7. 注入 prompt（自动构建的 role prompt 或用户提供的 init_prompt）
     if init_prompt:
-        _tmux_send(tmux_name, init_prompt)
+        _tmux_send(tmux_name, init_prompt, engine=engine)
         time.sleep(2)
 
     # 7.5 自动发送消息（auto_send）
@@ -1105,7 +1111,7 @@ def _inject_prompt_and_autosend(tmux_name: str, role: str, role_def: dict | None
             print(f"📋 auto_send: {len(auto_msgs)} 条消息 (间隔 {interval}s)")
             for i, msg in enumerate(auto_msgs, 1):
                 print(f"  [{i}/{len(auto_msgs)}] {msg}")
-                _tmux_send(tmux_name, msg)
+                _tmux_send(tmux_name, msg, engine=engine)
                 if i < len(auto_msgs):
                     time.sleep(interval)
 

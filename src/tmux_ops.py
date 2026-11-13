@@ -433,7 +433,16 @@ def _restart_if_stale(tmux_name: str, prompt_file: Path) -> bool:
         ok = False
     if not ok:
         return False
-    if _role_is_busy(tmux_name, engine=eng) and not _looks_stuck(tmux_name, pid):
+    # 忙判据未标定（codex）不得让整条陈旧重启链路炸掉：降级为「视为空闲」，
+    # 由下方 _looks_stuck 兜底（pane 不动 + CPU 不走仍判卡死）。方向同 _deliver_once：
+    # 宁可多一次重启，也不让未标定引擎永远拿不到新 prompt。
+    try:
+        busy = _role_is_busy(tmux_name, engine=eng)
+    except RuntimeError as e:
+        logging.getLogger("tmux_ops").warning(
+            "%s 忙判据不可用，陈旧重启降级视为空闲: %s", tmux_name, e)
+        busy = False
+    if busy and not _looks_stuck(tmux_name, pid):
         return False
     if _proc_start_time(pid) >= prompt_file.stat().st_mtime:
         return False
@@ -556,7 +565,15 @@ def _ensure_submitted(tmux_name: str, message: str, window: int = 12,
         # 发生的那种状态。只有采集本身失败（session 已不存在）才不必空等。
         if pane.startswith("[错误]"):
             return True
-        if _composer_text(pane, eng) is not None and _submitted(tmux_name, message, eng):
+        try:
+            if _composer_text(pane, eng) is not None and _submitted(tmux_name, message, eng):
+                return True
+        except RuntimeError as e:
+            # 判据未标定（codex 的 composer/submit_confirm 都是 uncalibrated）：
+            # 文本已经写出去了，空等 12×0.6s 只会拖慢首启并留下假的「未提交」告警。
+            # 方向同忙判据降级——宁可当已提交，也不让未标定引擎把投递判成失败。
+            logging.getLogger("tmux_ops").warning(
+                "提交确认判据未标定，跳过补 Enter（消息已发出）: %s (%s)", tmux_name, e)
             return True
         time.sleep(0.6)
         subprocess.run(
@@ -588,8 +605,13 @@ def _paste(tmux_name: str, message: str) -> None:
         time.sleep(0.05)
 
 
-def _tmux_send(tmux_name: str, message: str, retries: int = 3):
+def _tmux_send(tmux_name: str, message: str, retries: int = 3,
+               engine: str | None = None):
     """Send message to tmux session with retry on failure.
+
+    engine 由调用方显式给出时不查哨兵：首启阶段哨兵尚未落盘（core.start 在
+    投递之后才写），反查会回退成 ccs → 用错输入框几何 → 首条 prompt 判滞留。
+    运行期调用方（core.send/watchdog）不传，仍走哨兵（唯一事实源）。
 
     ponytail: 重试3次、间隔1s，覆盖 tmux session 暂时不可用的场景。
 
@@ -606,12 +628,12 @@ def _tmux_send(tmux_name: str, message: str, retries: int = 3):
     """
     for attempt in range(retries):
         try:  # noqa: PERF203 — 逐次重试，异常即下次尝试
-            outcome = _deliver_once(tmux_name, message)
+            outcome = _deliver_once(tmux_name, message, engine=engine)
             if outcome == "busy":
                 # 忙不作故障：不重试（1s 内不会变闲）、不上报，由调用方下轮重推
                 return "busy"
             if outcome:
-                return _ensure_submitted(tmux_name, message)
+                return _ensure_submitted(tmux_name, message, engine=engine)
         except Exception as e:
             logging.getLogger("tmux_ops").warning(
                 "tmux send 失败 (attempt %d/%d) %s: %s", attempt + 1, retries, tmux_name, e)
@@ -639,7 +661,19 @@ def _deliver_once(tmux_name: str, message: str, engine: str | None = None):
     # 一次 tmux 调用（实测单次 0.1~5s）。
     pane = _tmux_output(tmux_name, tail=max(_BUSY_SCAN_TAIL, 60))
     # eng=None 时 _role_is_busy 内部经哨兵解析：忙拒投路径不做多余身份 I/O
-    if _role_is_busy(tmux_name, pane, engine=eng) is True:
+    #
+    # 忙判据未标定（codex 的 busy_markers 为空）不得冒泡成投递失败：投递失败 =
+    # 消息永久丢弃；判不出忙最坏只是覆盖在飞推理，且有 _looks_stuck 反向判据兜底。
+    # 方向固定：宁可投递，也不静默丢消息。_role_is_busy 自身仍对未标定抛错
+    # （防假闲的正确设计），只在调用方显式降级。
+    try:
+        busy = _role_is_busy(tmux_name, pane, engine=eng) is True
+    except RuntimeError as e:
+        logging.getLogger("tmux_ops").warning(
+            "忙判据不可用，投递降级视为空闲（宁可投递不丢消息）: %s (%s)",
+            tmux_name, e)
+        busy = False
+    if busy:
         logging.getLogger("tmux_ops").info(
             "tmux send 跳过（角色思考中）: %s", tmux_name)
         return "busy"
@@ -653,7 +687,15 @@ def _deliver_once(tmux_name: str, message: str, engine: str | None = None):
     # 第一个字节。实测 195 个会话首条提示 43 个以 \x15 开头（22%），55 个
     # 污染样本里 43 个正是会话第 1 条 prompt —— 角色读到的是「控制字符 +
     # 就绪横幅」。输入框不存在时也没有残留要清，跳过不丢功能。
-    if _composer_text(pane, eng) is not None:
+    try:
+        composer_ready = _composer_text(pane, eng) is not None
+    except RuntimeError as e:
+        # 输入框几何未标定（codex）：判不出是否已画出输入框 → 不发 C-u。
+        # C-u 只是清行优化，跳过不丢功能；发错才可能把 0x15 留在首条 prompt 里。
+        logging.getLogger("tmux_ops").warning(
+            "输入框几何未标定，跳过 C-u 清行: %s (%s)", tmux_name, e)
+        composer_ready = False
+    if composer_ready:
         subprocess.run(
             ["tmux", "send-keys", "-t", f"{tmux_name}:0.0", "C-u"],
             capture_output=True, timeout=_send_timeout(),
