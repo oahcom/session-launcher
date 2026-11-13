@@ -126,6 +126,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import tempfile
 import subprocess
 import sys
@@ -313,6 +314,101 @@ def _write_mcp_settings(ws_path: Path, role_def: dict | None) -> None:
     _log.info("写入 %s mcp_servers=%s perms_rules=%d",
               settings_path, list(cfg["mcpServers"].keys()),
               len(cfg["permissions"].get("allow", [])))
+
+
+# ── opencode 侧 MCP 落盘 ──
+# opencode 不读 .claude/settings.json，只读项目根 opencode.json 的 `mcp` 键
+# （实测 v1.19.3：opencode mcp list 对 .claude/settings.json 完全无感）。
+# 形态差异：type "local"（非 "stdio"）、command 是数组（非 command+args 两段）。
+_OPENCODE_JSON_NAME = "opencode.json"
+_OPENCODE_SCHEMA = "https://opencode.ai/config.json"
+# opencode 进程的 PATH 只有 /mnt/c/nvm4w/nvm/nodejs，裸名会
+# `Executable not found in $PATH` 静默失败；候选表首个命中即用。
+_OPENCODE_BIN_DIRS = (
+    "/home/administrator/.local/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+)
+
+
+def _resolve_executable(name: str) -> str | None:
+    """命令名 → 绝对路径；解析不到返回 None（调用方必须跳过，不能写裸名）。"""
+    if not name or not isinstance(name, str):
+        return None
+    if "/" in name:
+        return name if os.path.isfile(name) and os.access(name, os.X_OK) else None
+    for d in _OPENCODE_BIN_DIRS:
+        p = os.path.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    # 兜底：本进程 PATH（可能含 nvm 等，非 login shell 时不保证）
+    return shutil.which(name) or None
+
+
+def _mcp_cfg_to_opencode(cfg: dict) -> dict | None:
+    """claude 形态 MCP 配置 → opencode 形态；不可安全转换返回 None。"""
+    if not isinstance(cfg, dict):
+        return None
+    cmd = cfg.get("command")
+    if not cmd or not isinstance(cmd, str):
+        return None
+    args = cfg.get("args") or []
+    if not isinstance(args, list):
+        return None
+    exe = _resolve_executable(cmd)
+    if not exe:
+        return None
+    out: dict = {
+        "type": "local",
+        "command": [exe] + [str(a) for a in args],
+        "enabled": True,
+    }
+    env = cfg.get("env") or {}
+    if isinstance(env, dict) and env:
+        out["environment"] = {str(k): str(v) for k, v in env.items()}
+    return out
+
+
+def _write_opencode_mcp(ws_path: Path, role_def: dict | None) -> None:
+    """写 workspace 根 opencode.json 的 `mcp` 键（opencode 侧角色 MCP 隔离）。
+
+    与 _write_mcp_settings 同一份角色声明，但落盘位置/形态不同。
+    只覆盖 `mcp` 键，保留文件里其它键（可能是用户手写配置）。
+    """
+    mcp_names = (role_def or {}).get("mcp_servers") or []
+    conv: dict[str, dict] = {}
+    for n in mcp_names:
+        cfg = _MCP_SERVER_REGISTRY.get(n)
+        if cfg is None:
+            continue
+        oc = _mcp_cfg_to_opencode(cfg)
+        if oc is None:
+            _log.warning("MCP server %s 无法转换为 opencode 形态（命令不可解析），已跳过", n)
+            continue
+        conv[n] = oc
+    if (role_def or {}).get("permissions"):
+        # opencode 的 permission 是 allow/ask/分级对象，与 claude 的
+        # permissions.allow 不同构，猜着映射会静默放宽或收紧权限。
+        _log.info("opencode 权限模型与 claude 不同构，一期不映射")
+    path = ws_path / _OPENCODE_JSON_NAME
+    if not conv:
+        # 无可转换项：既不改也不建，避免把用户手写的 mcp 覆盖成空表。
+        return
+    data: dict = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            _log.warning("解析 %s 失败，保留原文件不覆盖: %s", path, e)
+            return
+        if not isinstance(data, dict):
+            _log.warning("%s 顶层不是对象，保留原文件不覆盖", path)
+            return
+    data.setdefault("$schema", _OPENCODE_SCHEMA)
+    data["mcp"] = conv
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _log.info("写入 %s mcp_servers=%s", path, list(conv.keys()))
 
 @validate_role
 def start(role: StartOptions | str, title: str = "", detach: bool = False,
@@ -640,6 +736,9 @@ def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
 
     # 4.5 写入角色专属 settings.json（MCP 隔离）
     _write_mcp_settings(ws_path, role_def)
+    # opencode 不读 .claude/settings.json，需另写项目根 opencode.json。
+    if engine == "opencode":
+        _write_opencode_mcp(ws_path, role_def)
     return role_def, drive, init_prompt, bus_track
 
 
