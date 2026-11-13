@@ -129,23 +129,29 @@ _CONTEXT_FILENAME_BY_ENGINE: dict[str, str] = {
 }
 
 
-def _engine_for_injection(engine: str | None, role_name: str) -> str:
-    """注入用引擎取数：显式参数优先 → 哨兵事实源 → 历史默认 "ccs"。
+def _engine_for_injection(engine: str | None, role: dict) -> str:
+    """注入用引擎取数：显式参数 → 哨兵事实源 → persona 声明 → 历史默认 "ccs"。
 
-    哨兵是契约 4.2 的身份事实源（ops/sentinel.py read_sentinel，纯读无副作用）。
-    参数与哨兵都缺时取 "ccs"：与本次改造前的行为逐字一致（存量 claude 零回归）。
-    取值合法性不在本函数兜底：调用方（core.start / reload-knowledge）先行校验，
-    未知值由 inject 侧显式报错，不做「猜」。
+    哨兵是契约 4.2 的身份事实源（ops/sentinel.py read_sentinel，纯读无副作用），
+    存在时绝不回读 persona —— 这是 P3「重启不翻转」的前提（persona 后续怎么改都
+    不影响在途会话）。哨兵缺失只发生在首启（core.start 在注入之后才落哨兵）或
+    无会话记录的工作区，此时才退回声明层 persona.engine 兜底。
+    参数与三者都缺时取 "ccs"：与本次改造前的行为逐字一致（存量 claude 零回归）。
+    取值合法性不在本函数兜底：调用方先行校验，未知值由 inject 侧显式报错，不做「猜」。
     """
     if engine:
         return engine
+    name = role.get("name", "")
     try:
         from ops.sentinel import read_sentinel
-        _s = read_sentinel(role_name)
+        _s = read_sentinel(name)
         if _s is not None and getattr(_s, "engine", ""):
             return _s.engine
-    except Exception as _e:  # 哨兵不可读不阻塞注入：退回默认=改造前行为
-        logging.getLogger("roles").debug("inject engine 读哨兵失败 %s: %s", role_name, _e)
+    except Exception as _e:  # 哨兵不可读不阻塞注入：退回声明层/默认=改造前行为
+        logging.getLogger("roles").debug("inject engine 读哨兵失败 %s: %s", name, _e)
+    _declared = role.get("engine")
+    if isinstance(_declared, str) and _declared.strip():
+        return _declared.strip()
     return "ccs"
 
 _lock = threading.Lock()
@@ -466,7 +472,7 @@ def inject_role_knowledge_into_workspace(role: dict, engine: str | None = None) 
     name = role.get("name", "")
 
     # 定向到引擎的指令文件；不认识的引擎一律不写盘（写错文件比不写更危险）。
-    _engine = _engine_for_injection(engine, name)
+    _engine = _engine_for_injection(engine, role)
     _filename = _CONTEXT_FILENAME_BY_ENGINE.get(_engine)
     if _filename is None:
         if _engine == "codex":
