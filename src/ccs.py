@@ -18,9 +18,9 @@ from core import (
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
     list_roles, get_config_value, StartOptions,
-    ENGINE_DOMAIN, _engine_with_source,
+    ENGINE_DOMAIN, _engine_with_source, _engine_pid_and_source,
 )
-from tmux_ops import _restart_if_stale
+from tmux_ops import _restart_if_stale, make_tmux_name
 
 
 def main():
@@ -263,6 +263,10 @@ def main():
                 engine=args.engine,
             ))
             print(json.dumps(result, ensure_ascii=False, indent=2))
+            # 预检失败（如 engine=codex 显式拒绝/取值非法）必须 rc≠0：此前 dry-run
+            # 分支无条件退出 0，预检脚本只看退出码会把"不能起"当成"可以起"。
+            if not result.get("success"):
+                sys.exit(1)
         elif args.instances > 0:
             # 批量启动 N 个实例
             results = []
@@ -288,6 +292,10 @@ def main():
             print(json.dumps(results, ensure_ascii=False, indent=2))
             successes = sum(1 for r in results if r.get("success"))
             print(f"启动 {successes}/{args.instances} 个实例")
+            # 批量启动部分失败也必须 rc≠0：此前恒退出 0，哨兵写入失败/就绪失配
+            # 被"启动 N/M"一行吞掉，调用方（脚本/systemd）以为全成功。
+            if successes < args.instances:
+                sys.exit(1)
         else:
             result = start(StartOptions(
                 role=args.role,
@@ -431,6 +439,20 @@ def main():
         _eng, _eng_src = _engine_with_source(args.role)
         s["engine"] = _eng
         s["engine_source"] = _eng_src
+        # T1A-fix：pid 必须是引擎进程 pid。PartnerClient.resolve 的 _find_pid 默认
+        # 按 process_name="claude" 查（routing/partner.py 是黑名单不动的既有行为），
+        # opencode 会话查不到 claude 子进程 → 回落 pane_pid = wrapper bash
+        # （实测 status_role: pid=2532697 bash，opencode 实为 2532698）。此处用注册表
+        # comm 精确查找覆盖；取不到时保留原值并标注 pid_source，不静默冒充。
+        if s.get("alive"):
+            _pid, _pid_src = _engine_pid_and_source(
+                make_tmux_name(args.role, 0), _eng)
+            if _pid is None:
+                _pid, _pid_src = s.get("pid"), "pane-fallback"
+            s["pid"] = _pid
+            s["pid_source"] = _pid_src
+        else:
+            s["pid_source"] = "sentinel"
         print(json.dumps(s, ensure_ascii=False, indent=2))
 
     elif args.command == "send-safe":

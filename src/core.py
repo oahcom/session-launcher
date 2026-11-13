@@ -373,6 +373,14 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
                              f"（取值域 {sorted(_ENGINE_REGISTRY)}，未知值不得静默当 ccs）"}
         if not o.engine:
             engine = _pe
+    # codex 三入口统一口径（正常/dry-run/ondemand）：本期未接入主启动面，一律显式
+    # 拒绝并指路孤岛入口。此前只有真正 _launch_tmux 时拒绝，dry-run 返回
+    # success:true、ondemand 还会先建 workspace 写哨兵——同一取值三种结论，
+    # 调用方（预检脚本/评估面）会据 dry-run 的 success 误判"可以起"。
+    if engine == "codex":
+        return {"success": False,
+                "error": ("engine='codex' 本期未接入主启动面（孤岛入口: ccs.py codex start）；"
+                          "注册表行位已保留，接线时只补 inner_builder，不动主流程")}
     # P1-1 fix: 同步所有本地變數到 o.*，避免 direct StartOptions 調用時本地默認值(0/""/None) 覆蓋實際值
     tmux_name = make_tmux_name(o.role, o.instance_id)
     o.partners = o.partners or []
@@ -394,14 +402,26 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
             workspace_create(o.role)
         role_def = get_role(o.role)
         if role_def:
-            inject_role_knowledge_into_workspace(role_def)
+            # engine 必须透传：persona 声明 ccs + CLI 覆盖 opencode 时，首启哨兵尚未
+            # 写入，注入侧读不到事实源会回落 ccs → 写 CLAUDE.md，而 opencode 只认
+            # AGENTS.md → 空脑运行（P1 上下文链）。值来自上方已解析的 engine。
+            inject_role_knowledge_into_workspace(role_def, engine=engine)
         s = CcsSentinel(
             role=o.role, title=o.title or o.role, tmux_session="",
             pid=0, started_at=time.time(), lifecycle="ondemand",
             instance_id=o.instance_id,
             engine=engine,
         )
-        write_sentinel(s)
+        try:
+            write_sentinel(s)
+        except Exception as e:  # noqa: BLE001 — 受控失败，不得抛 traceback 也不得报成功
+            # 哨兵是会话事实载体：写不进去 = 该会话无身份/无判活依据。ondemand 无
+            # tmux 可回收，清掉可能残留的半截文件后返回结构化失败（CLI rc≠0）。
+            _cleanup_sentinel_best_effort(o.role, o.instance_id)
+            _log.error("哨兵写入失败（ondemand）%s[%s]: %s",
+                       o.role, o.instance_id, e)
+            return {"success": False, "mode": "ondemand", "engine": engine,
+                    "error": f"哨兵写入失败（ondemand）{o.role}[{o.instance_id}]: {e}"}
         print(f"📋 {o.role}[{o.instance_id}] (ondemand) — 已写 workspace + 哨兵")
         return {"success": True, "role": o.role, "instance_id": o.instance_id,
                 "mode": "ondemand", "workspace": str(ws_path)}
@@ -453,7 +473,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
     # 3-4.5 工作空间准备：创建 + 实例注册 + 角色注入 + drive/bus_track 推导 + MCP settings
     role_def, drive, init_prompt, bus_track = _prepare_workspace(
         o.role, ws_path, ws_name, o.instance_id, o.workspace,
-        o.drive, o.init_prompt, o.bus_track)
+        o.drive, o.init_prompt, o.bus_track, engine=engine)
 
     # 5-6 启动 tmux + 引擎（按注册表分派）并等待就绪
     launch_err = _launch_tmux(tmux_name, ws_path, role=o.role, engine=engine)
@@ -486,7 +506,23 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         session_id="",
         engine=engine,
     )
-    write_sentinel(s)
+    try:
+        write_sentinel(s)
+    except Exception as e:  # noqa: BLE001 — 哨兵写失败必须受控，不得留下无身份残活会话
+        # 因果：tmux 已在 _launch_tmux 拉起、引擎在跑，但哨兵没落盘 → 监控线程
+        # 尚未启动（第 9 步在其后）、feed/watchdog 无从索引；更糟的是
+        # _engine_with_source 的前缀兜底会把 ccs- 前缀的 opencode 会话标成 ccs
+        # （tmux-prefix-fallback），评估面据此判成 claude 转录缺失 → 假阴性。
+        # 故按受控失败处理：best-effort 回收刚拉起的会话（不留残活），清半截
+        # 哨兵文件，返回结构化失败让 CLI rc≠0。
+        _cleanup_sentinel_best_effort(o.role, o.instance_id)
+        _log.error("哨兵写入失败 %s[%s]（tmux=%s）→ 回收会话防残活: %s",
+                   o.role, o.instance_id, tmux_name, e)
+        _kill_tmux_best_effort(tmux_name)
+        return {"success": False, "role": o.role, "instance_id": o.instance_id,
+                "tmux_session": tmux_name, "engine": engine,
+                "error": (f"哨兵写入失败 {o.role}[{o.instance_id}]: {e}"
+                          f"（已回收 tmux {tmux_name}，不留无哨兵残活会话）")}
 
     # 9-10 守护线程编排：watchdog/tracker/feed listener/feed 子进程
     _start_monitoring_threads(o.role, tmux_name, o.partners, o.instance_id,
@@ -514,11 +550,49 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
 
 # ── start() 拆分出的阶段函数（保持 print/返回值与原先内联逻辑一致）──
 
+def _cleanup_sentinel_best_effort(role: str, instance_id: int = 0) -> None:
+    """哨兵写入失败后的 best-effort 清理：删半截 .json 与 _atomic_write 的 .tmp。
+
+    清理失败只 warning，不掩盖原始写入错误（否则调用方拿到的 error 文案会变成
+    "清理失败"，哨兵写失败这一根因被替换掉）。
+    """
+    key = f"{role}-{instance_id}" if instance_id else role
+    try:
+        delete_sentinel(role, instance_id)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("清理哨兵文件失败 %s: %s", key, e)
+    try:
+        # 延迟取 SENTINEL_DIR：与 write_sentinel 读同一模块全局（含测试/注入时的
+        # 目录替换），避免 core 模块级导入的旧值指向另一个目录。
+        from ops.sentinel import SENTINEL_DIR as _SD
+        (_SD / f"{key}.tmp").unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("清理哨兵临时文件失败 %s: %s", key, e)
+
+
+def _kill_tmux_best_effort(tmux_name: str) -> None:
+    """受控失败时回收刚拉起的 tmux 会话（best-effort）。
+
+    为什么必须杀：引擎已在跑但会话没有哨兵/监控，是最坏的残活形态——占用资源、
+    挡住后续 start（_is_alive 判"已在运行"直接返回 success），且前缀兜底会把
+    它误标成 ccs。杀失败只 warning：原始失败原因必须保留在 error 文案里。
+    """
+    if not tmux_name:
+        return
+    try:
+        _tmux_kill(tmux_name)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("回收 tmux 会话失败 %s: %s", tmux_name, e)
+
+
 def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
                        workspace: str, drive: str, init_prompt: str,
-                       bus_track: str) -> tuple[dict | None, str, str, str]:
+                       bus_track: str, engine: str | None = None) -> tuple[dict | None, str, str, str]:
     """步骤 3-4.5：workspace 创建 + 实例注册 + 角色注入 + drive/bus_track 推导 + MCP settings。
 
+    engine=本次已解析出的会话承载引擎（契约 4.2 三层声明结果），必须透传给注入：
+    首启时哨兵还没落盘，注入侧无法从事实源取 engine，只能回落 persona/ccs ——
+    persona=ccs + --engine opencode 的组合会在首启写成 CLAUDE.md（opencode 不读）。
     返回更新后的 (role_def, drive, init_prompt, bus_track)。
     """
     # 3. 确保工作空间存在
@@ -539,7 +613,7 @@ def _prepare_workspace(role: str, ws_path: Path, ws_name: str, instance_id: int,
     # 4. 注入角色知识到 workspace
     role_def = get_role(role)
     if role_def:
-        inject_role_knowledge_into_workspace(role_def)
+        inject_role_knowledge_into_workspace(role_def, engine=engine)
         # drive 解析：CLI 未指定时从 persona JSON 读取，JSON 无值则 fallback "ondemand"
         if not drive:
             drive = (role_def.get("drive", "") or "").lower()
@@ -798,6 +872,37 @@ def _find_engine_pid_by_comm(tmux_name: str, comm: str) -> int | None:
     return None
 
 
+def _engine_pid_and_source(tmux_name: str, engine: str) -> tuple[int | None, str]:
+    """返回 (引擎进程 pid, pid_source)；engine=真实引擎进程，pane-fallback=兜底。
+
+    status/status-role 的 pid 必须指向承载引擎的进程：pane_pid 是 wrapper bash
+    （while-true 常驻），把 wrapper 当引擎 pid 有两个后果——① 消费者 kill 该
+    pid 只会杀掉 wrapper，数秒后被重拉（"杀不死"）；② pm smoke 断言 pid 进程名
+    时会拿到 bash 而非 opencode/claude，无法证明会话真由该引擎承载。
+
+    注册表 pid_finder 是唯一取数入口（查表不写字面量）；ccs 行保留既有
+    _find_claude_pid 兜底（命中 claude 才叫 engine，pane pid 兜底标 pane-fallback）。
+    """
+    if not tmux_name:
+        return None, "sentinel"
+    row = _ENGINE_REGISTRY.get(engine) or {}
+    comm = row.get("process_name")
+    if comm:
+        pid = _find_engine_pid_by_comm(tmux_name, comm)
+        if pid:
+            return pid, "engine"
+    finder = row.get("pid_finder")
+    if finder:
+        try:
+            pid = finder(tmux_name)
+        except Exception as e:  # noqa: BLE001 — 取 pid 失败不得打断 status
+            _log.debug("pid_finder %s %s 异常: %s", tmux_name, engine, e)
+            pid = None
+        if pid:
+            return pid, "pane-fallback"
+    return None, "pane-fallback"
+
+
 def _ready_hit(last: str, row: dict) -> bool:
     """就绪判据命中判定（判据集中注册表参数化，防散点 if 漂移）。
 
@@ -898,6 +1003,15 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "",
         if re.search(row["fail_re"], _last, re.I):
             return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内没有出现提示符，"
                     f"且 pane 报参数/启动错误；pane 最近输出: {_last[-200:]!r}")
+        if engine != "ccs":
+            # 非 ccs 引擎：判据超时 = 就绪未知，显式失败，禁止静默放行（计划书第 2 层）。
+            # 放行的实际后果已实测：opencode 文案漂移（v1.19.3 → 1.19.5 提示）会让
+            # "Ask anything" 判据失效，而 prompt/auto_send 仍会打进未就绪的 TUI，
+            # 并留下一个无就绪证据的会话。与哨兵失败同口径：回收会话不留残活。
+            _kill_tmux_best_effort(tmux_name)
+            return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内未命中 {engine} 就绪判据 "
+                    f"{row['ready_any']!r}，就绪状态未知；已回收会话，禁止静默放行"
+                    f"（不注入 prompt、不跑 auto_send）；pane 最近输出: {_last[-200:]!r}")
         _log.warning("%s %ss 内未见提示符，但无参数/启动错误文本，按慢启动放行",
                      tmux_name, _CCS_READY_RETRIES)
     time.sleep(1)
@@ -1101,12 +1215,21 @@ def status() -> list[dict]:
         else:
             ws = None
         _eng, _eng_src = _engine_with_source(s.sentinel_key, s.tmux_session)
+        # pid 取真实引擎进程（不是 wrapper/pane pid）；取不到时保留哨兵值并标注
+        # pid_source，不静默冒充"这就是引擎 pid"（契约 4.2 防编造同口径）。
+        if alive:
+            _pid, _pid_src = _engine_pid_and_source(s.tmux_session, _eng)
+            if _pid is None:
+                _pid, _pid_src = s.pid, "pane-fallback"
+        else:
+            _pid, _pid_src = s.pid, "sentinel"
         statuses.append({
             "role": s.role,
             "instance_id": s.instance_id,
             "title": s.title,
             "alive": alive,
-            "pid": s.pid,
+            "pid": _pid,
+            "pid_source": _pid_src,
             "uptime_sec": int(time.time() - s.started_at),
             "lifecycle": s.lifecycle,
             "partner": s.partners[0] if s.partners else None,
@@ -1411,6 +1534,14 @@ def force_start_ccs(role_name: str, by_role: str = "",
                 "error": f"权限不足: {by_role} 无权启动 {role_name}"}
     if _is_alive(f"{TMUX_PREFIX}{role_name}"):
         return {"success": False, "error": f"CCS {role_name} 已在运行"}
+    # 契约 4.2：自动重启只读哨兵，永不回读 persona。哨兵在时把出生引擎透传给
+    # start（否则 start 会重新按 persona 解析，CLI 覆盖成 opencode 的会话会翻回
+    # ccs —— 引擎翻转最隐蔽的入口就是这里：ccs wake 先判死后 force_start）。
+    _sent = read_sentinel(role_name)
+    _born_engine = getattr(_sent, "engine", None) if _sent else None
+    if _born_engine in _ENGINE_REGISTRY:
+        return start(role_name, init_prompt=init_prompt, engine=_born_engine)
+    # 哨兵缺失（无历史会话）→ 保持原行为：不臆造引擎，走声明层/默认解析。
     return start(role_name, init_prompt=init_prompt)
 
 @validate_role
