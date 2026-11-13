@@ -12,6 +12,7 @@ from pathlib import Path
 __all__ = [
     'start',
     'StartOptions',
+    'ENGINE_DOMAIN',
     'stop',
     'status',
     'send',
@@ -37,6 +38,7 @@ __all__ = [
     '_find_claude_pid',
     '_tmux_send',
     '_find_codex_pid',
+    '_engine_with_source',
     'TMUX_PREFIX',
     'BUS_CLIENT',
     'FEED_LISTENER',
@@ -157,8 +159,13 @@ class StartOptions:
     no_auto_send: bool = False
     instance_id: int = 0
     dry_run: bool = False
+    # T1A 会话承载引擎（契约 4.2 三层声明的选择层）：
+    # None=未覆盖 → 解析 persona.engine（角色默认），再缺省 "ccs"。
+    # 字段默认必须是 None 而不是 "ccs"——否则「显式覆盖为 ccs」与「未覆盖」
+    # 不可区分，persona.engine 层会被永久遮蔽（P2 persona 默认生效即失效）。
+    engine: str | None = None
 
-from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels
+from ops.sentinel import CcsSentinel, write_sentinel, read_sentinel, delete_sentinel, list_sentinels, SENTINEL_DIR
 
 from ops.watchdog import start_watchdog
 from ops.tracker import start_tracker
@@ -316,7 +323,8 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
           workspace: str = "",
           no_auto_send: bool = False,
           instance_id: int = 0,
-          dry_run: bool = False) -> dict:
+          dry_run: bool = False,
+          engine: str | None = None) -> dict:
     """创建一个 CCS 并写入哨兵。
 
     自動從 hermes-session-roles 加载角色定义（如存在），
@@ -342,10 +350,29 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
             bus_timeout=bus_timeout, drive=drive,
             workspace=workspace, no_auto_send=no_auto_send,
             instance_id=instance_id, dry_run=dry_run,
+            engine=engine,
         )
     # P1 Fix 2: workspace 参数无源头校验 — 防止路径遍历和无效 workspace 名
     if o.workspace and not _validate_role_name(o.workspace):
         return {"success": False, "error": f"非法 workspace 名: {o.workspace}"}
+
+    # ── T1A 引擎解析（契约 4.2 三层声明）──
+    # 优先级：StartOptions.engine/--engine（按次覆盖，最高）→ persona.engine（角色默认）→ "ccs"。
+    # 未知取值显式报错（禁止静默当 ccs）；取值域 = _ENGINE_REGISTRY 表键（契约 4.1）。
+    if o.engine and o.engine not in _ENGINE_REGISTRY:
+        return {"success": False,
+                "error": f"engine 取值非法: {o.engine!r}"
+                         f"（取值域 {sorted(_ENGINE_REGISTRY)}）"}
+    engine = o.engine or "ccs"
+    _role_def_e = get_role(o.role)
+    if _role_def_e and "engine" in _role_def_e:
+        _pe = _role_def_e.get("engine")
+        if _pe not in _ENGINE_REGISTRY:
+            return {"success": False,
+                    "error": f"persona {o.role} 的 engine 取值非法: {_pe!r}"
+                             f"（取值域 {sorted(_ENGINE_REGISTRY)}，未知值不得静默当 ccs）"}
+        if not o.engine:
+            engine = _pe
     # P1-1 fix: 同步所有本地變數到 o.*，避免 direct StartOptions 調用時本地默認值(0/""/None) 覆蓋實際值
     tmux_name = make_tmux_name(o.role, o.instance_id)
     o.partners = o.partners or []
@@ -372,6 +399,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
             role=o.role, title=o.title or o.role, tmux_session="",
             pid=0, started_at=time.time(), lifecycle="ondemand",
             instance_id=o.instance_id,
+            engine=engine,
         )
         write_sentinel(s)
         print(f"📋 {o.role}[{o.instance_id}] (ondemand) — 已写 workspace + 哨兵")
@@ -427,8 +455,8 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         o.role, ws_path, ws_name, o.instance_id, o.workspace,
         o.drive, o.init_prompt, o.bus_track)
 
-    # 5-6 启动 tmux + claude 并等待就绪
-    launch_err = _launch_tmux(tmux_name, ws_path, role=o.role)
+    # 5-6 启动 tmux + 引擎（按注册表分派）并等待就绪
+    launch_err = _launch_tmux(tmux_name, ws_path, role=o.role, engine=engine)
     if launch_err:
         return {"success": False, "error": launch_err}
 
@@ -439,8 +467,9 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
     # 7-7.5 注入 prompt + auto_send 批量发送
     _inject_prompt_and_autosend(tmux_name, o.role, role_def, init_prompt, o.no_auto_send)
 
-    # 8. 写哨兵
-    pid = _find_claude_pid(tmux_name)
+    # 8. 写哨兵（engine=启动编排收尾落盘的身份事实源，契约 4.2）
+    _pid_finder = _ENGINE_REGISTRY[engine].get("pid_finder")
+    pid = _pid_finder(tmux_name) if _pid_finder else None
     print(f"📋 pid: {pid}")
     lifecycle = role_def.get("lifecycle", "infinite") if role_def else "infinite"
     s = CcsSentinel(
@@ -455,6 +484,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         bus_track=bus_track,
         bus_timeout=o.bus_timeout,
         session_id="",
+        engine=engine,
     )
     write_sentinel(s)
 
@@ -467,6 +497,7 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         "success": True, "role": o.role, "instance_id": o.instance_id,
         "tmux_session": tmux_name,
         "pid": pid, "partners": o.partners, "bus_track": bus_track or None,
+        "engine": engine,
     }
 
     if not o.detach:
@@ -622,58 +653,177 @@ def _router_env() -> dict[str, str]:
     env.setdefault("ANTHROPIC_API_KEY", "9router-local")
     return env
 
-def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
-    """步骤 5-6：启动 tmux + claude 并轮询就绪。失败返回错误描述，成功返回 None。"""
-    # 权限：workspace settings.json 的 permissions.defaultMode=bypassPermissions 在
-    # 目录未受信/设置未被读取时不生效（实测 2026-10-26 02:51 那批 pane：settings.json
-    # 里写着 bypassPermissions，pane 却卡在 "Do you want to create pm_contract_recheck.py?"
-    # 上等人工按 1；同期 24h 真实角色产出只有 7 条）。argv 里显式给同义 flag，
-    # 不依赖 settings 解析路径。CLAUDECODE_PERM_FLAGS 仍可覆盖。
-    # 空串要当作"未设置"：tests/test_mcp_settings.py 里 setdefault(...,"") 会把它设成空，
-    # 直接 .get(k, default) 会拿到 "" 从而静默丢掉 flag（审查实测：全量 pytest 同进程内
-    # 新 flag 根本不存在，而单跑该文件却"通过"）。
+# ── T1A 会话承载引擎注册表（契约 4.1/4.3）──
+# 取值域 = 表键 {"ccs","opencode","codex"}（契约 4.1；ccs=claude 承载引擎历史名）。
+# 启动分派=查表，不是分叉树：每引擎一行注册数据（启动配方/进程名/就绪判据/env
+# 策略/哨兵 pid 来源），新增引擎=加一行，不再挖孤岛。opencode 与 claude 的启动
+# 不对称（9router env 注入与否）是表数据差异而非逻辑分叉——主流程只有一条。
+# codex 本期不接（P6 孤岛不动）：行位保留、inner_builder=None，启动面显式拒绝。
+
+
+def _ccs_inner_cmd() -> str:
+    """ccs（claude）行启动配方 —— 现行 wrapper 的 inner 原样搬入（P4 零回归主体）。
+
+    权限：workspace settings.json 的 permissions.defaultMode=bypassPermissions 在
+    目录未受信/设置未被读取时不生效（实测 2026-10-26 02:51 那批 pane：settings.json
+    里写着 bypassPermissions，pane 却卡在 "Do you want to create pm_contract_recheck.py?"
+    上等人工按 1；同期 24h 真实角色产出只有 7 条）。argv 里显式给同义 flag，
+    不依赖 settings 解析路径。CLAUDECODE_PERM_FLAGS 仍可覆盖。
+    空串要当作"未设置"：tests/test_mcp_settings.py 里 setdefault(...,"") 会把它设成空，
+    直接 .get(k, default) 会拿到 "" 从而静默丢掉 flag（审查实测：全量 pytest 同进程内
+    新 flag 根本不存在，而单跑该文件却"通过"）。
+    不带 --bare：bare 模式只暴露 Bash/Edit/Read 三个工具（实测 init 事件
+    "tools":["Bash","Edit","Read"]），Task/Agent、WebSearch、Write、Skill 全部没有
+    ——而 prompt 一直在要求角色联网检索、写产出、按任务开子代理，这些在 bare 下
+    是物理不可能，角色只能退化成 bash heredoc + curl。
+    CLAUDE.md 走 auto-discovery（cwd 就是 ws_path）：严格探针实测（--tools "" 禁工具，
+    排除模型自读文件）能逐字复述文件中段小节，与 --append-system-prompt-file 等价，
+    所以两个参数都不给——同时给会把同一份 prompt（实测 15–40KB/角色，另加
+    ~/.claude/CLAUDE.md 18KB）注入两次。
+    MCP 与 hooks 不受这里影响：--tools 只裁「内置工具集」（help 原话），
+    用户级 ~/.claude.json 里的 hex-line/hex-graph 照样随每个 pane 起 2 个 server
+    （实测 15 个新 pane 带 30 个 MCP 子进程；带 --bare 的旧 pane 同样有）——
+    角色大量在用 mcp__hex-line__read_file（近 6h 1712 次），所以不能加
+    --strict-mcp-config，那条会让角色的文件读写习惯全线失效。
+    hooks 同理：21 个 workspace 的 settings.json 都继承 hex-line 的
+    SessionStart/PreToolUse/PostToolUse（node hook.mjs，5s 超时）。
+    注意：这串 argv 在 tmux session 创建时就烤进 pane 的 bash -c 里，改了参数只有重建
+    session（ccs start）才生效——只杀 claude 会让 wrapper 用旧 argv 重拉（实测 reviewer）。
+    --effort high 而非 max：9router 回退链含 oc/big-pickle 节点，该节点
+    只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
+    实测（2026-10-16）同一参数下 big-pickle+max→400，+high→200。
+    回退落点与角色无关，故在源头统一降档，而非按角色配置。
+    """
     _PERM_FLAGS = (os.environ.get("CLAUDECODE_PERM_FLAGS")
                    or "--permission-mode bypassPermissions")
-    # 不带 --bare：bare 模式只暴露 Bash/Edit/Read 三个工具（实测 init 事件
-    # "tools":["Bash","Edit","Read"]），Task/Agent、WebSearch、Write、Skill 全部没有
-    # ——而 prompt 一直在要求角色联网检索、写产出、按任务开子代理，这些在 bare 下
-    # 是物理不可能，角色只能退化成 bash heredoc + curl。
-    # CLAUDE.md 走 auto-discovery（cwd 就是 ws_path）：严格探针实测（--tools "" 禁工具，
-    # 排除模型自读文件）能逐字复述文件中段小节，与 --append-system-prompt-file 等价，
-    # 所以两个参数都不给——同时给会把同一份 prompt（实测 15–40KB/角色，另加
-    # ~/.claude/CLAUDE.md 18KB）注入两次。
-    # MCP 与 hooks 不受这里影响：--tools 只裁「内置工具集」（help 原话），
-    # 用户级 ~/.claude.json 里的 hex-line/hex-graph 照样随每个 pane 起 2 个 server
-    # （实测 15 个新 pane 带 30 个 MCP 子进程；带 --bare 的旧 pane 同样有）——
-    # 角色大量在用 mcp__hex-line__read_file（近 6h 1712 次），所以不能加
-    # --strict-mcp-config，那条会让角色的文件读写习惯全线失效。
-    # hooks 同理：21 个 workspace 的 settings.json 都继承 hex-line 的
-    # SessionStart/PreToolUse/PostToolUse（node hook.mjs，5s 超时）。
-    # 注意：这串 argv 在 tmux session 创建时就烤进 pane 的 bash -c 里，改了参数只有重建
-    # session（ccs start）才生效——只杀 claude 会让 wrapper 用旧 argv 重拉（实测 reviewer）。
     _TOOLSET = "Bash,Edit,Read,Write,Agent,WebSearch,WebFetch,Skill"
-    # 退出即重拉要有退避：免费车道耗尽/参数错误时 claude 会 rc≠0 立刻退出，
-    # 固定 sleep 3 等于每 3s 打一次上游（实测 10-30 18:23 起 6 个角色反复空转）。
-    # 存活 <60s 视为快速失败，连续次数 ×10s，封顶 120s；长跑后清零。
-    cmd = (
+    return ("claude --model 9router_hermes"
+            f" --tools {shlex.quote(_TOOLSET)}"
+            f" {_PERM_FLAGS}"
+            " --effort high")
+
+
+def _opencode_inner_cmd() -> str:
+    """opencode 行启动配方（契约 4.3/D3）：工作区 cwd 直接拉 TUI-in-tmux。
+
+    不注入 ANTHROPIC_*：opencode.jsonc 已自配 provider（9router →
+    localhost:20127/v1 + 9router_hermes，实测状态栏 "Build · 9Router Hermes"）。
+    二进制不在 PATH，用绝对路径（~/.opencode/bin/opencode）。
+    """
+    return str(Path.home() / ".opencode" / "bin" / "opencode")
+
+
+_ENGINE_REGISTRY: dict[str, dict] = {
+    "ccs": {
+        "process_name": "claude",
+        "inner_builder": _ccs_inner_cmd,
+        "inject_router_env": True,
+        "assert_router_env": True,
+        "pid_finder": _find_claude_pid,
+        "ready_tail": 3,
+        "ready_any": ("❯",),
+        "ready_all": (("claude", "ready"),),
+        "fail_re": r"unknown (option|argument)|Usage:\s+claude|error:",
+    },
+    "opencode": {
+        "process_name": "opencode",
+        "inner_builder": _opencode_inner_cmd,
+        "inject_router_env": False,
+        "assert_router_env": False,
+        "pid_finder": lambda t: _find_engine_pid_by_comm(t, "opencode"),
+        "ready_tail": 20,
+        # 就绪判据（真机标定 2026-11-13，opencode v1.19.3）：输入占位提示
+        # 「Ask anything」出现 = TUI 就绪可投递（标定帧存 evidence/t1a-core/）。
+        "ready_any": ("Ask anything",),
+        "ready_all": (),
+        "fail_re": r"unknown (option|argument)|Usage:\s+opencode|error:",
+    },
+    "codex": {
+        # 本期不接（孤岛不动，P6）：主启动面显式拒绝，走 ccs.py codex start 孤岛入口。
+        # 行位保留=注册表结构容纳第三引擎；接线时只补 inner_builder，不动主流程。
+        "process_name": "codex",
+        "inner_builder": None,
+        "inject_router_env": False,
+        "assert_router_env": False,
+        "pid_finder": None,
+        "ready_tail": 3,
+        "ready_any": (),
+        "ready_all": (),
+        "fail_re": r"unknown (option|argument)|error:",
+    },
+}
+ENGINE_DOMAIN = tuple(_ENGINE_REGISTRY)  # 契约 4.1 取值域（=表键；不把数量写死成两个）
+
+
+def _wrap_relaunch(inner_cmd: str) -> str:
+    """共享 while-true 重拉骨架（契约 4.3：两分支共用，配方差异全在 inner 数据）。
+
+    退出即重拉要有退避：免费车道耗尽/参数错误时引擎会 rc≠0 立刻退出，
+    固定 sleep 3 等于每 3s 打一次上游（实测 10-30 18:23 起 6 个角色反复空转）。
+    存活 <60s 视为快速失败，连续次数 ×10s，封顶 120s；长跑后清零。
+    $SECONDS 是 shell 启动至今，不是本次引擎的存活时长 —— 必须减 t0。
+    只对「失败且快速退出」退避：成功退出（rc=0）不惩罚正常任务。
+    """
+    return (
         "n=0; while true; do t0=$SECONDS; "
-        "claude --model 9router_hermes"
-        f" --tools {shlex.quote(_TOOLSET)}"
-        f" {_PERM_FLAGS}"
-        # --effort high 而非 max：9router 回退链含 oc/big-pickle 节点，该节点
-        # 只接受 none/low/medium/high，收到 max 直接返回 400 Param Incorrect。
-        # 实测（2026-10-16）同一参数下 big-pickle+max→400，+high→200。
-        # 回退落点与角色无关，故在源头统一降档，而非按角色配置。
-        " --effort high; rc=$?; "
-        # $SECONDS 是 shell 启动至今，不是本次 claude 的存活时长 —— 必须减 t0。
-        # 只对「失败且快速退出」退避：成功退出（rc=0）不惩罚正常任务。
+        f"{inner_cmd}; rc=$?; "
         "if [ $((SECONDS-t0)) -lt 60 ] && [ $rc -ne 0 ]; then n=$((n+1)); else n=0; fi; "
         "s=$((n*10)); [ $s -gt 120 ] && s=120; [ $s -lt 3 ] && s=3; "
         "echo \"[CCS] Task completed, waiting ${s}s...\" >&2; "
         "sleep $s; "
         "done"
     )
-    r_env = _router_env()
+
+
+def _find_engine_pid_by_comm(tmux_name: str, comm: str) -> int | None:
+    """按 comm 在 pane 进程树中找引擎主进程 pid（非 claude 引擎的哨兵 pid 来源）。
+
+    claude 路径仍走 tmux_ops._find_claude_pid（零改动）；本函数只服务注册表
+    其他引擎行。pane_pid 是 wrapper bash（while-true 常驻），不能当引擎 pid 用
+    ——判活双检第一检要求真实引擎进程（「pane 活 ≠ agent 活」）。
+    """
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=3)
+        pane_pid = (r.stdout or "").strip()
+        if not pane_pid.isdigit():
+            return None
+        out = subprocess.run(["pgrep", "-P", pane_pid, "-x", comm],
+                             capture_output=True, text=True, timeout=3).stdout.split()
+        if out and out[0].isdigit():
+            return int(out[0])
+    except Exception as e:
+        _log.debug("_find_engine_pid_by_comm %s %s: %s", tmux_name, comm, e)
+    return None
+
+
+def _ready_hit(last: str, row: dict) -> bool:
+    """就绪判据命中判定（判据集中注册表参数化，防散点 if 漂移）。
+
+    ready_any: 任一子串命中即就绪；ready_all: 每组全含才就绪（legacy claude 第二支）。
+    """
+    if any(x in last for x in row["ready_any"]):
+        return True
+    if row["ready_all"] and all(all(w in last.lower() for w in grp)
+                                for grp in row["ready_all"]):
+        return True
+    return False
+
+
+def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "",
+                 engine: str = "ccs") -> str | None:
+    """步骤 5-6：按引擎注册表分派启动配方，拉起 tmux + 引擎并轮询就绪。
+
+    失败返回错误描述，成功返回 None。claude 路径与改造前逐字等价（P4 零回归）。
+    """
+    row = _ENGINE_REGISTRY.get(engine)
+    if row is None:
+        return f"未知 engine: {engine!r}（取值域 {sorted(_ENGINE_REGISTRY)}）"
+    if row.get("inner_builder") is None:
+        return (f"engine={engine!r} 本期未接入主启动面（孤岛入口: ccs.py codex start）；"
+                f"注册表行位已保留，接线时只补 inner_builder，不动主流程")
+    cmd = _wrap_relaunch(row["inner_builder"]())
     # 确保 PATH 包含 claude 的安装路径 (/home/administrator/.local/bin)：
     # launcher 若从精简 PATH 环境启动（systemd Environment=PATH= / cron），
     # 原样透传会让 pane 内找不到 claude，角色起不来。
@@ -698,19 +848,20 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
             _parts.insert(0, _d)
     _claude_path = os.pathsep.join(_parts)
     _env = {**os.environ, "PATH": _claude_path}
+    # env 注入按行取表（表数据差异，不是逻辑分叉）：claude 行注 9router ANTHROPIC_*
+    # （缺了静默卡 /login，e5d5ccf 回归红线）；opencode 行不注（opencode.jsonc 自配）。
+    _env_args = ["-e", "FORCE_PERSONA=0",
+                 "-e", f"CCS_ROLE={role}"]
+    if row["inject_router_env"]:
+        r_env = _router_env()
+        _env_args += ["-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
+                      "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}"]
+    _env_args += ["-e", f"PATH={_claude_path}"]
     try:
         r = subprocess.run([
             "tmux", "new-session", "-d", "-s", tmux_name,
             "-c", str(ws_path),
-            "-e", "FORCE_PERSONA=0",
-            # CCS_ROLE: wf CLI 的 `-r` 默认值来源（wf.py:27 `default=os.getenv("CCS_ROLE")`）。
-            # 不注入时角色只能写 `wf -r <自己的名字>`，而角色无从可靠得知自己名字；
-            # 实测 32 个 claude 进程中 CCS_ROLE 设置数 = 0，故所有 `wf ...` 调用
-            # 都因缺 -r 而报 "请指定角色"，逼角色去猜或全盘搜 DB。
-            "-e", f"CCS_ROLE={role}",
-            "-e", f"ANTHROPIC_BASE_URL={r_env['ANTHROPIC_BASE_URL']}",
-            "-e", f"ANTHROPIC_API_KEY={r_env['ANTHROPIC_API_KEY']}",
-            "-e", f"PATH={_claude_path}",
+            *_env_args,
             "bash", "-c", cmd
         ], capture_output=True, text=True, timeout=10, env=_env)
     except FileNotFoundError:
@@ -722,7 +873,7 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
     if r.returncode != 0:
         return f"tmux 启动失败: {r.stderr.strip()}"
 
-    # 6. 等 claude 就绪。**未命中要报错**：CLI 不认识某个 argv（例如降级后没有
+    # 6. 等引擎就绪。**未命中要报错**：CLI 不认识某个 argv（例如降级后没有
     # --permission-mode）时会 rc=1 立即退出，wrapper 每 3s 重拉，pane 永远没有提示符；
     # 旧写法照样 return None（报成功），后续 prompt 注进空 pane，故障只在角色"不动"时暴露。
     _ready, _last = False, ""
@@ -730,29 +881,31 @@ def _launch_tmux(tmux_name: str, ws_path: Path, role: str = "") -> str | None:
         time.sleep(1)
         try:
             out = subprocess.run(
-                ["tmux", "capture-pane", "-p", "-t", f"{tmux_name}:0.0", "-S-3"],
+                ["tmux", "capture-pane", "-p", "-t", f"{tmux_name}:0.0",
+                 f"-S-{row['ready_tail']}"],
                 capture_output=True, text=True, timeout=3
             )
             _last = (out.stdout or "").strip()
-            if "❯" in _last or ("claude" in _last.lower() and "ready" in _last.lower()):
+            if _ready_hit(_last, row):
                 _ready = True
                 break
         except Exception as e:
             _log.debug("tmux capture-pane 重试 %s: %s", tmux_name, e)
     if not _ready:
         # 只把"有硬失败证据"当失败：CLI 不认 argv 会打印 unknown option / Usage / error。
-        # 没有这类文本 = 慢启动（重负载下 claude 首屏可能 >15s），放行并留 warning——
+        # 没有这类文本 = 慢启动（重负载下引擎首屏可能 >15s），放行并留 warning——
         # 否则慢启动角色会被判失败，比原来的静默容忍更糟。
-        if re.search(r"unknown (option|argument)|Usage:\s+claude|error:", _last, re.I):
+        if re.search(row["fail_re"], _last, re.I):
             return (f"{tmux_name} 启动后 {_CCS_READY_RETRIES}s 内没有出现提示符，"
                     f"且 pane 报参数/启动错误；pane 最近输出: {_last[-200:]!r}")
         _log.warning("%s %ss 内未见提示符，但无参数/启动错误文本，按慢启动放行",
                      tmux_name, _CCS_READY_RETRIES)
     time.sleep(1)
 
-    # 7. 大声自检：claude 进程必须带路由 env，否则它会静默卡在 /login 而非报错。
-    #    e5d5ccf 曾删掉 env 注入 → 所有 headless 角色静默失效，无日志可见。
-    _assert_router_env_in_pane(tmux_name)
+    # 7. 大声自检（claude 行）：claude 进程必须带路由 env，否则它会静默卡在
+    #    /login 而非报错。e5d5ccf 曾删掉 env 注入 → 所有 headless 角色静默失效。
+    if row["assert_router_env"]:
+        _assert_router_env_in_pane(tmux_name)
     return None
 
 
@@ -914,6 +1067,26 @@ def stop(role: str, instance_id: int = 0,
         return {"success": False, "error": "CCS 不存在", "role": role}
     return {"success": True, "role": role, "instance_id": instance_id}
 
+def _engine_with_source(key: str, tmux_name: str = "") -> tuple[str, str]:
+    """按事实源优先返回 (engine, engine_source)。
+
+    哨兵文件为身份事实源：文件里有显式 engine 键才算事实（source="sentinel"）。
+    文件缺失/损坏/缺 engine 键时按 cdx- 前缀反推兜底（source="tmux-prefix-fallback"）。
+    来源标注必填：推断值不得冒充事实（契约 4.2 + T1A 裁决 A「不许静默编造」）。
+    """
+    try:
+        path = SENTINEL_DIR / f"{key}.json"
+        if path.exists():
+            data = json.loads(path.read_text())
+            if isinstance(data, dict) and "engine" in data:
+                return data["engine"], "sentinel"
+    except (json.JSONDecodeError, OSError) as e:
+        _log.debug("_engine_with_source 读哨兵失败 %s: %s", key, e)
+    inferred = ("codex" if (str(tmux_name).startswith("cdx-")
+                            or str(key).startswith("cdx-")) else "ccs")
+    return inferred, "tmux-prefix-fallback"
+
+
 def status() -> list[dict]:
     """列出所有 CCS 的运行状态（含死亡的）。"""
     sentinels = list_sentinels()
@@ -927,6 +1100,7 @@ def status() -> list[dict]:
             ws = str(ws_path)
         else:
             ws = None
+        _eng, _eng_src = _engine_with_source(s.sentinel_key, s.tmux_session)
         statuses.append({
             "role": s.role,
             "instance_id": s.instance_id,
@@ -938,6 +1112,8 @@ def status() -> list[dict]:
             "partner": s.partners[0] if s.partners else None,
             "bus_track": s.bus_track or None,
             "workspace": ws,
+            "engine": _eng,
+            "engine_source": _eng_src,
             "health": {
                 "watchdog_ok": s.health.watchdog_ok,
                 # last_watchdog_check=0 表示 watchdog 线程从未跑过（该角色未配 partners，

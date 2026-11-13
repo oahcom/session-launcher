@@ -18,6 +18,7 @@ from core import (
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
     list_roles, get_config_value, StartOptions,
+    ENGINE_DOMAIN, _engine_with_source,
 )
 from tmux_ops import _restart_if_stale
 
@@ -79,6 +80,9 @@ def main():
                          help="批量启动 N 个实例（从 1 到 N），仅 detach 模式")
     p_start.add_argument("--dry-run", action="store_true",
                          help="只打印将执行的 tmux 命令/参数/路径，不实际执行；返回结构化 JSON (dry_run=true, planned_actions[])")
+    p_start.add_argument("--engine", default=None, choices=list(ENGINE_DOMAIN),
+                         help="会话承载引擎（按次覆盖，优先级最高；未指定时取 persona.engine，"
+                              "再缺省 ccs。codex 本期未接入主启动面）")
 
     # ── config ──
     p_cfg = sub.add_parser("config", help="查看/修改 ccs_config.json")
@@ -256,6 +260,7 @@ def main():
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,
                 dry_run=True,
+                engine=args.engine,
             ))
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.instances > 0:
@@ -275,6 +280,7 @@ def main():
                     workspace=args.workspace,
                     no_auto_send=args.no_auto_send,
                     instance_id=i,
+                    engine=args.engine,
                 ))
                 results.append(result)
                 if not result.get("success"):
@@ -296,6 +302,7 @@ def main():
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
                 instance_id=args.instance_id,
+                engine=args.engine,
             ))
             print(json.dumps(result, ensure_ascii=False, indent=2))
             if not result.get("success"):
@@ -325,7 +332,8 @@ def main():
                 print(f"  [{s['role']:12}{inst}] {s['title']}  "
                       f"{'✅' if alive else '❌'}  "
                       f"运行 {uptime_m}分  pid={s['pid']}  "
-                      f"partner={s['partner'] or '-'}  bus={s['bus_track'] or '-'}")
+                      f"partner={s['partner'] or '-'}  bus={s['bus_track'] or '-'}  "
+                      f"engine={s['engine']}({s['engine_source']})")
                 if not health.get("watchdog_measured", True):
                     wd = "—"   # 从未测量 ≠ 健康。显示 ✅ 会把默认值当成检查结果。
                 else:
@@ -417,6 +425,12 @@ def main():
         from routing.partner import PartnerClient
         pc = PartnerClient("launcher")
         s = pc.resolve(args.role)
+        # T1A 裁决 B：engine 灌进 JSON 数据面（D 轨取数口）。
+        # routing/partner.py 是黑名单文件不动，在此按事实源合并 engine/engine_source：
+        # 哨兵显式键="sentinel"；读不到按前缀反推兜底并标注，不静默编造。
+        _eng, _eng_src = _engine_with_source(args.role)
+        s["engine"] = _eng
+        s["engine_source"] = _eng_src
         print(json.dumps(s, ensure_ascii=False, indent=2))
 
     elif args.command == "send-safe":
