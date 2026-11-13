@@ -12,6 +12,7 @@ __all__ = [
     'AUTO_CONTINUE_THRESHOLD',
 ]
 
+import inspect
 import logging
 import os
 import subprocess
@@ -31,10 +32,12 @@ from ops.sentinel import (
 
 
 def _is_alive(tmux_name: str) -> bool:
-    """双检：tmux session 存在 + pane 内 claude 进程存活。
+    """双检：tmux session 存在 + pane 内承载引擎进程存活（进程名按引擎查表）。
 
-    与 tmux_ops._is_alive（单检）不同：watchdog 需判断 claude 进程是否真实存活，
-    而非仅 tmux session 存在（tmux session 可在 claude 退出后仍留）。"""
+    与 tmux_ops._is_alive（单检）不同：watchdog 需判断引擎进程是否真实存活，
+    而非仅 tmux session 存在（tmux session 可在引擎退出后仍留）。
+    引擎身份走哨兵（ccs→claude，与旧行为逐字同型）；引擎未注册时显式降级
+    按活处理（误判死会触发重启，而重启有引擎翻转风险，宁可本轮不动）并留痕。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", tmux_name],
@@ -42,20 +45,26 @@ def _is_alive(tmux_name: str) -> bool:
         )
         if r.returncode != 0:
             return False
-        # 再查 pane PID 对应的 claude 进程是否存活
+        # 再查 pane PID 对应的引擎进程是否存活
         r2 = subprocess.run(
             ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
             capture_output=True, text=True, timeout=3
         )
         if r2.stdout.strip().isdigit():
             pane_pid = r2.stdout.strip()
+            from tmux_ops import _engine_of, _engine_spec  # 延迟导入防循环
+            try:
+                needle = _engine_spec(_engine_of(tmux_name)).process_name
+            except ValueError:
+                _log.warning("watchdog: %s 引擎未注册，判活显式降级按活处理", tmux_name)
+                return True
             r3 = subprocess.run(
-                ["pgrep", "-P", pane_pid, "-f", "claude"],
+                ["pgrep", "-P", pane_pid, "-f", needle],
                 capture_output=True, text=True, timeout=3,
             )
             if r3.stdout.strip():
                 return True
-            # 如果 pane_pid 本身还活着（claude 就是直接子进程）
+            # 如果 pane_pid 本身还活着（引擎进程就是直接子进程）
             try:
                 os.kill(int(pane_pid), 0)
                 return True
@@ -81,22 +90,31 @@ def _audit_monitor(decision: str, detail: str, src: str = ""):
 
 
 def _restart_partner(partner_role: str, instance_id: int = 0):
-    """从哨兵读取伙伴上下文并重启（保留 title/partners/bus_track 等配置）。"""
+    """从哨兵读取伙伴上下文并重启（保留 title/partners/bus_track 等配置）。
+
+    防翻转（契约 4.2）：引擎只认哨兵 engine（出生身份），永不回读 persona；
+    重启把 engine 透传给启动入口（参数名 engine，契约 4.5 冻结）。
+    """
     from core import start  # 延迟导入打破循环
     old = read_sentinel(partner_role, instance_id)
     delete_sentinel(partner_role, instance_id)
+    engine = (old.engine or "ccs") if old else "ccs"
     if old:
-        result = start(partner_role, title=old.title,
-                       partners=old.partners if old.partners else None,
-                       auto_restart=True,
-                       bus_track=old.bus_track,
-                       bus_timeout=old.bus_timeout,
-                       instance_id=instance_id,
-                       detach=True)
-        _log_info("watchdog", f"已发起 {partner_role}[{instance_id}] 重启: {result}")
+        kwargs = dict(title=old.title,
+                      partners=old.partners if old.partners else None,
+                      auto_restart=True,
+                      bus_track=old.bus_track,
+                      bus_timeout=old.bus_timeout,
+                      instance_id=instance_id,
+                      detach=True)
     else:
-        result = start(partner_role, instance_id=instance_id, detach=True)
-        _log_info("watchdog", f"已发起 {partner_role}[{instance_id}] 重启: {result}")
+        kwargs = dict(instance_id=instance_id, detach=True)
+    # core.start 的 engine 参数与 A 轨并行落地中：签名含 engine 才透传，
+    # 不改 core.py（跨轨红线）；A 落地后本调用自动接通防翻转闭环。
+    if "engine" in inspect.signature(start).parameters:
+        kwargs["engine"] = engine
+    result = start(partner_role, **kwargs)
+    _log_info("watchdog", f"已发起 {partner_role}[{instance_id}] 重启: {result}")
 
 
 def _run(this_role: str, partner_role: str, auto_restart: bool,

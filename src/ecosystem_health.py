@@ -236,13 +236,23 @@ def _tmux_alive(timeout: float = _TMUX_PROBE_TIMEOUT) -> bool:
         return False
 
 
-def _pane_has_claude(tmux_name: str) -> bool | None:
-    """pane 的后代进程里是否存在 claude。三态：True/False/None（探测失败）。
+def _pane_has_claude(tmux_name: str, engine: str | None = None) -> bool | None:
+    """pane 的后代进程里是否存在承载引擎进程（直拉时含 pane_pid 自身）。
+    三态：True/False/None（探测失败）。
+
+    函数名保留历史名（测试按名打桩）；扫描目标已泛化为按引擎查进程名
+    （ccs→claude，claude 行为逐字同型）。engine 缺省经哨兵解析（缺省回退
+    ccs）；引擎未注册 → None（判活不可用=不可判定，不计失败）。
 
     WHY 必须看后代而非 pane_pid：wrapper (`while true; do claude ...; done`)
     本身常驻，pane_pid 恒活——实测 closer 因 PATH 缺 .local/bin 而每 3s 报
     `claude: command not found` 达 1.4h，所有判活环节均未察觉（R41, 2026-10-19）。
     """
+    try:
+        from tmux_ops import _engine_of, _engine_spec
+        needle = _engine_spec(engine or _engine_of(tmux_name)).process_name
+    except Exception:
+        return None  # 引擎未注册/解析失败：显式降级为不可判定，禁止猜测
     try:
         out = subprocess.run(
             ["tmux", "display-message", "-p", "-t", f"{tmux_name}:0.0", "#{pane_pid}"],
@@ -250,11 +260,19 @@ def _pane_has_claude(tmux_name: str) -> bool | None:
         ).stdout.strip()
         if not out:
             return None
+        # 直接拉起（无 wrapper）时引擎进程就是 pane_pid 本身：只按 comm 精确
+        # 等值认它——wrapper（bash -c "while true; do claude…"）的 cmdline 也
+        # 含引擎名，子串匹配会把「wrapper 活着但引擎没起」误判为活（R41 反面）。
+        try:
+            if Path(f"/proc/{out}/comm").read_text().strip() == needle:
+                return True
+        except OSError:
+            pass
         kids = subprocess.run(["pgrep", "-P", out], capture_output=True, text=True,
                               timeout=3).stdout.split()
         for k in kids:
             try:
-                if "claude" in Path(f"/proc/{k}/cmdline").read_bytes().decode(
+                if needle in Path(f"/proc/{k}/cmdline").read_bytes().decode(
                         "utf8", "replace"):
                     return True
             except OSError:
@@ -268,9 +286,9 @@ def _check_sentinels() -> CheckItem:
     """检查 CCS 会话（tmux 实时派生）。
 
     旧实现 passed=True 是字面量，故无论系统实际状态如何恒为绿——僵尸角色
-    （pane 活、claude 未启动）被完全掩盖（R41, 2026-10-19）。现改为真判活：
-    任一 pane 后代无 claude 即 fail，并点名到具体 session。
-    探测失败(None)不计失败——避免瞬时 tmux 不可达造成假告警。
+    （pane 活、引擎进程未启动）被完全掩盖（R41, 2026-10-19）。现改为真判活：
+    任一 pane 后代无引擎进程（按哨兵 engine 查表，claude 行为同型）即 fail，
+    并点名到具体 session。探测失败(None)不计失败——避免瞬时 tmux 不可达造成假告警。
     """
     from ops.sentinel import list_sentinels
     start = time.time()
@@ -290,7 +308,7 @@ def _check_sentinels() -> CheckItem:
     ok = not zombies
     return CheckItem(name="sentinels:active", passed=ok,
                      detail=(f"{len(sentinels)} 活跃会话" if ok else
-                             f"{len(zombies)}/{len(sentinels)} 僵尸(pane活但无claude): "
+                             f"{len(zombies)}/{len(sentinels)} 僵尸(pane活但无引擎进程): "
                              + ", ".join(zombies[:5])),
                      duration_ms=(time.time() - start) * 1000)
 
