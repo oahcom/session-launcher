@@ -80,6 +80,28 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _done_state(done: str, artifact: str, expected_owner: str):
+    """done 的三态判定：'done' / None（还没写）/ 不合规的具体指纹（供两次比对）。
+
+    返回指纹而非直接 failed，是为了区分「正在写」与「写错了」：指纹相同说明内容
+    已稳定且仍不合规，才可判死；指纹变化说明还有人在写，继续等。
+    """
+    if not os.path.exists(done):
+        return None
+    with open(done, encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+    parts = raw.split()
+    if len(parts) != 2:
+        return ("words", raw)
+    owner, claimed = parts
+    if owner != expected_owner:
+        return ("owner", owner)
+    if not os.path.exists(artifact) or os.path.getsize(artifact) == 0:
+        return ("artifact",)
+    actual = _sha256_file(artifact)
+    return "done" if actual == claimed else ("sha", claimed, actual)
+
+
 def _wait_stage(
     run_dir: str,
     role: str,
@@ -96,20 +118,19 @@ def _wait_stage(
     announced_grace = False
     injects = 0
     last_inject = 0.0
+    last_bad = None
     while True:
-        if os.path.exists(done):
-            with open(done, encoding="utf-8", errors="replace") as f:
-                parts = f.read().split()
-            if len(parts) != 2:
-                return "failed"
-            owner, claimed = parts
-            if owner != expected_owner:
-                return "failed"
-            if not os.path.exists(artifact) or os.path.getsize(artifact) == 0:
-                return "failed"
-            if _sha256_file(artifact) != claimed:
-                return "failed"
+        state = _done_state(done, artifact, expected_owner)
+        if state == "done":
             return "done"
+        if state is None:
+            last_bad = None
+        elif state == last_bad:
+            # 同一份不合规内容隔一拍仍在，才算真坏：#478543 实测 done 由 shell
+            # 重定向壳出，首次读到空/半截后 2s 内就能改写成合规两段。
+            return "failed"
+        else:
+            last_bad = state
         # 额度墙自愈：命中签名就补一句「继续」，次数与间隔都封顶；判定与 deadline 不受影响。
         if injects < CONTINUE_INJECTS and time.monotonic() - last_inject >= CONTINUE_COOLDOWN:
             try:

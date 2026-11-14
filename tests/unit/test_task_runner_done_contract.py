@@ -81,3 +81,34 @@ def test_second_run_task_refuses_while_first_holds_lock(tmp_path, monkeypatch):
 
     assert task_runner.run_task("锁释放后") == 0
     assert called == ["锁释放后"]
+
+
+def test_transient_half_written_done_is_not_fatal(tmp_path):
+    """#478543：done 被 shell 重定向壳出，首次读到空/半截后补全 —— 必须等到 done。
+
+    这是本轮新洞：旧实现在第一次不合规就 return failed，整条四段链作废（2.83h 容量）。
+    """
+    import threading
+
+    body = "定稿内容"
+    sha = hashlib.sha256(body.encode()).hexdigest()
+    (tmp_path / "scout.md").write_text(body, encoding="utf-8")
+    (tmp_path / "scout.done").write_text("", encoding="utf-8")
+
+    def _complete():
+        (tmp_path / "scout.done").write_text(f"ccs-scout-3 {sha}", encoding="utf-8")
+
+    timer = threading.Timer(0.3, _complete)
+    timer.start()
+    try:
+        assert task_runner._wait_stage(str(tmp_path), "scout", "ccs-scout-3", 3, 1) == "done"
+    finally:
+        timer.cancel()
+
+
+def test_stable_malformed_done_still_fails(tmp_path):
+    """内容稳定仍不合规 → failed 仍是终局（不把真错误退化成 timeout）。"""
+    body = "定稿内容"
+    (tmp_path / "scout.md").write_text(body, encoding="utf-8")
+    (tmp_path / "scout.done").write_text("done", encoding="utf-8")
+    assert task_runner._wait_stage(str(tmp_path), "scout", "ccs-scout-3", 3, 1) == "failed"
