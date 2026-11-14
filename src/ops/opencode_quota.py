@@ -29,8 +29,10 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -277,6 +279,163 @@ def wake_role(role: str, instance_id: int = 0) -> dict:
     return send(role, WAKE_MSG, source="pipeline", instance_id=instance_id)
 
 
+# ── opencode 楔死解除（杀子进程 → pane 重生循环拉起）───────────────
+SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"
+_OPENCODE_CMD_MARK = ".opencode/bin/opencode"
+
+
+def _sentinel_engine(role: str) -> str | None:
+    """读哨兵事实源的 engine。缺文件/缺键/读失败 → None（保守：不杀只发文案）。"""
+    try:
+        d = json.loads((SENTINEL_DIR / f"{role}.json").read_text(encoding="utf-8"))
+        eng = d.get("engine")
+        return eng if isinstance(eng, str) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _tmux_session_of(role: str) -> str:
+    """角色 → tmux 会话名（哨兵 tmux_session 优先，回退 ccs-<role>）。"""
+    try:
+        d = json.loads((SENTINEL_DIR / f"{role}.json").read_text(encoding="utf-8"))
+        name = d.get("tmux_session")
+        if isinstance(name, str) and name:
+            return name
+    except (OSError, ValueError):
+        pass
+    return "ccs-" + role
+
+
+def _is_opencode_cmd(cmd: str) -> bool:
+    """kill 判据（进程命令行含 .opencode/bin/opencode 才算，绝不误杀其它）。"""
+    return _OPENCODE_CMD_MARK in (cmd or "")
+
+
+def _opencode_child_pids(role: str) -> list[int]:
+    """角色 tmux pane 子进程树里 opencode 进程的 pid 列表（只读）。"""
+    session = _tmux_session_of(role)
+    try:
+        out = subprocess.run(["tmux", "list-panes", "-t", session,
+                              "-F", "#{pane_pid}"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if out.returncode != 0:
+        return []
+    roots = [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+    found: list[int] = []
+    frontier = list(roots)
+    seen = set(roots)
+    while frontier:
+        cur = frontier.pop()
+        try:
+            k = subprocess.run(["pgrep", "-P", str(cur)],
+                               capture_output=True, text=True, timeout=5)
+            kids = [int(x) for x in k.stdout.split() if x.strip().isdigit()]
+        except (OSError, subprocess.TimeoutExpired):
+            kids = []
+        for pid in kids:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            frontier.append(pid)
+            try:
+                cmd = (Path(f"/proc/{pid}/cmdline").read_bytes()
+                       .decode("utf-8", "replace"))
+            except OSError:
+                continue
+            if _is_opencode_cmd(cmd):
+                found.append(pid)
+    return found
+
+
+def restart_opencode(role: str, instance_id: int = 0) -> dict:
+    """杀 pane 树里的 opencode 子进程并等重生循环拉起新进程。
+
+    opencode 撞 429 后 TUI 进内部退避（Retry-After 可达 17h+），打字/esc
+    唤不醒（实测）；唯一有效是杀进程 —— pane 的 `while true; do opencode; done`
+    循环自动拉起新进程（会话上下文在 opencode.db，同 cwd 可续）。
+    SIGTERM，5s 不退 SIGKILL；随后 ≤15s 轮询新 opencode 出现。
+    """
+    pids = _opencode_child_pids(role)
+    if not pids:
+        return {"killed": [], "respawned": False, "reason": "no opencode process"}
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not any(Path(f"/proc/{p}").exists() for p in pids):
+            break
+        time.sleep(0.3)
+    for pid in pids:
+        if Path(f"/proc/{pid}").exists():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    deadline = time.time() + 15.0
+    new_pid = None
+    while time.time() < deadline:
+        fresh = _opencode_child_pids(role)
+        if fresh:
+            new_pid = fresh[0]
+            break
+        time.sleep(0.5)
+    return {"killed": pids, "respawned": new_pid is not None,
+            "new_pid": new_pid,
+            "reason": None if new_pid else "no respawn within 15s"}
+
+
+# ── 一次性宿主的状态持久化（offset + 冷却跨进程）──────────────────
+_STATE_PATH = Path.home() / ".hermes" / "run" / "opencode_quota_state.json"
+
+
+def _load_state() -> dict:
+    try:
+        d = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _STATE_PATH)
+    except OSError as e:
+        _log.warning("opencode_quota 状态落盘失败（下轮可能重复处理）: %s", e)
+
+
+def run_once() -> list[dict]:
+    """一次性宿主单轮（ccs-monitor-daemon 60s 周期调用的入口）。
+
+    与长驻 watchdog 线程里的 check_once 的差别：offset/冷却是进程内存态，
+    一次性宿主每次新进程会重放日志、重复轮换 —— 故持久化到
+    opencode_quota_state.json。首次运行跳到 EOF（不重放历史）。
+    """
+    global _last_scan, _scan
+    state = _load_state()
+    with _cool_lock:
+        _last_handled.clear()
+        for k, v in (state.get("handled") or {}).items():
+            if isinstance(v, (int, float)):
+                _last_handled[k] = float(v)
+    with _scan_lock:
+        off = state.get("offset")
+        _scan["offset"] = int(off) if isinstance(off, int) else None
+        _last_scan = 0.0
+    results = check_once()
+    with _cool_lock:
+        handled = dict(_last_handled)
+    _save_state({"offset": _scan.get("offset"), "handled": handled})
+    return results
+
+
 # ── 日志 tail + 判据 ────────────────────────────────────────────
 
 def _parse_ts(started_at: str) -> float | None:
@@ -381,9 +540,20 @@ def handle_hit(hit: dict) -> dict:
         _log.warning("session %s 归属失败（dir=%s），只换 IP 不唤醒", sid, directory)
         return {"action": "rotate_only", "session_id": sid, "rotated": rotated}
     role, instance_id = target
+    # opencode 会话撞 429 后 TUI 进内部退避（Retry-After 可达 17h+），打字
+    # 唤不醒（实测）——必须杀 opencode 子进程让 pane 重生循环拉起新进程再发
+    # C3 续发。换 IP 先于杀进程（rotate 在上面已完成）：新进程首发走新出口。
+    # engine 读哨兵事实源；缺证据只发文案、绝不杀（保守）。
+    restarted: dict = {}
+    if _sentinel_engine(role) == "opencode":
+        restarted = restart_opencode(role, instance_id)
+        if not restarted.get("respawned"):
+            _log.warning("session %s opencode 重生未确认（%s），降级只发 C3",
+                         sid, restarted.get("reason", "unknown"))
     woken = wake_role(role, instance_id)
     return {"action": "rotate_and_wake", "session_id": sid, "rotated": rotated,
-            "role": role, "instance_id": instance_id, "woken": woken}
+            "role": role, "instance_id": instance_id, "woken": woken,
+            "restarted": restarted}
 
 
 def check_once() -> list[dict]:
@@ -405,3 +575,19 @@ def check_once() -> list[dict]:
         except Exception as e:  # noqa: BLE001 — 单条失败不打断整批
             _log.warning("handle_hit 异常 %s: %s", hit.get("session_id"), e)
     return results
+
+
+if __name__ == "__main__":
+    # 持久宿主入口（ccs-monitor-daemon 60s 调一次；watchdog 线程路径不变）。
+    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    _res = run_once()
+    if _res:
+        for _r in _res:
+            print(json.dumps(_r, ensure_ascii=False, default=str))
+        print("opencode_quota: processed %d hit(s)" % len(_res))
+    else:
+        print("opencode_quota: no hit this round")
+    sys.exit(0)

@@ -240,3 +240,124 @@ def test_rotate_degrades_when_config_missing(monkeypatch):
     res = q.rotate_gate("ses_x", "rate429")
     assert res["ok"] is False, "缺配置必须显式降级（不硬编码）"
     assert res["reason"] == "config_missing"
+
+
+# ── opencode 唤醒 = 杀子进程 + 续发（楔死解除）──────────────────
+
+def test_opencode_wake_kills_respawns_then_sends(monkeypatch):
+    q._last_handled.clear()
+    order = []
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda sid, **kw: order.append("rotate") or
+                        {"ok": True, "switched": True, "reason": ""})
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "_sentinel_engine", lambda role: "opencode")
+    monkeypatch.setattr(q, "restart_opencode",
+                        lambda role, inst=0: order.append("restart") or
+                        {"killed": [1], "respawned": True, "new_pid": 2,
+                         "reason": None})
+    monkeypatch.setattr(q, "wake_role",
+                        lambda role, inst=0: order.append("wake") or {})
+    res = q.handle_hit(_fresh_hit("ses_oc01"))
+    assert order == ["rotate", "restart", "wake"], \
+        "换 IP 先于杀进程，杀先于 C3（新进程首发走新出口）"
+    assert res["restarted"]["respawned"] is True
+
+
+def test_ccs_wake_unchanged_no_kill(monkeypatch):
+    q._last_handled.clear()
+    calls = {"restart": 0, "wake": 0}
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda sid, **kw: {"ok": True, "switched": True, "reason": ""})
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "_sentinel_engine", lambda role: "ccs")
+    monkeypatch.setattr(q, "restart_opencode",
+                        lambda *a, **k: calls.__setitem__(
+                            "restart", calls["restart"] + 1) or {})
+    monkeypatch.setattr(q, "wake_role",
+                        lambda *a, **k: calls.__setitem__(
+                            "wake", calls["wake"] + 1) or {})
+    q.handle_hit(_fresh_hit("ses_ccs01"))
+    assert calls["restart"] == 0, "ccs 会话绝不许杀进程（P4 零回归）"
+    assert calls["wake"] == 1, "ccs 唤醒行为零变化（只发 C3）"
+
+
+def test_unknown_engine_no_kill(monkeypatch):
+    q._last_handled.clear()
+    calls = {"restart": 0}
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda sid, **kw: {"ok": True, "switched": True, "reason": ""})
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "_sentinel_engine", lambda role: None)
+    monkeypatch.setattr(q, "restart_opencode",
+                        lambda *a, **k: calls.__setitem__(
+                            "restart", calls["restart"] + 1) or {})
+    monkeypatch.setattr(q, "wake_role", lambda *a, **k: {})
+    q.handle_hit(_fresh_hit("ses_unk01"))
+    assert calls["restart"] == 0, "engine 缺证据只发文案，绝不杀"
+
+
+def test_kill_criteria_positive_and_negative():
+    assert q._is_opencode_cmd("/home/administrator/.opencode/bin/opencode") is True
+    assert q._is_opencode_cmd("bash -c while true; do opencode; done") is False
+    assert q._is_opencode_cmd("claude --model 9router_hermes") is False
+    assert q._is_opencode_cmd("") is False
+
+
+def test_restart_opencode_no_process_degrades(monkeypatch):
+    monkeypatch.setattr(q, "_opencode_child_pids", lambda role: [])
+    res = q.restart_opencode("pg")
+    assert res["respawned"] is False
+    assert res["reason"] == "no opencode process"
+
+
+# ── 一次性宿主：offset/冷却跨进程持久化（run_once）────────────────
+
+def test_run_once_persists_offset_and_cooldown(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    q._last_handled.clear()
+    log = tmp_path / "opencode.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(q, "LOG_PATH", log)
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
+    rot = {"n": 0}
+
+    def _rot(sid, **kw):
+        rot["n"] += 1
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "_sentinel_engine", lambda role: "ccs")
+    monkeypatch.setattr(q, "wake_role", lambda *a, **k: {})
+
+    def _line(sid):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+            .replace("+00:00", "Z")
+        return ('timestamp=%s level=ERROR providerID=opencode modelID=x '
+                'session.id=%s error.error="AI_APICallError: '
+                'Free usage limit reached. x"' % (ts, sid))
+
+    # 首轮：offset 从 EOF 起，不处理存量
+    log.write_text(_line("ses_old01") + "\n", encoding="utf-8")
+    assert q.run_once() == [], "首次运行跳 EOF，不重放历史"
+    # 增量一条新命中 → 换 IP 1 次
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line("ses_run01") + "\n")
+    res = q.run_once()
+    assert rot["n"] == 1, "只处理增量行"
+    assert res and res[0]["session_id"] == "ses_run01"
+    # 同 sid 再来一条（冷却持久化）→ 不再换 IP
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line("ses_run01") + "\n")
+    res3 = q.run_once()
+    assert rot["n"] == 1, "冷却表持久化：跨进程不重复换 IP"
+    assert res3 and res3[0].get("action") == "suppressed"
