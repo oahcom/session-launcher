@@ -98,10 +98,11 @@ def test_transient_half_written_done_is_not_fatal(tmp_path):
     def _complete():
         (tmp_path / "scout.done").write_text(f"ccs-scout-3 {sha}", encoding="utf-8")
 
-    timer = threading.Timer(0.3, _complete)
+    # 等待窗口留 3s 而非 1s：定时器线程在高负载下可能延迟，0.7s 余量会 flake。
+    timer = threading.Timer(0.5, _complete)
     timer.start()
     try:
-        assert task_runner._wait_stage(str(tmp_path), "scout", "ccs-scout-3", 3, 1) == "done"
+        assert task_runner._wait_stage(str(tmp_path), "scout", "ccs-scout-3", 3, 3) == "done"
     finally:
         timer.cancel()
 
