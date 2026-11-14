@@ -47,6 +47,19 @@ def main():
   # 旧参数（--partner/--bus-track/--auto-restart）保留兼容但不再推荐，
   # 守护线程随 CLI 进程退出失效，请改用 workflow 模板。
 
+会话承载引擎（--engine / persona.engine）:
+  ccs         claude --model 9router_hermes（默认，存量 persona 全部是它）
+  opencode    ~/.opencode/bin/opencode（原生直连 deepseek-v4.1-flash-free，
+              出口走 asip 第八闸口 7898；撞 429 自动换 IP + 重生续发）
+  codex       本期未接入主启动面（孤岛入口：ccs.py codex start）
+  声明优先级：--engine 按次覆盖 > persona 的 engine 字段 > 缺省 ccs。
+  重启只读哨兵事实源 ~/.hermes/run/ccs-sentinels/<role>.json，不回读
+  persona —— 所以重启/陈旧拉起都不会翻转引擎。
+  示例:
+  ccs.py start engineer --engine opencode --no-attach   # opencode 承载
+  ccs.py start engineer --prompt "开工"                 # 默认 ccs 承载
+  ccs.py status-role engineer        # 单角色 JSON（含 engine/engine_source）
+
 启动优化:
   ccs.py start <role>              启动 CCS 后自动发送 ccs_config.json 配置的消息
   ccs.py start <role> --no-auto-send  跳过自动发送（只保留角色 prompt）
@@ -54,7 +67,21 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # ── start ──
-    p_start = sub.add_parser("start", help="创建并启动 CCS")
+    p_start = sub.add_parser(
+        "start", help="创建并启动 CCS",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例:
+  ccs.py start engineer                          # persona 默认引擎（ccs）
+  ccs.py start engineer --engine opencode        # 强制 opencode 承载
+  ccs.py start engineer --engine opencode --no-attach --prompt "开工"
+  ccs.py start engineer --instance-id 1          # 扩展实例
+  ccs.py start engineer --dry-run                # 只打印将执行的命令
+
+引擎说明:
+  --engine {ccs,opencode,codex}  会话承载引擎，按次覆盖（优先级最高）；
+  未指定取 persona.engine，再缺省 ccs。codex 本期拒绝（rc=1），
+  走孤岛入口 ccs.py codex start。重启只读哨兵，不会翻转引擎。
+  opencode 会话出口走 asip 第八闸口（HTTPS_PROXY 注入，429 自动换 IP）。""")
     p_start.add_argument("role", help="角色名（自动加 ccs- 前缀）")
     p_start.add_argument("title", nargs="?", default="", help="角色标题")
     p_start.add_argument("--no-attach", action="store_true",
@@ -199,7 +226,17 @@ def main():
     p_reap.add_argument("--dry-run", action="store_true", help="只报告不唤醒")
 
     # ── status-role ──
-    p_sr = sub.add_parser("status-role", help="查询单个角色状态")
+    p_sr = sub.add_parser(
+        "status-role", help="查询单个角色状态",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""输出 JSON 字段：
+  running/alive      会话是否在跑（tmux 存活）
+  pid/pid_source     引擎进程 pid 与其来源（sentinel|tmux|fallback）
+  engine             承载引擎 ccs|opencode|codex|unknown
+  engine_source      引擎身份的来源（sentinel=事实源；tmux-prefix-fallback=推断值，
+                     推断值不得冒充事实，评估面按显式降级处置）
+  tmux_session/pid   宿主 tmux 会话与 pane pid
+示例: ccs.py status-role engineer""")
     p_sr.add_argument("role", help="角色名")
 
     # ── send-safe（自动唤醒后发送） ──
