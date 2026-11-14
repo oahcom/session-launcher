@@ -361,3 +361,158 @@ def test_run_once_persists_offset_and_cooldown(tmp_path, monkeypatch):
     res3 = q.run_once()
     assert rot["n"] == 1, "冷却表持久化：跨进程不重复换 IP"
     assert res3 and res3[0].get("action") == "suppressed"
+
+
+# ── T1 transport：断连形态判据 / 判定矩阵 / 只换不唤醒 / 全局冷却 ────
+
+# 真实形态（opencode.log 2026-11-14T19:24:45.419Z，2026-11-15 闸口死节点事故）
+REAL_LINE_TRANSPORT = (
+    'timestamp=2026-11-14T19:24:45.419Z level=ERROR run=511a658b message="stream error" '
+    'providerID=opencode modelID=deepseek-v4.1-flash-free '
+    'session.id=ses_e247c1d4cffe6cIeOctV8YWv4T small=false agent=build mode=primary '
+    'error.error="AI_APICallError: Cannot connect to API: The socket connection was '
+    'closed unexpectedly. For more information, pass `verbose: true` in the second '
+    'argument to fetch() (cause: Error: The socket connection was closed unexpectedly. '
+    'For more information, pass `verbose: true` in the second argument to fetch()))"'
+)
+
+# 伴生行（message=process，无 providerID）——不是会话请求面，不许命中
+REAL_LINE_TRANSPORT_PROCESS = (
+    'timestamp=2026-11-14T19:24:45.424Z level=ERROR run=511a658b message=process '
+    'session.id=ses_e247c1d4cffe6cIeOctV8YWv4T '
+    'messageID=msg_1db83e2dc001V8htRNpjqtvF7x error="Cannot connect to API: The socket '
+    'connection was closed unexpectedly." stack="AI_APICallError: Cannot connect to API"'
+)
+
+
+def test_transport_criterion_hits_real_line():
+    hit = q.parse_transport_line(REAL_LINE_TRANSPORT)
+    assert hit is not None, "真实断连形态必须命中 transport 判据（T1）"
+    assert hit["session_id"] == "ses_e247c1d4cffe6cIeOctV8YWv4T"
+    assert hit["reason"] == "transport"
+    assert isinstance(hit["started_at_epoch"], float) and hit["started_at_epoch"] > 1.7e9
+
+
+def test_transport_criterion_disjoint_with_quota_criterion():
+    # 429 行不算 transport；transport 行不算 429（两判据互斥，不双发）
+    assert q.parse_transport_line(REAL_LINE) is None
+    assert q.parse_quota_line(REAL_LINE_TRANSPORT) is None
+    # 无 providerID 的伴生行、非 ERROR 行不命中
+    assert q.parse_transport_line(REAL_LINE_TRANSPORT_PROCESS) is None
+    assert q.parse_transport_line(
+        REAL_LINE_TRANSPORT.replace("level=ERROR", "level=INFO")) is None
+
+
+def test_transport_verdict_matrix(monkeypatch):
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: True)
+    assert q.gate_vs_direct_verdict() == "skip_transient"
+    # 闸口断 + 直连通 → 唯一值得换节点的场景
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: proxy is None)
+    assert q.gate_vs_direct_verdict() == "rotate"
+    # 双断：本机网络问题，换闸口节点没用
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: False)
+    assert q.gate_vs_direct_verdict() == "skip_network"
+    # 端口发现不到：显式降级不盲换
+    monkeypatch.setattr(q, "discover_gate_port", lambda: None)
+    assert q.gate_vs_direct_verdict() == "skip_no_port"
+
+
+def test_transport_rotate_only_never_wakes_or_kills(monkeypatch):
+    q._transport_last_ts = 0.0
+    seen = {"rotate": 0, "wake": 0, "restart": 0, "kw": None}
+
+    def _rot(sid, **kw):
+        seen["rotate"] += 1
+        seen["kw"] = kw
+        return {"ok": True, "switched": True, "reason": ""}
+
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: proxy is None)
+    monkeypatch.setattr(q, "rotate_gate", _rot)
+    monkeypatch.setattr(q, "wake_role",
+                        lambda *a, **k: seen.__setitem__("wake", seen["wake"] + 1) or {})
+    monkeypatch.setattr(q, "restart_opencode",
+                        lambda *a, **k: seen.__setitem__("restart", seen["restart"] + 1) or {})
+    res = q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    assert seen["rotate"] == 1
+    assert seen["wake"] == 0 and seen["restart"] == 0, \
+        "transport 只换节点，绝不杀进程/唤醒（断连不楔 TUI）"
+    assert seen["kw"]["reason"] == "transport", "reason 传 asip 白名单值 transport"
+    assert res["action"] == "rotate_only"
+
+
+def test_transport_skips_without_rotation_when_gate_alive(monkeypatch):
+    q._transport_last_ts = 0.0
+    calls = {"rotate": 0}
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: True)  # 闸口通
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda *a, **k: calls.__setitem__("rotate", calls["rotate"] + 1) or {})
+    res = q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    assert calls["rotate"] == 0, "闸口活着：瞬时抖动不许瞎换节点"
+    assert res["reason"] == "skip_transient"
+
+
+def test_transport_skips_when_local_network_down(monkeypatch):
+    q._transport_last_ts = 0.0
+    calls = {"rotate": 0}
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: False)  # 双断
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda *a, **k: calls.__setitem__("rotate", calls["rotate"] + 1) or {})
+    res = q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    assert calls["rotate"] == 0, "本机网络挂了：换闸口节点没用"
+    assert res["reason"] == "skip_network"
+
+
+def test_transport_global_cooldown_one_rotate_per_window(monkeypatch):
+    q._transport_last_ts = 0.0
+    calls = {"rotate": 0}
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: proxy is None)
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda *a, **k: calls.__setitem__("rotate", calls["rotate"] + 1) or {})
+    q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    assert calls["rotate"] == 1, "闸口级事件：60s 窗内多会话报错只换一次"
+    q._transport_last_ts = time.time() - q.COOLDOWN_SEC - 1
+    q.handle_transport_hit(q.parse_transport_line(REAL_LINE_TRANSPORT))
+    assert calls["rotate"] == 2
+
+
+def test_run_once_persists_transport_cooldown(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    q._last_handled.clear()
+    q._transport_last_ts = 0.0
+    log = tmp_path / "opencode.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(q, "LOG_PATH", log)
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(q, "discover_gate_port", lambda: 7898)
+    monkeypatch.setattr(q, "_probe_reachable", lambda proxy: proxy is None)
+    rot = {"n": 0}
+    monkeypatch.setattr(q, "rotate_gate",
+                        lambda *a, **k: rot.__setitem__("n", rot["n"] + 1) or
+                        {"ok": True, "switched": True, "reason": ""})
+
+    def _tline(sid):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+            .replace("+00:00", "Z")
+        return ('timestamp=%s level=ERROR providerID=opencode modelID=x '
+                'session.id=%s error.error="AI_APICallError: Cannot connect to '
+                'API: The socket connection was closed unexpectedly."' % (ts, sid))
+
+    log.write_text(_tline("ses_old01") + "\n", encoding="utf-8")
+    assert q.run_once() == [], "首轮跳 EOF"
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_tline("ses_t01") + "\n")
+    res = q.run_once()
+    assert rot["n"] == 1 and res[0]["kind"] == "transport"
+    # 模拟新进程：内存冷却清零，靠状态文件续窗
+    q._transport_last_ts = 0.0
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_tline("ses_t02") + "\n")
+    res2 = q.run_once()
+    assert rot["n"] == 1, "冷却持久化：跨进程 60s 内不重复换节点"
+    assert res2 and res2[0].get("action") == "suppressed"

@@ -17,7 +17,8 @@ opencode_gate.rotate_token_file，env OPENCODE_GATE_ROTATE_SOCK /
 OPENCODE_GATE_TOKEN_FILE 覆盖），缺配置显式降级（告警 + 跳过 rotate）。
 
 与 asip 侧（impl-gate 2026-11-14 回复）对齐的语义：
-- reason 只认 rate429|abuse403|transport|proactive 白名单 → 本监测器恒传 rate429；
+- reason 只认 rate429|abuse403|transport|proactive 白名单 → 429 命中恒传
+  rate429；transport 断连命中（T1）恒传 transport；
 - request_started_at 传数值时间戳（epoch 秒，非数 asip 侧按 None 丢弃）；
 - 回包 switched=false 且 reason∈{no_healthy_node, borrowed_skip} → 不唤醒
   （防在同 IP 上烧重试），60s 冷却即退避；reason=coalesced 视为可安全同端口重试。
@@ -35,6 +36,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,6 +69,19 @@ _ERROR_FORM_NEEDLES = (
     'error.error="AI_RetryError',
 )
 
+# T1 transport 判据（2026-11-15 闸口死节点事故）：池节点死/半死的表现是
+# 「socket 断连」而非 429 —— 429 判据不命中、没人换节点，全部 opencode
+# 会话一起卡死在死节点上。真实形态（opencode.log 2026-11-14T19:24:45Z）：
+# level=ERROR + providerID=opencode + error.error="AI_APICallError: Cannot
+# connect to API: The socket connection was closed unexpectedly…"。
+# 公共组 providerID=opencode 把 message=process 的伴生行、models.dev 目录
+# 拉取失败等无 provider 行挡在外面（它们不是会话请求面）。
+_TRANSPORT_COMMON_NEEDLES = ("level=ERROR", "providerID=opencode")
+_TRANSPORT_FORM_NEEDLES = (
+    "Cannot connect to API",
+    "socket connection was closed",
+)
+
 _TS_RE = re.compile(r"\btimestamp=(\S+)")
 _SID_RE = re.compile(r"\bsession\.id=(ses_[A-Za-z0-9]+)")
 
@@ -75,6 +90,7 @@ _FRESH_SEC = 600.0        # 只处理近 10 分钟的命中（防日志轮转后
 _MIN_SCAN_INTERVAL = 10.0  # 全局扫描节流（watchdog 多线程并发调用时只扫一次）
 
 _last_handled: dict[str, float] = {}
+_transport_last_ts = 0.0   # transport 全局抑制（闸口级事件，跨 session 只换一次）
 _cool_lock = threading.Lock()
 _scan_lock = threading.Lock()
 _last_scan = 0.0
@@ -418,13 +434,15 @@ def run_once() -> list[dict]:
     一次性宿主每次新进程会重放日志、重复轮换 —— 故持久化到
     opencode_quota_state.json。首次运行跳到 EOF（不重放历史）。
     """
-    global _last_scan, _scan
+    global _last_scan, _scan, _transport_last_ts
     state = _load_state()
     with _cool_lock:
         _last_handled.clear()
         for k, v in (state.get("handled") or {}).items():
             if isinstance(v, (int, float)):
                 _last_handled[k] = float(v)
+        v = state.get("transport_last_ts")
+        _transport_last_ts = float(v) if isinstance(v, (int, float)) else 0.0
     with _scan_lock:
         off = state.get("offset")
         _scan["offset"] = int(off) if isinstance(off, int) else None
@@ -432,7 +450,9 @@ def run_once() -> list[dict]:
     results = check_once()
     with _cool_lock:
         handled = dict(_last_handled)
-    _save_state({"offset": _scan.get("offset"), "handled": handled})
+        transport_ts = _transport_last_ts
+    _save_state({"offset": _scan.get("offset"), "handled": handled,
+                 "transport_last_ts": transport_ts})
     return results
 
 
@@ -474,6 +494,28 @@ def parse_quota_line(line: str) -> dict | None:
         "started_at": started_at,
         "started_at_epoch": _parse_ts(started_at),
         "reason": "rate429",
+    }
+
+
+def parse_transport_line(line: str) -> dict | None:
+    """T1 transport 判据：ERROR + providerID=opencode + 断连形态之一 → 命中。
+
+    reason 传 asip 白名单值 transport。无 session.id 也可命中（req_id 用
+    synthetic 串）——transport 轮换是闸口级动作，不依赖会话归属；不唤醒
+    （断连不像 429 把 TUI 楔进 17h 退避，用户重发即走新出口）。
+    """
+    if not all(n in line for n in _TRANSPORT_COMMON_NEEDLES):
+        return None
+    if not any(n in line for n in _TRANSPORT_FORM_NEEDLES):
+        return None
+    m_sid = _SID_RE.search(line)
+    m_ts = _TS_RE.search(line)
+    started_at = m_ts.group(1) if m_ts else ""
+    return {
+        "session_id": m_sid.group(1) if m_sid else "",
+        "started_at": started_at,
+        "started_at_epoch": _parse_ts(started_at),
+        "reason": "transport",
     }
 
 
@@ -556,6 +598,65 @@ def handle_hit(hit: dict) -> dict:
             "restarted": restarted}
 
 
+# ── transport（T1）：断连形态 → 判定矩阵 → 只换不唤醒 ─────────────
+
+PROBE_URL = "https://api.opencode.ai/"
+_PROBE_TIMEOUT_SEC = 5.0
+
+
+def _probe_reachable(proxy: str | None) -> bool:
+    """经/不经代理探一次 HTTPS 可达性（任何 HTTP 响应都算通）。"""
+    handler = urllib.request.ProxyHandler(
+        {"http": proxy, "https": proxy} if proxy else {})
+    opener = urllib.request.build_opener(handler)
+    try:
+        with opener.open(PROBE_URL, timeout=_PROBE_TIMEOUT_SEC):
+            return True
+    except Exception:  # noqa: BLE001 — 断连/超时/DNS 全算不可达
+        return False
+
+
+def gate_vs_direct_verdict() -> str:
+    """判定矩阵：只有「直连通、经闸口断」才值得换节点（防误杀）。
+
+    - 闸口通 → skip_transient（会话侧断连是瞬时抖动，换节点是瞎换）
+    - 闸口断 + 直连断 → skip_network（本机出口挂了，换闸口节点没用）
+    - 闸口端口发现不到 → skip_no_port（显式降级，不盲换）
+    - 闸口断 + 直连通 → rotate（节点死，换节点能救）
+    """
+    port = discover_gate_port()
+    if not port:
+        return "skip_no_port"
+    if _probe_reachable(f"http://127.0.0.1:{port}"):
+        return "skip_transient"
+    return "rotate" if _probe_reachable(None) else "skip_network"
+
+
+def handle_transport_hit(hit: dict) -> dict:
+    """transport 命中：判定矩阵通过才 rotate（reason=transport），不唤醒。
+
+    全局 60s 抑制（跨 session）：死节点是闸口级事件，多会话同时报错只
+    换一次；抑制窗同时限定探测频率（每窗至多一次判定矩阵）。
+    """
+    global _transport_last_ts
+    now = time.time()
+    with _cool_lock:
+        if _transport_last_ts and now - _transport_last_ts < COOLDOWN_SEC:
+            return {"action": "suppressed", "kind": "transport",
+                    "reason": "transport cooldown"}
+        _transport_last_ts = now
+    verdict = gate_vs_direct_verdict()
+    if verdict != "rotate":
+        _log.info("transport 命中但 %s，不换节点 session=%s",
+                  verdict, hit.get("session_id") or "-")
+        return {"action": "skip", "kind": "transport", "reason": verdict}
+    sid = hit.get("session_id") or ("transport-%d" % int(now))
+    rotated = rotate_gate(sid, reason="transport",
+                          request_started_at=hit.get("started_at_epoch"))
+    return {"action": "rotate_only", "kind": "transport", "session_id": sid,
+            "rotated": rotated}
+
+
 def check_once() -> list[dict]:
     """watchdog 周期入口：tail 日志 → 逐条 handle_hit。全局节流 + 线程安全。"""
     global _last_scan
@@ -568,12 +669,22 @@ def check_once() -> list[dict]:
     results = []
     for line in lines:
         hit = parse_quota_line(line)
-        if not hit or not _fresh(hit.get("started_at", "")):
+        if hit is not None:
+            if not _fresh(hit.get("started_at", "")):
+                continue
+            try:
+                results.append(handle_hit(hit))
+            except Exception as e:  # noqa: BLE001 — 单条失败不打断整批
+                _log.warning("handle_hit 异常 %s: %s", hit.get("session_id"), e)
+            continue
+        thit = parse_transport_line(line)
+        if thit is None or not _fresh(thit.get("started_at", "")):
             continue
         try:
-            results.append(handle_hit(hit))
+            results.append(handle_transport_hit(thit))
         except Exception as e:  # noqa: BLE001 — 单条失败不打断整批
-            _log.warning("handle_hit 异常 %s: %s", hit.get("session_id"), e)
+            _log.warning("handle_transport_hit 异常 %s: %s",
+                         thit.get("session_id"), e)
     return results
 
 
