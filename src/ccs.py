@@ -48,16 +48,17 @@ def main():
   # 守护线程随 CLI 进程退出失效，请改用 workflow 模板。
 
 会话承载引擎（--engine / persona.engine）:
-  ccs         claude --model 9router_hermes（默认，存量 persona 全部是它）
-  opencode    ~/.opencode/bin/opencode（原生直连 deepseek-v4.1-flash-free，
+  ccs         claude --model 9router_hermes（存量 persona 全部是它）
+  opencode    ~/.opencode/bin/opencode（缺省引擎；原生直连 deepseek-v4.1-flash-free，
               出口走 asip 第八闸口 7898；撞 429 自动换 IP + 重生续发）
   codex       本期未接入主启动面（孤岛入口：ccs.py codex start）
-  声明优先级：--engine 按次覆盖 > persona 的 engine 字段 > 缺省 ccs。
+  声明优先级：--engine 按次覆盖 > persona 的 engine 字段 > 缺省 opencode。
+  不记名角色（无 persona 或裸 ccs start）默认 opencode 承载、无 persona 权限/MCP 限制。
   重启只读哨兵事实源 ~/.hermes/run/ccs-sentinels/<role>.json，不回读
   persona —— 所以重启/陈旧拉起都不会翻转引擎。
   示例:
   ccs.py start engineer --engine opencode --no-attach   # opencode 承载
-  ccs.py start engineer --prompt "开工"                 # 默认 ccs 承载
+  ccs.py start engineer --prompt "开工"                 # persona 默认引擎（ccs）
   ccs.py status-role engineer        # 单角色 JSON（含 engine/engine_source）
 
 启动优化:
@@ -71,6 +72,7 @@ def main():
         "start", help="创建并启动 CCS",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""示例:
+  ccs.py start                                  # 不记名会话（anon，opencode 承载）
   ccs.py start engineer                          # persona 默认引擎（ccs）
   ccs.py start engineer --engine opencode        # 强制 opencode 承载
   ccs.py start engineer --engine opencode --no-attach --prompt "开工"
@@ -79,10 +81,12 @@ def main():
 
 引擎说明:
   --engine {ccs,opencode,codex}  会话承载引擎，按次覆盖（优先级最高）；
-  未指定取 persona.engine，再缺省 ccs。codex 本期拒绝（rc=1），
+  未指定取 persona.engine，再缺省 opencode。codex 本期拒绝（rc=1），
   走孤岛入口 ccs.py codex start。重启只读哨兵，不会翻转引擎。
   opencode 会话出口走 asip 第八闸口（HTTPS_PROXY 注入，429 自动换 IP）。""")
-    p_start.add_argument("role", help="角色名（自动加 ccs- 前缀）")
+    p_start.add_argument("role", nargs="?", default="anon",
+                         help="角色名（自动加 ccs- 前缀）；缺省 anon=不记名会话"
+                              "（tmux ccs-anon / ~/ccs-workspaces/anon）")
     p_start.add_argument("title", nargs="?", default="", help="角色标题")
     p_start.add_argument("--no-attach", action="store_true",
                          help="后台运行，不 attach（非交互环境自动生效）")
@@ -109,7 +113,7 @@ def main():
                          help="只打印将执行的 tmux 命令/参数/路径，不实际执行；返回结构化 JSON (dry_run=true, planned_actions[])")
     p_start.add_argument("--engine", default=None, choices=list(ENGINE_DOMAIN),
                          help="会话承载引擎（按次覆盖，优先级最高；未指定时取 persona.engine，"
-                              "再缺省 ccs。codex 本期未接入主启动面）")
+                              "再缺省 opencode。codex 本期未接入主启动面）")
 
     # ── config ──
     p_cfg = sub.add_parser("config", help="查看/修改 ccs_config.json")

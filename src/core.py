@@ -161,7 +161,7 @@ class StartOptions:
     instance_id: int = 0
     dry_run: bool = False
     # T1A 会话承载引擎（契约 4.2 三层声明的选择层）：
-    # None=未覆盖 → 解析 persona.engine（角色默认），再缺省 "ccs"。
+    # None=未覆盖 → 解析 persona.engine（角色默认），再缺省 "opencode"。
     # 字段默认必须是 None 而不是 "ccs"——否则「显式覆盖为 ccs」与「未覆盖」
     # 不可区分，persona.engine 层会被永久遮蔽（P2 persona 默认生效即失效）。
     engine: str | None = None
@@ -519,20 +519,25 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         return {"success": False, "error": f"非法 workspace 名: {o.workspace}"}
 
     # ── T1A 引擎解析（契约 4.2 三层声明）──
-    # 优先级：StartOptions.engine/--engine（按次覆盖，最高）→ persona.engine（角色默认）→ "ccs"。
-    # 未知取值显式报错（禁止静默当 ccs）；取值域 = _ENGINE_REGISTRY 表键（契约 4.1）。
+    # 优先级：StartOptions.engine/--engine（按次覆盖，最高）→ persona.engine（角色默认）→ 缺省 "opencode"。
+    # 未知取值显式报错（禁止静默回落缺省）；取值域 = _ENGINE_REGISTRY 表键（契约 4.1）。
     if o.engine and o.engine not in _ENGINE_REGISTRY:
         return {"success": False,
                 "error": f"engine 取值非法: {o.engine!r}"
                          f"（取值域 {sorted(_ENGINE_REGISTRY)}）"}
-    engine = o.engine or "ccs"
+    engine = o.engine or "opencode"
     _role_def_e = get_role(o.role)
+    if _role_def_e is None:
+        # typo 防呆（替代已移除的注册表白名单拒绝）：未注册名显式可见，
+        # 不静默起出会话——`ccs start engneer` 这类 typo 下一行就暴露。
+        # dry-run/ondemand/真实启动共用此路径，输出口径一致。
+        print(f"不记名角色（未注册，无 persona）：{o.role}")
     if _role_def_e and "engine" in _role_def_e:
         _pe = _role_def_e.get("engine")
         if _pe not in _ENGINE_REGISTRY:
             return {"success": False,
                     "error": f"persona {o.role} 的 engine 取值非法: {_pe!r}"
-                             f"（取值域 {sorted(_ENGINE_REGISTRY)}，未知值不得静默当 ccs）"}
+                             f"（取值域 {sorted(_ENGINE_REGISTRY)}，未知值不得静默回落缺省）"}
         if not o.engine:
             engine = _pe
     # codex 三入口统一口径（正常/dry-run/ondemand）：本期未接入主启动面，一律显式
@@ -592,8 +597,14 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
     if o.dry_run:
         role_def_dr = get_role(o.role)
         _role_prompt_len = len(_build_role_prompt(role_def_dr)) if role_def_dr else 0
+        # 引擎配方行：让预检输出能区分 opencode/ccs 承载（验证裸 start=opencode、
+        # persona 角色=persona 引擎）。配方串只拼不执行；缺 inner_builder（codex）
+        # 显式标 <未接入>，不静默。
+        _row_dr = _ENGINE_REGISTRY.get(engine) or {}
+        _builder_dr = _row_dr.get("inner_builder")
         actions = [
             f"tmux new-session -d -s {tmux_name} -c {ws_path}",
+            f"引擎 {engine} 启动配方: {_builder_dr() if _builder_dr else '<未接入>'}",
             "注入角色 prompt" + (f" ({_role_prompt_len} 字符)" if _role_prompt_len else ""),
             f"写哨兵 {o.role}[{o.instance_id}]",
         ]
@@ -605,7 +616,8 @@ def start(role: StartOptions | str, title: str = "", detach: bool = False,
         for a in actions:
             print(f"  - {a}")
         return {"success": True, "dry_run": True, "role": o.role,
-                "instance_id": o.instance_id, "planned_actions": actions}
+                "instance_id": o.instance_id, "engine": engine,
+                "planned_actions": actions}
 
     # 1. 先检查是否已运行（不消耗内存守卫额度）
     if _is_alive(tmux_name):

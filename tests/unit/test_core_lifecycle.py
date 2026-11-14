@@ -76,7 +76,10 @@ class TestCoreLifecycle:
         mock_is_alive.return_value = False
         mock_check_memory.return_value = None
         mock_workspace_create.return_value = {"success": True, "action": "created"}
-        mock_get_role.return_value = {"name": "qa", "produce": ["test_report"], "consume": ["task_spec"]}
+        # engine:"ccs" 对齐生产 persona（19 个全部显式声明）；缺省已改 opencode，
+        # 不写会走 opencode 就绪严格判据，mock 的 "❯ " 提示符过不了。
+        mock_get_role.return_value = {"name": "qa", "engine": "ccs",
+                                     "produce": ["test_report"], "consume": ["task_spec"]}
         mock_inject.return_value = None
         mock_write_mcp.return_value = None
         
@@ -351,7 +354,7 @@ class TestCoreEdgeCases:
         mock_is_alive.return_value = False
         mock_check_memory.return_value = None
         mock_workspace_create.return_value = {"success": True, "action": "created"}
-        mock_get_role.return_value = {"name": "qa", "drive": "loop"}
+        mock_get_role.return_value = {"name": "qa", "engine": "ccs", "drive": "loop"}
         
         mock_result = MagicMock()
         mock_result.returncode = 0
