@@ -442,6 +442,15 @@ def _oc_native_provider() -> dict:
     }
 
 
+# 钉住的默认模型：原生免费模型（opencode/deepseek-v4.1-flash-free）。
+# 流量经配置里内置 provider 的 baseURL 覆盖（→127.0.0.1:7899/inference/v1）
+# 进第八闸口 L7；原生 provider 自动带鉴权/协议，无需自建 provider 段
+# （2026-11-15 实证；oc-native 曲线方案已退役，值不再被模型选择引用）。
+_NATIVE_MODEL = "opencode/deepseek-v4.1-flash-free"
+_NATIVE_GATE_BASEURL = "http://127.0.0.1:7899/inference/v1"
+_LEGACY_MODEL = "oc-native/deepseek-v4.1-flash-free"   # 旧钉值，写入时迁移
+
+
 def _write_opencode_provider(path: Path | None = None) -> bool:
     """写全局 opencode.jsonc 的 `provider.oc-native` 键（契约 C4）。
 
@@ -468,7 +477,19 @@ def _write_opencode_provider(path: Path | None = None) -> bool:
         return False
     provider["oc-native"] = _oc_native_provider()
     data["provider"] = provider
+    # 内置 provider 覆盖：原生模型流量改道 L7（原生鉴权/协议保持，2026-11-15
+    # 实证此为正解）。嵌套 setdefault=用户自己的覆盖不被改写。
+    oc_builtin = provider.setdefault("opencode", {})
+    if isinstance(oc_builtin, dict):
+        opts = oc_builtin.setdefault("options", {})
+        if isinstance(opts, dict):
+            opts.setdefault("baseURL", _NATIVE_GATE_BASEURL)
     data.setdefault("$schema", _OPENCODE_SCHEMA)
+    # 顶层 model：钉原生免费模型（setdefault=用户手写不覆盖）。
+    # 旧钉值（oc-native）是本工具自己写入的遗留，迁移为原生 id。
+    if data.get("model") == _LEGACY_MODEL:
+        data["model"] = _NATIVE_MODEL
+    data.setdefault("model", _NATIVE_MODEL)
     # 原子写：并发起多个 opencode 会话时不撕裂文件
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(p.parent), prefix=p.name + ".", suffix=".tmp")
@@ -1017,24 +1038,29 @@ def _opencode_gate_port() -> int | None:
 def _opencode_inner_cmd() -> str:
     """opencode 行启动配方（契约 4.3/D3）：工作区 cwd 直接拉 TUI-in-tmux。
 
-    不注入 ANTHROPIC_*：opencode.jsonc 已自配 provider（9router →
-    localhost:20127/v1 + 9router_hermes，实测状态栏 "Build · 9Router Hermes"）。
+    不注入 ANTHROPIC_*：opencode.jsonc 已自配 provider。钉
+    --model opencode/deepseek-v4.1-flash-free（原生免费模型）——流量经
+    配置里内置 provider 的 baseURL 覆盖（http://127.0.0.1:7899/inference/v1）
+    进第八闸口 L7 拦截层，429 判出换 ok 透明重试（2026-11-15 实证：原生
+    provider/模型直用，oc-native 曲线方案已退役，原生自动带鉴权）。
     二进制不在 PATH，用绝对路径（~/.opencode/bin/opencode）。
     专属闸口出口：HTTPS_PROXY/HTTP_PROXY 指向 opencode 闸口端口、NO_PROXY
     放行本地回环（9router 在 127.0.0.1，不得被闸口代理劫持）。端口可配置
     （env OPENCODE_GATE_PORT → config opencode_gate.proxy_port）；读不到时
-    显式降级为不注入并告警（不许静默指向不存在的端口）。
+    显式降级为不注入并告警（不许静默指向不存在的端口）——模型钉住不受
+    降级影响（L7 是本地回环，无需代理 env）。
     """
     exe = str(Path.home() / ".opencode" / "bin" / "opencode")
+    base = f"{exe} --model {shlex.quote(_NATIVE_MODEL)}"
     port = _opencode_gate_port()
     if not port:
         _log.warning("opencode 闸口端口未配置（env OPENCODE_GATE_PORT / "
                      "config opencode_gate.proxy_port 均无），显式降级：不注入 "
                      "HTTPS_PROXY/HTTP_PROXY")
-        return exe
+        return base
     proxy = f"http://127.0.0.1:{port}"
     return (f"HTTPS_PROXY={shlex.quote(proxy)} HTTP_PROXY={shlex.quote(proxy)} "
-            f"NO_PROXY=127.0.0.1,localhost {exe}")
+            f"NO_PROXY=127.0.0.1,localhost {base}")
 
 
 _ENGINE_REGISTRY: dict[str, dict] = {

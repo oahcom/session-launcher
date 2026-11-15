@@ -59,12 +59,35 @@ def test_provider_write_preserves_9router_and_user_keys(tmp_path):
     out = json.loads(f.read_text(encoding="utf-8"))
     # 契约 C4 字段一字不差
     assert out["provider"]["oc-native"] == _C4_OC_NATIVE
+    # 顶层 model：钉原生免费模型（流量经内置 baseURL 覆盖进 L7）
+    assert out["model"] == "opencode/deepseek-v4.1-flash-free"
+    # 内置 provider 覆盖：baseURL 改道 L7（原生鉴权/协议保持）
+    assert out["provider"]["opencode"]["options"]["baseURL"] \
+        == "http://127.0.0.1:7899/inference/v1"
     # 9router 段原样保留（用户裁决 D2：不许改写、不许删）
     assert out["provider"]["9router"] == original_9router
     # 用户手写键保留
     assert out["provider"]["my-own"] == {"npm": "x"}
     assert out["user_custom_key"] == {"foo": 1}
     assert out["permission"] == "allow"
+
+
+def test_provider_write_sets_model_only_when_absent(tmp_path):
+    """顶层 model 是 setdefault：用户手写不覆盖；旧 oc-native 钉值自动迁移。"""
+    f = tmp_path / "opencode.jsonc"
+    f.write_text(json.dumps({"model": "9router/9router_hermes"}, indent=2),
+                 encoding="utf-8")
+    assert core._write_opencode_provider(path=f) is True
+    out = json.loads(f.read_text(encoding="utf-8"))
+    assert out["model"] == "9router/9router_hermes", "用户手写 model 不得被覆盖"
+
+    # 旧工具写入的 oc-native 钉值 → 迁移为原生 id
+    f2 = tmp_path / "oc2.jsonc"
+    f2.write_text(json.dumps({"model": "oc-native/deepseek-v4.1-flash-free"},
+                             indent=2), encoding="utf-8")
+    assert core._write_opencode_provider(path=f2) is True
+    out2 = json.loads(f2.read_text(encoding="utf-8"))
+    assert out2["model"] == "opencode/deepseek-v4.1-flash-free"
 
 
 def test_provider_write_skips_broken_json(tmp_path):
@@ -122,10 +145,15 @@ def test_provider_migration_swaps_only_oc_native_baseurl(tmp_path):
     assert "https://api.opencode.ai/v1" not in out_raw
 
     # 9router 段与用户手写键逐字节保留（D2：不许改写、不许删）——
-    # 输出全文 = 输入全文仅替换 baseURL 一处字符串，其余字节全等
-    assert out_raw == in_raw.replace(
+    # 输出全文 = 输入全文仅替换 baseURL 一处 + 新增顶层 model 键与内置
+    # provider 覆盖（钉原生模型进 L7，2026-11-15 契约演进），其余字节全等
+    out_cmp = json.loads(out_raw)
+    assert out_cmp.pop("model") == "opencode/deepseek-v4.1-flash-free"
+    added = out_cmp["provider"].pop("opencode")
+    assert added["options"]["baseURL"] == "http://127.0.0.1:7899/inference/v1"
+    assert json.dumps(out_cmp, indent=2, ensure_ascii=False) == in_raw.replace(
         "https://api.opencode.ai/v1", "http://127.0.0.1:7899/v1"
-    ), "除 oc-native.baseURL 外不得有任何字节变化"
+    ), "除 oc-native.baseURL 与新增 model/内置覆盖外不得有任何字节变化"
     assert out["provider"]["9router"] == original_9router
     assert out["provider"]["my-own"] == {"npm": "x"}
     assert out["user_custom_key"] == {"foo": 1}
@@ -140,7 +168,8 @@ def test_proxy_injected_for_opencode_row(monkeypatch):
     assert "HTTPS_PROXY=http://127.0.0.1:18080" in cmd
     assert "HTTP_PROXY=http://127.0.0.1:18080" in cmd
     assert "NO_PROXY=127.0.0.1,localhost" in cmd
-    assert cmd.rstrip().endswith(".opencode/bin/opencode")
+    assert cmd.endswith(".opencode/bin/opencode --model opencode/deepseek-v4.1-flash-free"), \
+        "必须钉原生免费模型（流量经内置 baseURL 覆盖进 L7）"
     assert "ANTHROPIC_" not in cmd, "opencode 行不得注入 ANTHROPIC_*"
 
 
@@ -153,7 +182,9 @@ def test_proxy_degrades_explicitly_when_port_missing(monkeypatch):
     cmd = core._opencode_inner_cmd()
     assert "HTTPS_PROXY" not in cmd and "HTTP_PROXY" not in cmd \
         and "NO_PROXY" not in cmd, "读不到端口必须显式降级为不注入"
-    assert cmd == str(Path.home() / ".opencode" / "bin" / "opencode")
+    assert cmd == str(Path.home() / ".opencode" / "bin" / "opencode") \
+        + " --model opencode/deepseek-v4.1-flash-free", \
+        "降级只免代理 env，--model 钉住不受影响"
 
 
 def test_claude_row_zero_change(monkeypatch):
