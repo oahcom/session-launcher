@@ -184,15 +184,6 @@ def _run(this_role: str, partner_role: str, auto_restart: bool,
                 except Exception as e:
                     _log_info(tag, f"auto-continue 检查异常: {e}")
 
-            # 429 免费额度观测面（契约 C1/C2/C3）：tail opencode 日志命中
-            # Free usage limit → rotate 换出口 IP → 唤醒角色重发被中断的请求。
-            # check_once 自带全局节流与 session.id 冷却，多 watchdog 线程并发安全。
-            try:
-                from ops.opencode_quota import check_once
-                check_once()
-            except Exception as e:
-                _log_info(tag, f"opencode_quota 检查异常: {e}")
-
             if not self_alive:
                 _log_info(tag, f"自身 CCS {self_tmux} 已死，尝试重启")
                 _audit_monitor("自体死亡-自动重启",

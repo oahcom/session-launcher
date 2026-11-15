@@ -148,8 +148,8 @@ def test_proxy_degrades_explicitly_when_port_missing(monkeypatch):
     monkeypatch.delenv("OPENCODE_GATE_PORT", raising=False)
     monkeypatch.setattr(core, "_cfg_get_value", lambda key: None)
     # 阻断 /slots 动态发现（生产 config 现有 socket/token 默认值，测试不得打生产 UDS）
-    import ops.opencode_quota as _q
-    monkeypatch.setattr(_q, "discover_gate_port", lambda: None)
+    import ops.gate_port as _g
+    monkeypatch.setattr(_g, "discover_gate_port", lambda: None)
     cmd = core._opencode_inner_cmd()
     assert "HTTPS_PROXY" not in cmd and "HTTP_PROXY" not in cmd \
         and "NO_PROXY" not in cmd, "读不到端口必须显式降级为不注入"

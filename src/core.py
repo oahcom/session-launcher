@@ -1005,7 +1005,7 @@ def _opencode_gate_port() -> int | None:
         except (TypeError, ValueError):
             _log.warning("opencode 闸口端口非法: %r", raw)
     try:
-        from ops.opencode_quota import discover_gate_port
+        from ops.gate_port import discover_gate_port
         port = discover_gate_port()
         if port:
             return port
