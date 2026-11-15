@@ -29,7 +29,7 @@
 **四层实现**（缺一环则链路断）：
 
 1. **闸口层**：`asip/opencode_gate.py` 独立模块 —— 槽位定义（`make_slot`）+ rotate 处理（`handle_rotate`）+ 独立选中态/冷却/账本 + 合并窗。`daemon.py` 只接线（`/rotate-opencode-gate` 委托），不写业务逻辑。
-2. **原生直连层**：`oc-native` provider 段（`baseURL=https://api.opencode.ai/v1`，模型 `deepseek-v4.1-flash-free`），`9router` 段原样保留。`HTTPS_PROXY=http://127.0.0.1:<动态发现的闸口端口>` 注入 opencode 进程，`NO_PROXY=127.0.0.1,localhost` 保护本机 9router 不被劫持。
+2. **原生直连层**：`oc-native` provider 段（`baseURL=http://127.0.0.1:7899/v1`，模型 `deepseek-v4.1-flash-free`），`9router` 段原样保留。`HTTPS_PROXY=http://127.0.0.1:<动态发现的闸口端口>` 注入 opencode 进程，`NO_PROXY=127.0.0.1,localhost` 保护本机 9router 不被劫持。
 3. **rotate 入口层**：`POST /rotate-opencode-gate`（同 UDS `run/rotate.sock`、同 `X-Asip-Token`），只动 opencode 闸口自己的 selector，永不回指其它闸口，换线走「不中断在途」路径。
 4. **ccs 闭环层**：`ops/opencode_quota.py` 监测 `opencode.log` 的 429 形态 → `opencode.db` 只读归属 session→角色 → 调 rotate 换 IP → 发唤醒（C3 文案）让角色重发。归属失败只换 IP 不唤醒；同 session 60s 冷却不重复。
 

@@ -58,7 +58,7 @@
 "oc-native": {
   "npm": "@ai-sdk/openai-compatible",
   "name": "OpenCode Native",
-  "options": { "baseURL": "https://api.opencode.ai/v1" },
+  "options": { "baseURL": "http://127.0.0.1:7899/v1" },
   "models": { "deepseek-v4.1-flash-free": { "name": "DSv4.1 Flash Free",
       "limit": { "context": 200000, "output": 32000 } } }
 }
@@ -204,7 +204,7 @@ A/B 跨仓无共享文件，是安全并发边界。
 >
 > ## 要做（三项）
 > ### 1. opencode provider 原生直连
-> `~/.config/opencode/opencode.jsonc` **新增** provider 段 `oc-native`（契约 C4），指向 `https://api.opencode.ai/v1`，
+> `~/.config/opencode/opencode.jsonc` **新增** provider 段 `oc-native`（契约 C4），指向 `http://127.0.0.1:7899/v1`，
 > model 钉死 `deepseek-v4.1-flash-free`。**`9router` 段原样保留**（D2 裁决），不许改写、不许删。
 > 写入逻辑加到 `src/core.py`（风格照 `_write_opencode_mcp`：已存在就合并该键、保留其它键；JSON 坏了不覆盖只告警）。
 >
