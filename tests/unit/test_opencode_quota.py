@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# TODO(红区欠账): 本文件超 600 行待拆分——判据/归属用例与 429 回收契约用例可分卷（AGENTS.md §9）
 """opencode_quota：429 判据 / 归属 / rotate / 唤醒（契约 C1/C2/C3）。
 
 ③ 429 判据命中（喂一行真实形态日志）；
 ④ 归属失败时不唤醒但换 IP。
-外加：冷却窗去重、C3 文案一字不差、归属成功路径。
+外加：冷却窗去重、C3 文案一字不差、归属成功路径、
+429 回收新契约（忙则全跳过、楔死延迟确认才回收、杀冷却 1800s、状态落盘防竞态）。
 """
 
 import sys
@@ -16,6 +18,8 @@ if str(_launcher_src) not in sys.path:
 
 import os
 os.environ.setdefault("SESSION_PIPELINE_SKIP_TTL_PRUNER", "1")
+
+import json
 
 import pytest
 
@@ -243,9 +247,15 @@ def test_rotate_degrades_when_config_missing(monkeypatch):
 
 
 # ── opencode 唤醒 = 杀子进程 + 续发（楔死解除）──────────────────
+# 【改写声明】旧断言 test_opencode_wake_kills_respawns_then_sends 断言命中当轮
+# 立即 restart（order == [rotate, restart, wake]），与新契约「命中当轮绝不杀、
+# 楔死延迟确认才回收」直接冲突，按下述新语义改写；楔死路径的杀+重生+补投
+# 见 test_wedged_engine_reaped_next_round。
 
-def test_opencode_wake_kills_respawns_then_sends(monkeypatch):
+def test_opencode_hit_defers_kill_to_confirmation(monkeypatch):
+    """命中当轮只 rotate+唤醒；杀引擎延迟到楔死确认（回收已登记待观察队列）。"""
     q._last_handled.clear()
+    q._pending_kills.clear()
     order = []
     monkeypatch.setattr(q, "rotate_gate",
                         lambda sid, **kw: order.append("rotate") or
@@ -254,16 +264,17 @@ def test_opencode_wake_kills_respawns_then_sends(monkeypatch):
                         lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
     monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
     monkeypatch.setattr(q, "_sentinel_engine", lambda role: "opencode")
+    monkeypatch.setattr(q, "_opencode_child_pids", lambda role: [40001])
+    monkeypatch.setattr(q, "_busy", lambda *a, **k: False)
     monkeypatch.setattr(q, "restart_opencode",
-                        lambda role, inst=0: order.append("restart") or
-                        {"killed": [1], "respawned": True, "new_pid": 2,
-                         "reason": None})
+                        lambda role, inst=0: order.append("restart") or {})
     monkeypatch.setattr(q, "wake_role",
                         lambda role, inst=0: order.append("wake") or {})
     res = q.handle_hit(_fresh_hit("ses_oc01"))
-    assert order == ["rotate", "restart", "wake"], \
-        "换 IP 先于杀进程，杀先于 C3（新进程首发走新出口）"
-    assert res["restarted"]["respawned"] is True
+    assert order == ["rotate", "wake"], \
+        "命中当轮不杀：换 IP 先于唤醒，回收延迟到楔死确认"
+    assert res["restarted"] == {"scheduled": True}, "回收已登记待观察队列"
+    assert res["action"] == "rotate_and_wake"
 
 
 def test_ccs_wake_unchanged_no_kill(monkeypatch):
@@ -516,3 +527,166 @@ def test_run_once_persists_transport_cooldown(tmp_path, monkeypatch):
     res2 = q.run_once()
     assert rot["n"] == 1, "冷却持久化：跨进程 60s 内不重复换节点"
     assert res2 and res2[0].get("action") == "suppressed"
+
+
+# ── 429 回收新契约：忙则全跳过、楔死延迟确认才回收、杀冷却 1800s ────
+
+def _setup_recycle_mocks(monkeypatch, *, busy=False, stuck=False,
+                         engine="opencode", pids=(40001,)):
+    """handle_hit/回收链公共 mock 底座；返回动作计数器。"""
+    seen = {"rotate": 0, "wake": 0, "restart": 0, "order": []}
+
+    def _rot(sid, **kw):
+        seen["rotate"] += 1
+        seen["order"].append("rotate")
+        return {"ok": True, "switched": True, "reason": ""}
+
+    def _wake(role, inst=0):
+        seen["wake"] += 1
+        seen["order"].append("wake")
+        return {"success": True}
+
+    def _restart(role, inst=0):
+        seen["restart"] += 1
+        seen["order"].append("restart")
+        return {"killed": list(pids), "respawned": True, "new_pid": 50002,
+                "reason": None}
+
+    monkeypatch.setattr(q, "rotate_gate", _rot)
+    monkeypatch.setattr(q, "session_directory",
+                        lambda sid: str(Path.home() / "ccs-workspaces" / "pg"))
+    monkeypatch.setattr(q, "attribute_session", lambda d: ("pg", 0))
+    monkeypatch.setattr(q, "_sentinel_engine", lambda role: engine)
+    monkeypatch.setattr(q, "_opencode_child_pids", lambda role: list(pids))
+    monkeypatch.setattr(q, "_busy", lambda *a, **k: busy)
+    monkeypatch.setattr(q, "_looks_stuck", lambda *a, **k: stuck)
+    monkeypatch.setattr(q, "wake_role", _wake)
+    monkeypatch.setattr(q, "restart_opencode", _restart)
+    return seen
+
+
+def _age_pending(seconds: float = 61.0):
+    """把待观察队列 hit_ts 拨后，模拟下一轮（≥KILL_CONFIRM_DELAY_SEC）。"""
+    for cand in q._pending_kills.values():
+        cand["hit_ts"] -= seconds
+
+
+def test_busy_hit_rotates_but_skips_wake_and_kill(monkeypatch):
+    """忙会话命中 429：rotate 照常，投递/回收全跳过（红绿反证：守卫移除后必须红）。"""
+    q._last_handled.clear()
+    q._pending_kills.clear()
+    q._kill_last.clear()
+    seen = _setup_recycle_mocks(monkeypatch, busy=True, stuck=True)
+    res = q.handle_hit(_fresh_hit("ses_busy01"))
+    assert seen["rotate"] == 1, "rotate 必须照常（换 IP 与杀引擎解耦）"
+    assert seen["wake"] == 0, "忙则不投递"
+    assert seen["restart"] == 0, "忙则绝不杀"
+    assert not q._pending_kills, "忙会话不得入观察队列"
+    assert res["action"] == "rotate_only" and res["wake_skipped"] == "busy"
+    _age_pending()
+    assert q._process_pending_kills() == []
+    assert seen["restart"] == 0, "确认轮也不许杀（队列本就该为空）"
+
+
+def test_not_stuck_candidate_dropped_next_round(monkeypatch):
+    """不忙但在干活（_looks_stuck False）：命中当轮不杀，候选下一轮被丢弃。"""
+    q._last_handled.clear()
+    q._pending_kills.clear()
+    q._kill_last.clear()
+    seen = _setup_recycle_mocks(monkeypatch, busy=False, stuck=False)
+    res = q.handle_hit(_fresh_hit("ses_act01"))
+    assert seen["restart"] == 0, "命中当轮绝不杀（延迟确认）"
+    assert seen["order"] == ["rotate", "wake"]
+    assert res["restarted"] == {"scheduled": True}
+    assert len(q._pending_kills) == 1, "候选已登记"
+    _age_pending()
+    results = q._process_pending_kills()
+    assert seen["restart"] == 0, "pane 有变化/在干活：不杀"
+    assert not q._pending_kills, "候选被丢弃（引擎自己恢复了/在正常重试）"
+    assert results and results[0]["action"] == "kill_skipped"
+
+
+def test_wedged_engine_reaped_next_round(monkeypatch):
+    """楔死（不忙 + _looks_stuck True）：下一轮杀+重生+补投 WAKE_MSG。"""
+    q._last_handled.clear()
+    q._pending_kills.clear()
+    q._kill_last.clear()
+    seen = _setup_recycle_mocks(monkeypatch, busy=False, stuck=True)
+    q.handle_hit(_fresh_hit("ses_wedge01"))
+    assert seen["restart"] == 0, "命中当轮不杀"
+    _age_pending()
+    results = q._process_pending_kills()
+    assert seen["restart"] == 1, "楔死确认后才回收"
+    assert seen["wake"] == 2, "杀+重生后必须补投 WAKE_MSG"
+    assert seen["order"] == ["rotate", "wake", "restart", "wake"], \
+        "确认轮顺序：杀先于 C3（新进程首发走新出口）"
+    assert results[0]["action"] == "kill_and_wake"
+    assert results[0]["restarted"]["respawned"] is True
+    assert q._kill_last.get("ses_wedge01"), "杀冷却时间戳已记录"
+
+
+def test_kill_cooldown_suppresses_repeat_kill(tmp_path, monkeypatch):
+    """杀冷却 1800s：楔死杀过一次后再命中只 rotate 不杀；kill_last_ts 跨重载仍抑制。"""
+    from datetime import datetime, timezone
+    q._last_handled.clear()
+    q._pending_kills.clear()
+    q._kill_last.clear()
+    q._transport_last_ts = 0.0
+    log = tmp_path / "opencode.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(q, "LOG_PATH", log)
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
+    seen = _setup_recycle_mocks(monkeypatch, busy=False, stuck=True)
+
+    def _line(sid):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+            .replace("+00:00", "Z")
+        return ('timestamp=%s level=ERROR providerID=opencode modelID=x '
+                'session.id=%s error.error="AI_APICallError: '
+                'Free usage limit reached. x"' % (ts, sid))
+
+    sid = "ses_kill01"
+    log.write_text(_line("ses_old99") + "\n", encoding="utf-8")
+    assert q.run_once() == [], "首轮跳 EOF"
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line(sid) + "\n")
+    q.run_once()                       # 命中当轮：rotate+wake+登记候选
+    assert seen["rotate"] == 1 and seen["restart"] == 0
+    _age_pending()
+    q.run_once()                       # 下一轮：楔死确认 → 杀
+    assert seen["restart"] == 1 and seen["wake"] == 2
+    # 模拟进程重启：内存态全清，靠状态文件续抑制
+    q._kill_last.clear()
+    q._pending_kills.clear()
+    q._last_handled.clear()
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state.get("kill_last_ts", {}).get(sid), "kill_last_ts 已持久化"
+    # 让 rotate 冷却过期，同一 sid 能再次命中
+    state["handled"] = {sid: time.monotonic() - q.COOLDOWN_SEC - 60}
+    (tmp_path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line(sid) + "\n")
+    q.run_once()                       # 冷却期内再次命中：只 rotate
+    assert seen["rotate"] == 2 and seen["restart"] == 1, "冷却期内最多只换 IP 不杀"
+    _age_pending()
+    res = q.run_once()                 # 确认轮：杀冷却抑制
+    assert seen["restart"] == 1, "kill_last_ts 跨重载仍抑制（1800s 内不许再杀）"
+    assert res and res[0]["action"] == "kill_suppressed"
+
+
+def test_save_state_unique_tmp_name(tmp_path, monkeypatch):
+    """_save_state 用含 pid 的唯一 tmp 名防并发 ENOENT；连续两次写都成功。"""
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
+    seen = {}
+    real_replace = os.replace
+
+    def _spy(src, dst):
+        seen["src"] = str(src)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _spy)
+    q._save_state({"a": 1})
+    assert f".tmp.{os.getpid()}" in seen["src"], "tmp 必须带 pid 唯一名防并发互踩"
+    q._save_state({"a": 2})
+    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8")) \
+        == {"a": 2}, "连续两次落盘都成功且后者生效"
