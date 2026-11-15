@@ -85,6 +85,10 @@ def _done_state(done: str, artifact: str, expected_owner: str):
 
     返回指纹而非直接 failed，是为了区分「正在写」与「写错了」：指纹相同说明内容
     已稳定且仍不合规，才可判死；指纹变化说明还有人在写，继续等。
+
+    sha 指纹不带 actual：契约要求 done 之后不得再改产物，产物在变而 done 自称的
+    sha 对不上，是「先写 done 再继续改」这种真错误，不是「还在写」——带上 actual
+    会让指纹随每次改写变化，永远稳不下来，判死退化成等到 grace 到期判 timeout。
     """
     if not os.path.exists(done):
         return None
@@ -98,8 +102,8 @@ def _done_state(done: str, artifact: str, expected_owner: str):
         return ("owner", owner)
     if not os.path.exists(artifact) or os.path.getsize(artifact) == 0:
         return ("artifact",)
-    actual = _sha256_file(artifact)
-    return "done" if actual == claimed else ("sha", claimed, actual)
+    return "done" if _sha256_file(artifact) == claimed else ("sha",)
+
 
 
 def _wait_stage(

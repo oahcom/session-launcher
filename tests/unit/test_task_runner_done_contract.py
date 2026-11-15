@@ -113,3 +113,22 @@ def test_stable_malformed_done_still_fails(tmp_path):
     (tmp_path / "scout.md").write_text(body, encoding="utf-8")
     (tmp_path / "scout.done").write_text("done", encoding="utf-8")
     assert task_runner._wait_stage(str(tmp_path), "scout", "ccs-scout-3", 3, 1) == "failed"
+
+
+def test_sha_fingerprint_ignores_artifact_rewrite(tmp_path):
+    """done 自称的 sha 对不上时，产物再被改也不得换指纹。
+
+    指纹随改变化 → 永远稳不下来 → 判死退化成等到宽限期判 timeout，下游把
+    「done 之后又改产物」当成「还没写完」，白等一整个 grace。
+    """
+    md = tmp_path / "scout.md"
+    done = tmp_path / "scout.done"
+    md.write_text("v1\n", encoding="utf-8")
+    (tmp_path / "scout.done").write_text(
+        f"ccs-scout-3 {hashlib.sha256(b'never-matches').hexdigest()}", encoding="utf-8")
+
+    first = task_runner._done_state(str(done), str(md), "ccs-scout-3")
+    md.write_text("v2 已被改写\n", encoding="utf-8")
+    second = task_runner._done_state(str(done), str(md), "ccs-scout-3")
+
+    assert first == second
