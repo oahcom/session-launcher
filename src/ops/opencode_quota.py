@@ -13,9 +13,10 @@ watchdog 周期调用 check_once()：
 
 重复抑制：同一 session.id 冷却窗（COOLDOWN_SEC=60s）内不重复换 IP + 不重复唤醒。
 引擎回收（杀 opencode 子进程让 pane 重生循环拉起）与 rotate 解耦：
-忙则全跳过（不投递不杀）；不忙时命中当轮只登记待观察队列，下一轮
-（≥KILL_CONFIRM_DELAY_SEC）确认楔死（仍不忙 + _looks_stuck）才 kill+补投 C3；
-杀的 per-session 冷却 KILL_COOLDOWN_SEC 独立且更长，冷却期内只换 IP 不杀。
+忙则全跳过（不投递不杀）；不忙时命中当轮只登记待观察队列（pane_tail/cpu_ticks
+基线落盘），下一轮（≥KILL_CONFIRM_DELAY_SEC）确认楔死（仍不忙 + pane 不动 +
+CPU 不走）才 kill+补投 C3；杀的 per-session 冷却 KILL_COOLDOWN_SEC 独立且
+更长，冷却期内只换 IP 不杀。一次性宿主，状态全部落盘。
 rotate 的 socket/token 路径读 config（opencode_gate.rotate_socket /
 opencode_gate.rotate_token_file，env OPENCODE_GATE_ROTATE_SOCK /
 OPENCODE_GATE_TOKEN_FILE 覆盖），缺配置显式降级（告警 + 跳过 rotate）。
@@ -46,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 忙判据/楔死判据直接复用 tmux_ops（wake 投递链同一判据；模块级导入便于测试替身）
-from tmux_ops import _looks_stuck, _role_is_busy, make_tmux_name
+from tmux_ops import _role_is_busy, _tmux_output, make_tmux_name
 
 _log = logging.getLogger("opencode_quota")
 
@@ -318,6 +319,30 @@ def _busy(tmux_name: str) -> bool:
         return False
 
 
+# ── 楔死确认采样（基线落盘，确认时对比）────────────────────────
+
+def _sample_pane_tail(tmux_name: str) -> str:
+    """采样 pane 尾部文本（楔死确认基线对比用，tail=400 行）。"""
+    return _tmux_output(tmux_name, tail=400)
+
+
+def _sample_cpu_ticks(pid: int) -> int | None:
+    """/proc/<pid>/stat 第14+15字段 utime+stime 之和（tick 计数）。
+
+    读不到 → None（确认时按「无法证明楔死」丢弃）。
+    """
+    try:
+        f = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(f[11]) + int(f[12])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid 是否存活（/proc/<pid> 存在）。"""
+    return Path(f"/proc/{pid}").exists()
+
+
 # ── opencode 楔死解除（杀子进程 → pane 重生循环拉起）───────────────
 SENTINEL_DIR = Path.home() / ".hermes" / "run" / "ccs-sentinels"
 _OPENCODE_CMD_MARK = ".opencode/bin/opencode"
@@ -432,7 +457,8 @@ def _enqueue_kill_candidate(session_id: str, role: str, instance_id: int) -> dic
     """命中当轮登记引擎回收候选（延迟确认，见 _process_pending_kills）。
 
     返回 {"scheduled": True}；pane 里没有 opencode 进程可回收时返回 {}（没得可杀）。
-    队列是模块级 dict（宿主常驻时跨轮存活；进程重启丢队列最多晚杀一次，可接受）。
+    每条候选登记 pane_tail / cpu_ticks 基线（确认时对比判楔死），随 state 文件落盘
+    （一次性宿主，状态全部落盘）。
     """
     tmux_name = _tmux_session_of(role)
     pids = _opencode_child_pids(role)
@@ -442,18 +468,21 @@ def _enqueue_kill_candidate(session_id: str, role: str, instance_id: int) -> dic
     with _cool_lock:
         _pending_kills.setdefault(key, {
             "session_id": session_id, "role": role, "instance_id": instance_id,
-            "tmux_name": tmux_name, "pid": pids[0], "hit_ts": time.time()})
+            "tmux_name": tmux_name, "pid": pids[0], "hit_ts": time.time(),
+            "pane_tail": _sample_pane_tail(tmux_name),
+            "cpu_ticks": _sample_cpu_ticks(pids[0])})
     return {"scheduled": True}
 
 
 def _process_pending_kills() -> list[dict]:
     """延迟确认待观察队列（每轮开始时调用）：仅楔死才回收引擎。
 
-    候选在命中当轮登记；≥KILL_CONFIRM_DELAY_SEC 后的一次性判定：
-    仍不忙 且 _looks_stuck（pane 不动 + CPU 不走）为真 → kill+respawn+投递 WAKE_MSG；
-    否则丢弃候选（引擎自己恢复了/在正常重试）。
+    候选在命中当轮登记（含 pane_tail / cpu_ticks 基线）；≥KILL_CONFIRM_DELAY_SEC
+    后按序判定：kill 冷却 → pid 存活 → 不忙 → pane_tail 未变 → cpu_ticks 增量
+    ≤5×SC_CLK_TCK —— 全过才算楔死确认（kill+respawn+投递 WAKE_MSG）；
+    任一不过即丢弃候选（引擎自愈/在正常重试/无法证明楔死）。
     杀的冷却独立且更长（KILL_COOLDOWN_SEC，per-session，持久化）：冷却期内
-    最多只换 IP 不杀，候选直接丢弃。
+    最多只换 IP 不杀，候选直接丢弃（先判冷却避免白采样）。
     """
     now = time.time()
     due: list[tuple[str, dict]] = []
@@ -464,37 +493,51 @@ def _process_pending_kills() -> list[dict]:
     results: list[dict] = []
     for _key, cand in due:
         sid = cand["session_id"]
+        base = {"session_id": sid, "role": cand["role"],
+                "instance_id": cand["instance_id"]}
+        # 1) 杀冷却：先判冷却避免白采样
         with _cool_lock:
             last_kill = _kill_last.get(sid)
         if last_kill is not None and now - last_kill < KILL_COOLDOWN_SEC:
             _log.info("session %s 杀冷却中（%.0fs 内已回收过），丢弃楔死候选只换 IP",
                       sid, KILL_COOLDOWN_SEC)
-            results.append({"action": "kill_suppressed", "session_id": sid,
-                            "role": cand["role"],
-                            "instance_id": cand["instance_id"],
+            results.append({"action": "kill_suppressed", **base,
                             "reason": "kill cooldown"})
             continue
+        # 2) pid 已死 → 没得可杀
+        if not _pid_alive(cand["pid"]):
+            results.append({"action": "kill_dropped", **base,
+                            "reason": "pid dead"})
+            continue
+        # 3) 忙 → 在干活不杀
         if _busy(cand["tmux_name"]):
-            results.append({"action": "kill_skipped", "session_id": sid,
-                            "role": cand["role"],
-                            "instance_id": cand["instance_id"],
+            results.append({"action": "kill_skipped", **base,
                             "reason": "busy"})
             continue
-        if not _looks_stuck(cand["tmux_name"], cand["pid"]):
-            results.append({"action": "kill_skipped", "session_id": sid,
-                            "role": cand["role"],
-                            "instance_id": cand["instance_id"],
-                            "reason": "not stuck"})
+        # 4) pane_tail 对比：变了 = 引擎在动自愈
+        if _sample_pane_tail(cand["tmux_name"]) != cand.get("pane_tail"):
+            results.append({"action": "kill_skipped", **base,
+                            "reason": "pane_changed"})
             continue
+        # 5) cpu_ticks 对比：增量 > 5 秒 CPU = 在干活
+        base_ticks = cand.get("cpu_ticks")
+        cur_ticks = _sample_cpu_ticks(cand["pid"])
+        if base_ticks is None or cur_ticks is None:
+            results.append({"action": "kill_skipped", **base,
+                            "reason": "cpu_unprovable"})
+            continue
+        if cur_ticks - base_ticks > 5 * (os.sysconf("SC_CLK_TCK") or 100):
+            results.append({"action": "kill_skipped", **base,
+                            "reason": "cpu_active"})
+            continue
+        # 6) 全过 = 楔死确认
         _log.warning("session %s 引擎楔死确认（pane 不动 + CPU 不走），回收并补投 C3",
                      sid)
         restarted = restart_opencode(cand["role"], cand["instance_id"])
         woken = wake_role(cand["role"], cand["instance_id"])
         with _cool_lock:
             _kill_last[sid] = time.time()
-        results.append({"action": "kill_and_wake", "session_id": sid,
-                        "role": cand["role"],
-                        "instance_id": cand["instance_id"],
+        results.append({"action": "kill_and_wake", **base,
                         "restarted": restarted, "woken": woken})
     return results
 
@@ -542,6 +585,12 @@ def run_once() -> list[dict]:
         for k, v in (state.get("kill_last_ts") or {}).items():
             if isinstance(v, (int, float)):
                 _kill_last[k] = float(v)
+        _pending_kills.clear()
+        pk = state.get("pending_kills")
+        if isinstance(pk, dict):
+            for k, v in pk.items():
+                if isinstance(v, dict):
+                    _pending_kills[k] = dict(v)
     with _scan_lock:
         off = state.get("offset")
         _scan["offset"] = int(off) if isinstance(off, int) else None
@@ -551,8 +600,10 @@ def run_once() -> list[dict]:
         handled = dict(_last_handled)
         transport_ts = _transport_last_ts
         kill_ts = dict(_kill_last)
+        pending = {k: dict(v) for k, v in _pending_kills.items()}
     _save_state({"offset": _scan.get("offset"), "handled": handled,
-                 "transport_last_ts": transport_ts, "kill_last_ts": kill_ts})
+                 "transport_last_ts": transport_ts, "kill_last_ts": kill_ts,
+                 "pending_kills": pending})
     return results
 
 
@@ -698,9 +749,10 @@ def handle_hit(hit: dict) -> dict:
                 "wake_skipped": "busy", "restarted": {}}
     # 引擎回收（杀+重生）不在命中当轮执行：opencode 撞 429 后 TUI 进内部退避
     # （Retry-After 可达 17h+），但同一表现也可能是正常重试/在飞工作——命中
-    # 当轮只登记待观察队列，下一轮（≥KILL_CONFIRM_DELAY_SEC）确认「楔死」
-    # （仍不忙且 _looks_stuck）才 kill+respawn+补投 C3；engine 读哨兵事实源，
-    # 缺证据只发文案、绝不杀（保守）。换 IP 先于一切唤醒（rotate 已完成）。
+    # 当轮只登记待观察队列（pane_tail/cpu_ticks 基线落盘），下一轮
+    # （≥KILL_CONFIRM_DELAY_SEC）确认「楔死」（仍不忙 + pane 不动 + CPU 不走）
+    # 才 kill+respawn+补投 C3；engine 读哨兵事实源，缺证据只发文案、绝不杀
+    # （保守）。换 IP 先于一切唤醒（rotate 已完成）。
     restarted: dict = {}
     if _sentinel_engine(role) == "opencode":
         restarted = _enqueue_kill_candidate(sid, role, instance_id)

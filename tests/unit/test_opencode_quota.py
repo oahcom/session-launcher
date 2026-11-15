@@ -266,6 +266,8 @@ def test_opencode_hit_defers_kill_to_confirmation(monkeypatch):
     monkeypatch.setattr(q, "_sentinel_engine", lambda role: "opencode")
     monkeypatch.setattr(q, "_opencode_child_pids", lambda role: [40001])
     monkeypatch.setattr(q, "_busy", lambda *a, **k: False)
+    monkeypatch.setattr(q, "_sample_pane_tail", lambda tmux_name: "pane_baseline")
+    monkeypatch.setattr(q, "_sample_cpu_ticks", lambda pid: 1000)
     monkeypatch.setattr(q, "restart_opencode",
                         lambda role, inst=0: order.append("restart") or {})
     monkeypatch.setattr(q, "wake_role",
@@ -562,7 +564,11 @@ def test_run_once_persists_transport_cooldown(tmp_path, monkeypatch):
 
 def _setup_recycle_mocks(monkeypatch, *, busy=False, stuck=False,
                          engine="opencode", pids=(40001,)):
-    """handle_hit/回收链公共 mock 底座；返回动作计数器。"""
+    """handle_hit/回收链公共 mock 底座；返回动作计数器。
+
+    stuck=True：pane_tail/cpu_ticks 采样恒同（基线=当前，楔死确认通过）。
+    stuck=False：pane_tail 采样逐次变化（引擎在动，自愈丢弃）。
+    """
     seen = {"rotate": 0, "wake": 0, "restart": 0, "order": []}
 
     def _rot(sid, **kw):
@@ -588,7 +594,20 @@ def _setup_recycle_mocks(monkeypatch, *, busy=False, stuck=False,
     monkeypatch.setattr(q, "_sentinel_engine", lambda role: engine)
     monkeypatch.setattr(q, "_opencode_child_pids", lambda role: list(pids))
     monkeypatch.setattr(q, "_busy", lambda *a, **k: busy)
-    monkeypatch.setattr(q, "_looks_stuck", lambda *a, **k: stuck)
+    monkeypatch.setattr(q, "_pid_alive", lambda pid: True)
+    if stuck:
+        monkeypatch.setattr(q, "_sample_pane_tail",
+                            lambda tmux_name: "pane_baseline")
+        monkeypatch.setattr(q, "_sample_cpu_ticks", lambda pid: 1000)
+    else:
+        _pane_n = {"n": 0}
+
+        def _pane_varying(tmux_name):
+            _pane_n["n"] += 1
+            return "pane_%d" % _pane_n["n"]
+
+        monkeypatch.setattr(q, "_sample_pane_tail", _pane_varying)
+        monkeypatch.setattr(q, "_sample_cpu_ticks", lambda pid: 1000)
     monkeypatch.setattr(q, "wake_role", _wake)
     monkeypatch.setattr(q, "restart_opencode", _restart)
     return seen
@@ -598,6 +617,16 @@ def _age_pending(seconds: float = 61.0):
     """把待观察队列 hit_ts 拨后，模拟下一轮（≥KILL_CONFIRM_DELAY_SEC）。"""
     for cand in q._pending_kills.values():
         cand["hit_ts"] -= seconds
+
+
+def _age_state_pending(state_path, seconds: float = 61.0):
+    """把 state 文件里 pending_kills 的 hit_ts 拨后（跨进程测试：模拟时间流逝）。"""
+    p = Path(state_path)
+    state = json.loads(p.read_text(encoding="utf-8"))
+    for cand in (state.get("pending_kills") or {}).values():
+        if isinstance(cand, dict) and "hit_ts" in cand:
+            cand["hit_ts"] -= seconds
+    p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
 def test_busy_hit_rotates_but_skips_wake_and_kill(monkeypatch):
@@ -618,7 +647,7 @@ def test_busy_hit_rotates_but_skips_wake_and_kill(monkeypatch):
 
 
 def test_not_stuck_candidate_dropped_next_round(monkeypatch):
-    """不忙但在干活（_looks_stuck False）：命中当轮不杀，候选下一轮被丢弃。"""
+    """不忙但在干活（pane_tail 变了）：命中当轮不杀，候选下一轮被丢弃。"""
     q._last_handled.clear()
     q._pending_kills.clear()
     q._kill_last.clear()
@@ -635,23 +664,60 @@ def test_not_stuck_candidate_dropped_next_round(monkeypatch):
     assert results and results[0]["action"] == "kill_skipped"
 
 
-def test_wedged_engine_reaped_next_round(monkeypatch):
-    """楔死（不忙 + _looks_stuck True）：下一轮杀+重生+补投 WAKE_MSG。"""
+def test_wedged_engine_reaped_next_round(tmp_path, monkeypatch):
+    """楔死（不忙 + pane 不动 + CPU 不走）：跨进程式——round1 入队落盘，
+    清内存态模拟新解释器，round2 仅凭 state 文件完成确认 → 杀+重生+补投。"""
+    from datetime import datetime, timezone
     q._last_handled.clear()
     q._pending_kills.clear()
     q._kill_last.clear()
+    q._transport_last_ts = 0.0
+    log = tmp_path / "opencode.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(q, "LOG_PATH", log)
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
     seen = _setup_recycle_mocks(monkeypatch, busy=False, stuck=True)
-    q.handle_hit(_fresh_hit("ses_wedge01"))
+
+    def _line(sid):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+            .replace("+00:00", "Z")
+        return ('timestamp=%s level=ERROR providerID=opencode modelID=x '
+                'session.id=%s error.error="AI_APICallError: '
+                'Free usage limit reached. x"' % (ts, sid))
+
+    sid = "ses_wedge01"
+    log.write_text(_line("ses_old99") + "\n", encoding="utf-8")
+    assert q.run_once() == [], "首轮跳 EOF"
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line(sid) + "\n")
+    q.run_once()  # round1：命中 → rotate+wake+登记候选落盘
     assert seen["restart"] == 0, "命中当轮不杀"
-    _age_pending()
-    results = q._process_pending_kills()
-    assert seen["restart"] == 1, "楔死确认后才回收"
+    assert seen["order"] == ["rotate", "wake"]
+
+    # 模拟进程重启：清空全部模块内存态（新解释器）
+    q._pending_kills.clear()
+    q._last_handled.clear()
+    q._kill_last.clear()
+    q._transport_last_ts = 0.0
+    q._scan["offset"] = None
+    q._last_scan = 0.0
+
+    # 断言 pending_kills 已持久化（含基线采样）
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state.get("pending_kills"), "pending_kills 已落盘"
+    cand = next(iter(state["pending_kills"].values()))
+    assert "pane_tail" in cand and "cpu_ticks" in cand, "基线采样已落盘"
+
+    _age_state_pending(tmp_path / "state.json")  # 拨后 hit_ts 模拟 ≥60s
+    res = q.run_once()  # round2：凭 state 文件恢复队列 → 确认 → 杀
+    assert seen["restart"] == 1, "楔死样本跨「重启」仍被回收"
     assert seen["wake"] == 2, "杀+重生后必须补投 WAKE_MSG"
     assert seen["order"] == ["rotate", "wake", "restart", "wake"], \
         "确认轮顺序：杀先于 C3（新进程首发走新出口）"
-    assert results[0]["action"] == "kill_and_wake"
-    assert results[0]["restarted"]["respawned"] is True
-    assert q._kill_last.get("ses_wedge01"), "杀冷却时间戳已记录"
+    assert res and res[0]["action"] == "kill_and_wake"
+    assert res[0]["restarted"]["respawned"] is True
+    state2 = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state2.get("kill_last_ts", {}).get(sid), "杀冷却时间戳已记录"
 
 
 def test_kill_cooldown_suppresses_repeat_kill(tmp_path, monkeypatch):
@@ -681,7 +747,7 @@ def test_kill_cooldown_suppresses_repeat_kill(tmp_path, monkeypatch):
         f.write(_line(sid) + "\n")
     q.run_once()                       # 命中当轮：rotate+wake+登记候选
     assert seen["rotate"] == 1 and seen["restart"] == 0
-    _age_pending()
+    _age_state_pending(tmp_path / "state.json")
     q.run_once()                       # 下一轮：楔死确认 → 杀
     assert seen["restart"] == 1 and seen["wake"] == 2
     # 模拟进程重启：内存态全清，靠状态文件续抑制
@@ -697,7 +763,7 @@ def test_kill_cooldown_suppresses_repeat_kill(tmp_path, monkeypatch):
         f.write(_line(sid) + "\n")
     q.run_once()                       # 冷却期内再次命中：只 rotate
     assert seen["rotate"] == 2 and seen["restart"] == 1, "冷却期内最多只换 IP 不杀"
-    _age_pending()
+    _age_state_pending(tmp_path / "state.json")
     res = q.run_once()                 # 确认轮：杀冷却抑制
     assert seen["restart"] == 1, "kill_last_ts 跨重载仍抑制（1800s 内不许再杀）"
     assert res and res[0]["action"] == "kill_suppressed"
@@ -719,3 +785,78 @@ def test_save_state_unique_tmp_name(tmp_path, monkeypatch):
     q._save_state({"a": 2})
     assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8")) \
         == {"a": 2}, "连续两次落盘都成功且后者生效"
+
+
+# ── P0 修复：楔死回收候选跨进程持久化 ─────────────────────────────
+
+def test_pending_kills_survive_process_restart(tmp_path, monkeypatch):
+    """楔死回收候选跨进程持久化：楔死样本跨「重启」仍被回收；
+    在途自愈样本跨「重启」不丢（队列恢复）且不杀（pane 变了）。"""
+    from datetime import datetime, timezone
+    log = tmp_path / "opencode.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setattr(q, "LOG_PATH", log)
+    monkeypatch.setattr(q, "_STATE_PATH", tmp_path / "state.json")
+
+    def _line(sid):
+        ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+            .replace("+00:00", "Z")
+        return ('timestamp=%s level=ERROR providerID=opencode modelID=x '
+                'session.id=%s error.error="AI_APICallError: '
+                'Free usage limit reached. x"' % (ts, sid))
+
+    def _restart_sim():
+        """清空全部模块内存态，模拟一次性进程退出后新解释器启动。"""
+        q._pending_kills.clear()
+        q._last_handled.clear()
+        q._kill_last.clear()
+        q._transport_last_ts = 0.0
+        q._scan["offset"] = None
+        q._last_scan = 0.0
+
+    # ── 场景 1：楔死样本跨「重启」仍被回收 ──
+    seen = _setup_recycle_mocks(monkeypatch, busy=False, stuck=True)
+    log.write_text(_line("ses_old99") + "\n", encoding="utf-8")
+    assert q.run_once() == []
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line("ses_wedged01") + "\n")
+    q.run_once()  # round1：命中入队落盘
+    assert seen["restart"] == 0
+    _restart_sim()
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state.get("pending_kills"), "楔死候选已落盘"
+    _age_state_pending(tmp_path / "state.json")
+    q.run_once()  # round2：凭 state 文件恢复 → 确认 → 杀
+    assert seen["restart"] == 1, "楔死样本跨「重启」仍被回收"
+    assert seen["wake"] == 2, "杀+重生后补投 WAKE_MSG"
+
+    # ── 场景 2：在途自愈样本跨「重启」不丢且不杀 ──
+    # 重置采样 mock：pane_tail 逐次变化（引擎在动自愈）
+    _pane_n = {"n": 0}
+
+    def _pane_varying(tmux_name):
+        _pane_n["n"] += 1
+        return "pane_%d" % _pane_n["n"]
+
+    monkeypatch.setattr(q, "_sample_pane_tail", _pane_varying)
+    monkeypatch.setattr(q, "_sample_cpu_ticks", lambda pid: 1000)
+    r2 = {"restart": 0, "wake": 0}
+    monkeypatch.setattr(q, "restart_opencode",
+                        lambda *a, **k: r2.__setitem__(
+                            "restart", r2["restart"] + 1) or {})
+    monkeypatch.setattr(q, "wake_role",
+                        lambda *a, **k: r2.__setitem__(
+                            "wake", r2["wake"] + 1) or {})
+
+    with log.open("a", encoding="utf-8") as f:
+        f.write(_line("ses_heal01") + "\n")
+    q.run_once()  # round1：命中入队落盘
+    assert r2["restart"] == 0
+    _restart_sim()
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state.get("pending_kills"), "自愈候选也已落盘（不丢）"
+    _age_state_pending(tmp_path / "state.json")
+    res = q.run_once()  # round2：凭 state 文件恢复 → pane 变了 → 丢弃
+    assert r2["restart"] == 0, "自愈样本跨「重启」不杀"
+    assert not q._pending_kills, "候选被丢弃（pane 变了，引擎在动）"
+    assert res and res[0]["action"] == "kill_skipped"
