@@ -18,6 +18,7 @@ __all__ = [
     'TMUX_PREFIX',
     'MAX_INSTANCES',
     'make_tmux_name',
+    'next_free_instance',
     'parse_tmux_name',
     'CODEX_TMUX_PREFIX',
     'CODEX_LOOP_DELAY',
@@ -80,6 +81,22 @@ def make_tmux_name(role: str, instance_id: int = 0) -> str:
     if instance_id:
         return f"{TMUX_PREFIX}{role}-{instance_id}"
     return f"{TMUX_PREFIX}{role}"
+
+
+def next_free_instance(role: str, cap: int = MAX_INSTANCES) -> int | None:
+    """分配最小空闲实例号（不记名 start 每次开新实例，活实例永不复用）。
+
+    扫描活跃 tmux 会话，返回 make_tmux_name(role, i) 未被占用的最小 i
+    （i ∈ 0..cap 共 cap+1 个槽：ccs-{role} / ccs-{role}-1..cap）；
+    全占返回 None。只看活跃会话，死实例编号可回收（预期语义）。
+    """
+    # 惰性导入防循环：sentinel._parse_tmux_name 反向惰性导入 tmux_ops。
+    from ops.sentinel import _list_tmux_sessions
+    active = _list_tmux_sessions()
+    for i in range(cap + 1):
+        if make_tmux_name(role, i) not in active:
+            return i
+    return None
 
 
 def parse_tmux_name(tmux_name: str) -> tuple[str, int]:

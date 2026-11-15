@@ -13,7 +13,7 @@ import os
 import sys
 
 from core import (
-    start, stop, status, send, output, health_check, register,
+    start, resolve_start_instance_id, stop, status, send, output, health_check, register,
     workspace_create, workspace_list, wake_ccs,
     start_codex_session, run_codex_task, cdx_status,
     get_role, inject_role_knowledge_into_workspace, _invalidate_role_cache,
@@ -72,7 +72,7 @@ def main():
         "start", help="创建并启动 CCS",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""示例:
-  ccs.py start                                  # 不记名会话（anon，opencode 承载）
+  ccs.py start                                  # 不记名会话（每次开新实例，自动编号，opencode 承载）
   ccs.py start engineer                          # persona 默认引擎（ccs）
   ccs.py start engineer --engine opencode        # 强制 opencode 承载
   ccs.py start engineer --engine opencode --no-attach --prompt "开工"
@@ -86,7 +86,7 @@ def main():
   opencode 会话出口走 asip 第八闸口（HTTPS_PROXY 注入，429 自动换 IP）。""")
     p_start.add_argument("role", nargs="?", default="anon",
                          help="角色名（自动加 ccs- 前缀）；缺省 anon=不记名会话"
-                              "（tmux ccs-anon / ~/ccs-workspaces/anon）")
+                              "（每次 start 自动分配新实例：ccs-anon / ccs-anon-1 / …）")
     p_start.add_argument("title", nargs="?", default="", help="角色标题")
     p_start.add_argument("--no-attach", action="store_true",
                          help="后台运行，不 attach（非交互环境自动生效）")
@@ -105,8 +105,9 @@ def main():
                          help="驱动配置: cron / goal / infinite / ondemand（默认从 persona JSON 读取）")
     p_start.add_argument("--no-auto-send", action="store_true",
                          help="跳过 ccs_config.json 的自动发送消息")
-    p_start.add_argument("--instance-id", type=int, default=0,
-                         help="实例编号: 0=主实例(默认), >0=扩展实例")
+    p_start.add_argument("--instance-id", type=int, default=None,
+                         help="实例编号: 0=主实例, >0=扩展实例；缺省=注册角色取 0，"
+                              "不记名角色自动分配最小空闲实例（每次 start 开新实例）")
     p_start.add_argument("--instances", type=int, default=0,
                          help="批量启动 N 个实例（从 1 到 N），仅 detach 模式")
     p_start.add_argument("--dry-run", action="store_true",
@@ -287,6 +288,10 @@ def main():
 
     if args.command == "start":
         if args.dry_run:
+            inst, inst_err = resolve_start_instance_id(args.role, args.instance_id)
+            if inst_err:
+                print(json.dumps({"success": False, "error": inst_err}, ensure_ascii=False))
+                sys.exit(1)
             result = start(StartOptions(
                 role=args.role,
                 title=args.title,
@@ -299,7 +304,7 @@ def main():
                 drive=args.drive,
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
-                instance_id=args.instance_id,
+                instance_id=inst,
                 dry_run=True,
                 engine=args.engine,
             ))
@@ -338,6 +343,10 @@ def main():
             if successes < args.instances:
                 sys.exit(1)
         else:
+            inst, inst_err = resolve_start_instance_id(args.role, args.instance_id)
+            if inst_err:
+                print(json.dumps({"success": False, "error": inst_err}, ensure_ascii=False))
+                sys.exit(1)
             result = start(StartOptions(
                 role=args.role,
                 title=args.title,
@@ -350,7 +359,7 @@ def main():
                 drive=args.drive,
                 workspace=args.workspace,
                 no_auto_send=args.no_auto_send,
-                instance_id=args.instance_id,
+                instance_id=inst,
                 engine=args.engine,
             ))
             print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -11,6 +11,7 @@ from pathlib import Path
 
 __all__ = [
     'start',
+    'resolve_start_instance_id',
     'StartOptions',
     'ENGINE_DOMAIN',
     'stop',
@@ -475,6 +476,28 @@ def _write_opencode_provider(path: Path | None = None) -> bool:
         raise
     _log.info("写入 %s provider.oc-native（9router 与其它键保留）", p)
     return True
+
+def resolve_start_instance_id(role: str, explicit: int | None) -> tuple[int | None, str | None]:
+    """解析 start 的 instance_id（不记名角色每次 start 开新实例，活实例永不复用）。
+
+    优先级：
+    1. explicit 非 None（--instance-id 显式指定，含 0）→ 原样使用，永不自动分配；
+    2. 注册角色（get_role 有 persona）→ 0（主实例语义：已运行则 attach/复用）；
+    3. 不记名角色 → next_free_instance 自动分配最小空闲实例号（活实例不合并/
+       不复用，死实例编号可回收）；17 槽全满 → (None, 错误文案)。
+    返回 (instance_id, error)：error 非 None 时 instance_id 为 None。
+    """
+    if explicit is not None:
+        return explicit, None
+    if get_role(role) is not None:
+        return 0, None
+    # 惰性导入防循环（tmux_ops ↔ sentinel 双向惰性导入）
+    from tmux_ops import next_free_instance
+    nid = next_free_instance(role)
+    if nid is None:
+        return None, (f"不记名实例已满（17 个并发：ccs-{role} / ccs-{role}-1..16），"
+                      f"请先 ccs stop --instance-id N 释放")
+    return nid, None
 
 @validate_role
 def start(role: StartOptions | str, title: str = "", detach: bool = False,
