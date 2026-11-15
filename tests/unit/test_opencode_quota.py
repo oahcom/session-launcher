@@ -429,6 +429,35 @@ def test_transport_verdict_matrix(monkeypatch):
     assert q.gate_vs_direct_verdict() == "skip_no_port"
 
 
+def test_probe_http_error_counts_reachable(monkeypatch):
+    """HTTP 4xx/5xx = 网络层可达（2026-11-15 15:55 事故实锤：urllib 默认 UA
+    被 api.opencode.ai 回 403，裸 except 吞成不可达 → skip_network 恒真 →
+    transport 轮换从未生效）。"""
+    import urllib.error
+    import urllib.request
+
+    class _Opener403:
+        def open(self, *args, **kwargs):
+            raise urllib.error.HTTPError("https://x", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _Opener403())
+    assert q._probe_reachable(None) is True
+    assert q._probe_reachable("http://127.0.0.1:7898") is True
+
+
+def test_probe_network_error_still_unreachable(monkeypatch):
+    """网络层失败（连接拒绝/超时/SSL 断）仍判不可达——修复不放水。"""
+    import urllib.error
+    import urllib.request
+
+    class _OpenerDown:
+        def open(self, *args, **kwargs):
+            raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _OpenerDown())
+    assert q._probe_reachable(None) is False
+
+
 def test_transport_rotate_only_never_wakes_or_kills(monkeypatch):
     q._transport_last_ts = 0.0
     seen = {"rotate": 0, "wake": 0, "restart": 0, "kw": None}

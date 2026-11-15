@@ -40,6 +40,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -723,7 +724,13 @@ def _probe_reachable(proxy: str | None) -> bool:
     try:
         with opener.open(PROBE_URL, timeout=_PROBE_TIMEOUT_SEC):
             return True
-    except Exception:  # noqa: BLE001 — 断连/超时/DNS 全算不可达
+    except urllib.error.HTTPError:
+        # 收到 HTTP 响应（4xx/5xx）= 网络层可达。2026-11-15 15:55 实锤：
+        # api.opencode.ai 对 urllib 默认 UA 回 403（curl 200），被裸 except
+        # 吞成「不可达」→ skip_network 恒真 → transport 轮换上线起从未生效。
+        # 判据是网络层可达性，不是业务成功。
+        return True
+    except Exception:  # noqa: BLE001 — 断连/超时/DNS/SSL 全算不可达
         return False
 
 
