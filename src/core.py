@@ -412,19 +412,27 @@ def _write_opencode_mcp(ws_path: Path, role_def: dict | None) -> None:
     _log.info("写入 %s mcp_servers=%s", path, list(conv.keys()))
 
 
-# ── opencode 全局 provider 落盘（契约 C4：oc-native 原生直连）──
+# ── opencode 全局 provider 落盘（契约 C4：oc-native 原生协议，经 L7 拦截）──
 # 目标是全局 ~/.config/opencode/opencode.jsonc（不是 workspace 的 opencode.json）。
+# C4 的 baseURL 值指向第八闸口 L7 拦截层（http://127.0.0.1:7899/v1，透明反代
+# api.opencode.ai）：429/transport 判出即换 ok 渠道透明重试，仍属 oc-native
+# 原生协议，不经 9router。
 # 只合并 `provider.oc-native` 一个键：provider.9router 段与用户手写键原样保留
 # （用户裁决 D2：9router 段不许改写、不许删）；JSON 坏了不覆盖只告警。
 _OPENCODE_GLOBAL_JSON = Path("~/.config/opencode/opencode.jsonc").expanduser()
 
 
 def _oc_native_provider() -> dict:
-    """契约 C4 的 provider.oc-native 段（字段名/值一字不差）。"""
+    """契约 C4 的 provider.oc-native 段（字段名/值一字不差）。
+
+    baseURL 值经第八闸口 L7 拦截层（127.0.0.1:7899/v1，透明反代
+    api.opencode.ai），429/transport 判出即换 ok 渠道透明重试；仍属
+    oc-native 原生协议，不经 9router。
+    """
     return {
         "npm": "@ai-sdk/openai-compatible",
         "name": "OpenCode Native",
-        "options": {"baseURL": "https://api.opencode.ai/v1"},
+        "options": {"baseURL": "http://127.0.0.1:7899/v1"},
         "models": {
             "deepseek-v4.1-flash-free": {
                 "name": "DSv4.1 Flash Free",

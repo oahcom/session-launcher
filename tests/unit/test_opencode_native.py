@@ -22,10 +22,12 @@ import core
 
 # ── ① provider 写入：保留 9router 段与用户手写键 ─────────────────
 
+# 契约 C4（2026-11-15 起）：baseURL 指向第八闸口 L7 拦截层（127.0.0.1:7899/v1），
+# 429/transport 由闸口判出换 ok 渠道透明重试；仍属 oc-native 原生协议，不经 9router。
 _C4_OC_NATIVE = {
     "npm": "@ai-sdk/openai-compatible",
     "name": "OpenCode Native",
-    "options": {"baseURL": "https://api.opencode.ai/v1"},
+    "options": {"baseURL": "http://127.0.0.1:7899/v1"},
     "models": {"deepseek-v4.1-flash-free": {
         "name": "DSv4.1 Flash Free",
         "limit": {"context": 200000, "output": 32000},
@@ -72,6 +74,62 @@ def test_provider_write_skips_broken_json(tmp_path):
     ok = core._write_opencode_provider(path=f)
     assert ok is False
     assert f.read_text(encoding="utf-8") == garbage, "JSON 坏了不许覆盖，只告警"
+
+
+def test_provider_migration_swaps_only_oc_native_baseurl(tmp_path):
+    """迁移钉 D2：旧 oc-native 的 baseURL 切 L7 新值，9router/用户键逐字节保留。"""
+    f = tmp_path / "opencode.jsonc"
+    original_9router = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "9Router",
+        "options": {"baseURL": "http://localhost:20127/v1", "apiKey": "9router-local"},
+        "models": {"9router_hermes": {
+            "name": "9Router Hermes",
+            "limit": {"context": 300000, "output": 64000},
+        }},
+    }
+    old_oc_native = {  # 迁移前的旧契约 C4（baseURL 仍指原生端点）
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "OpenCode Native",
+        "options": {"baseURL": "https://api.opencode.ai/v1"},
+        "models": {"deepseek-v4.1-flash-free": {
+            "name": "DSv4.1 Flash Free",
+            "limit": {"context": 200000, "output": 32000},
+        }},
+    }
+    input_data = {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": "allow",
+        "provider": {
+            "9router": original_9router,
+            "my-own": {"npm": "x"},
+            "oc-native": old_oc_native,
+        },
+        "user_custom_key": {"foo": 1},
+    }
+    in_raw = json.dumps(input_data, indent=2, ensure_ascii=False)
+    f.write_text(in_raw, encoding="utf-8")
+
+    ok = core._write_opencode_provider(path=f)
+    assert ok is True
+
+    out_raw = f.read_text(encoding="utf-8")
+    out = json.loads(out_raw)
+
+    # 只把 oc-native 的 baseURL 写成 L7 拦截层新值（整段为契约 C4）
+    assert out["provider"]["oc-native"] == _C4_OC_NATIVE
+    assert out["provider"]["oc-native"]["options"]["baseURL"] == "http://127.0.0.1:7899/v1"
+    assert "https://api.opencode.ai/v1" not in out_raw
+
+    # 9router 段与用户手写键逐字节保留（D2：不许改写、不许删）——
+    # 输出全文 = 输入全文仅替换 baseURL 一处字符串，其余字节全等
+    assert out_raw == in_raw.replace(
+        "https://api.opencode.ai/v1", "http://127.0.0.1:7899/v1"
+    ), "除 oc-native.baseURL 外不得有任何字节变化"
+    assert out["provider"]["9router"] == original_9router
+    assert out["provider"]["my-own"] == {"npm": "x"}
+    assert out["user_custom_key"] == {"foo": 1}
+    assert out["permission"] == "allow"
 
 
 # ── ② HTTPS_PROXY 注入：只对 opencode 行，claude 行零改动 ─────────
